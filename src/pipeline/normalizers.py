@@ -48,15 +48,7 @@ def normalize_qwen_payload(
 ) -> tuple[ModelOutput, CanonicalDocument, ParsedLabel | None]:
     normalized_output, parsed_label = normalize_model_output(model_output)
     raw_payload = _parse_json_object(model_output.raw_text)
-
-    if isinstance(raw_payload, dict):
-        content_payload = (
-            raw_payload.get("content_list_v2")
-            or raw_payload.get("content_list")
-            or raw_payload.get("blocks")
-        )
-    else:
-        content_payload = None
+    content_payload = _extract_document_payload(raw_payload)
 
     if content_payload is not None:
         document, warnings = _canonical_document_from_payload(
@@ -144,18 +136,17 @@ def _canonical_document_from_payload(
     warnings: list[str] = []
     blocks: list[CanonicalBlock] = []
 
-    if isinstance(payload, dict):
-        if "content_list_v2" in payload:
-            payload = payload["content_list_v2"]
-        elif "content_list" in payload:
-            payload = payload["content_list"]
-        elif "pdf_info" in payload:
-            return _document_from_pdf_info(
-                document_id=document_id,
-                source=source,
-                pdf_info=payload.get("pdf_info"),
-                default_image_path=default_image_path,
-            )
+    extracted_payload = _extract_document_payload(payload)
+    if extracted_payload is not None:
+        payload = extracted_payload
+
+    if isinstance(payload, dict) and "pdf_info" in payload:
+        return _document_from_pdf_info(
+            document_id=document_id,
+            source=source,
+            pdf_info=payload.get("pdf_info"),
+            default_image_path=default_image_path,
+        )
 
     if _looks_like_nested_pages(payload):
         blocks = _blocks_from_content_list_v2(
@@ -518,6 +509,45 @@ def _parse_json_object(raw_text: str) -> Any:
         return json.loads(json_text)
     except json.JSONDecodeError:
         return None
+
+
+def _extract_document_payload(payload: Any) -> Any | None:
+    current = payload
+    visited: set[int] = set()
+    wrapper_keys = ("data", "result", "payload", "output", "response")
+
+    while True:
+        if current is None:
+            return None
+        if isinstance(current, list):
+            return current
+        if not isinstance(current, dict):
+            return None
+
+        if "content_list_v2" in current:
+            return current["content_list_v2"]
+        if "content_list" in current:
+            return current["content_list"]
+        if "pdf_info" in current:
+            return {"pdf_info": current.get("pdf_info")}
+        if "blocks" in current:
+            return current["blocks"]
+
+        next_payload = None
+        for key in wrapper_keys:
+            candidate = current.get(key)
+            if not isinstance(candidate, (dict, list)):
+                continue
+            candidate_id = id(candidate)
+            if candidate_id in visited:
+                continue
+            visited.add(candidate_id)
+            next_payload = candidate
+            break
+
+        if next_payload is None:
+            return None
+        current = next_payload
 
 
 def _looks_like_nested_pages(payload: Any) -> bool:

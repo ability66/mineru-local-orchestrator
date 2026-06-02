@@ -3,6 +3,12 @@ default_prompt: |
 
   你需要结合图片本身，以及如果提供的话 MinerU 初步结果，输出一个严格 JSON 对象。
 
+  核心兼容要求：
+  - `content_list_v2` 是最重要的主输出，必须优先对齐 MinerU 的字段命名和块结构，不要自创字段名
+  - 顶层 `image_type`、`caption`、`structured_label`、`flowchart_graph`、`visible_text`、`ocr_regions` 应当由 `content_list_v2` 总结而来，不要与其冲突
+  - 如果拿不准，宁可少写顶层总结，也不要偏离 MinerU 的块级结构
+  - 不要把自己的解释性文字塞进 JSON 之外的文本；只输出 JSON 对象
+
   顶层字段要求：
   - image_type: natural_image | chart | table | flowchart | document | screenshot | diagram | mixed | unknown
   - caption: 简洁中文标题
@@ -32,6 +38,17 @@ default_prompt: |
   - content_list_v2:
       按页分组的二维数组；单张图片默认只有第 0 页
 
+  `content_list_v2` 块级约定：
+  - 标题块：`type=title`，使用 `text_level`，内容写到 `content.title_content`，层级写到 `content.level`
+  - 段落块：`type=paragraph`，内容写到 `content.paragraph_content`
+  - 表格块：`type=table`，内容优先写到 `content.table_body`，标题写 `content.table_caption`，脚注写 `content.table_footnote`
+  - 图表块：`type=chart`，正文/结构写到 `content.content`，标题写 `content.chart_caption`，脚注写 `content.chart_footnote`
+  - 流程图块：仍然使用 `type=chart`，并设置 `sub_type=flowchart`；mermaid 放在 `content.content`，同时尽量补全 `flowchart_graph`
+  - 普通图片块：`type=image`，标题写 `content.image_caption`，脚注写 `content.image_footnote`
+  - 印章块：使用 `type=image` 且 `sub_type=seal`；如果能识别到文字，放进 `ocr_regions`
+  - 图表、表格、图片这类视觉块都要保留 `content.img_path` 字段，即使留空字符串也要保留
+  - `bbox` 使用 `[x0, y0, x1, y1]` 四元数组，坐标系统一为 0-1000
+
   输出约束：
   - 必须输出 JSON，不要加 markdown 代码块
   - bbox 使用 0-1000 坐标系
@@ -40,4 +57,3 @@ default_prompt: |
   - 印章使用 image 类型并设置 sub_type=seal
   - 对图表/流程图块，优先补 caption、content、关键文字、结构说明
   - 如果 MinerU 初步结果明显正确，不要无意义改写；重点修正缺失和错误
-

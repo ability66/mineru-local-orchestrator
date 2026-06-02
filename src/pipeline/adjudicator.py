@@ -78,13 +78,6 @@ def adjudicate_documents(
         qwen_output=qwen_output,
         fallback_visible_text=_collect_visible_text(final_document.blocks),
     )
-    _inject_label_enrichment(
-        final_document=final_document,
-        preferred_label=qwen_label or mineru_label,
-        graph_fusion_result=graph_fusion_result,
-    )
-    final_label = derive_label_from_document(final_document)
-
     validation_result = _build_validation_result(
         image_id=image_task.image_id,
         base_document=base_document,
@@ -103,6 +96,18 @@ def adjudicate_documents(
         validation_result=validation_result,
         graph_fusion_result=graph_fusion_result,
     )
+    preferred_label, allow_type_override, allow_graph_override = _pick_enrichment_policy(
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        consensus=consensus,
+    )
+    _inject_label_enrichment(
+        final_document=final_document,
+        preferred_label=preferred_label,
+        graph_fusion_result=graph_fusion_result if allow_graph_override else None,
+        allow_type_override=allow_type_override,
+    )
+    final_label = derive_label_from_document(final_document)
 
     local_reasons = _build_local_reasons(
         base_document=base_document,
@@ -211,6 +216,7 @@ def _inject_label_enrichment(
     final_document: CanonicalDocument,
     preferred_label: ParsedLabel | None,
     graph_fusion_result: Any | None,
+    allow_type_override: bool,
 ) -> None:
     if preferred_label is None or not final_document.blocks:
         return
@@ -240,6 +246,8 @@ def _inject_label_enrichment(
         return
 
     if preferred_label.image_type == "table":
+        if not allow_type_override and target.type != "table":
+            return
         target.type = "table"
         target.content["table_body"] = preferred_label.structured_label.content
         if preferred_label.caption.strip():
@@ -250,6 +258,8 @@ def _inject_label_enrichment(
         return
 
     if preferred_label.image_type in {"chart", "flowchart"}:
+        if not allow_type_override and target.type != "chart":
+            return
         target.type = "chart"
         if preferred_label.image_type == "flowchart":
             target.sub_type = "flowchart"
@@ -262,6 +272,8 @@ def _inject_label_enrichment(
             )
 
     if any(str(region.role or "").strip() == "seal" for region in preferred_label.ocr_regions):
+        if not allow_type_override and target.type != "image" and str(target.sub_type or "").strip().lower() != "seal":
+            return
         target.type = "image"
         target.sub_type = "seal"
         target.ocr_regions = _merge_ocr_regions(target.ocr_regions, preferred_label.ocr_regions)
@@ -400,6 +412,20 @@ def _build_consensus(
         validation_result=validation_result,
         graph_fusion_result=graph_fusion_result,
     )
+
+
+def _pick_enrichment_policy(
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+    consensus: ConsensusResult | None,
+) -> tuple[ParsedLabel | None, bool, bool]:
+    if qwen_label is None:
+        return mineru_label, True, True
+    if mineru_label is None:
+        return qwen_label, True, True
+    if consensus is not None and consensus.decision == "accepted":
+        return qwen_label, True, True
+    return mineru_label, False, False
 
 
 def _build_local_reasons(
