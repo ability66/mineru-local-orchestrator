@@ -1,0 +1,26 @@
+models:
+  - name: minerupro-2.5-local
+    provider: minerupro_local
+    enabled: true
+    base_url: http://127.0.0.1:18080
+    endpoint: /analyze
+    request_mode: multipart_file
+    file_field: file
+    timeout: 180
+    send_prompt: false
+    extra_fields:
+      output_format: json
+
+  - name: qwen-122b-local
+    provider: qwen_openai_compatible
+    enabled: true
+    base_url: http://127.0.0.1:18081/v1
+    endpoint: /chat/completions
+    model: qwen-122b
+    input_mode: vision_openai_chat
+    api_key_env: QWEN_LOCAL_API_KEY
+    default_api_key: EMPTY
+    timeout: 180
+    max_tokens: 4096
+    temperature: 0
+

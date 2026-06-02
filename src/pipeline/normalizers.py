@@ -1,0 +1,827 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from src.normalizer import (
+    _extract_first_json_object,
+    _strip_code_fences,
+    normalize_model_output,
+)
+from src.schema import (
+    CanonicalBlock,
+    CanonicalDocument,
+    CaptionStructured,
+    ImageTask,
+    ModelOutput,
+    OcrRegion,
+    ParsedLabel,
+    StructuredLabel,
+)
+
+
+def normalize_mineru_payload(
+    image_task: ImageTask,
+    model_output: ModelOutput,
+) -> tuple[ModelOutput, CanonicalDocument, ParsedLabel | None]:
+    raw_payload = _extract_raw_payload(model_output)
+    document, warnings = _canonical_document_from_payload(
+        document_id=image_task.image_id,
+        source=model_output.model_name,
+        payload=raw_payload,
+        default_image_path=image_task.image_path,
+    )
+
+    updated = model_output.model_copy(deep=True)
+    updated.parsed = raw_payload
+    if warnings:
+        message = "; ".join(warnings)
+        updated.error = _merge_errors(updated.error, message) if not updated.success else updated.error
+
+    label = derive_label_from_document(document)
+    return updated, document, label
+
+
+def normalize_qwen_payload(
+    image_task: ImageTask,
+    model_output: ModelOutput,
+) -> tuple[ModelOutput, CanonicalDocument, ParsedLabel | None]:
+    normalized_output, parsed_label = normalize_model_output(model_output)
+    raw_payload = _parse_json_object(model_output.raw_text)
+
+    if isinstance(raw_payload, dict):
+        content_payload = (
+            raw_payload.get("content_list_v2")
+            or raw_payload.get("content_list")
+            or raw_payload.get("blocks")
+        )
+    else:
+        content_payload = None
+
+    if content_payload is not None:
+        document, warnings = _canonical_document_from_payload(
+            document_id=image_task.image_id,
+            source=model_output.model_name,
+            payload=content_payload,
+            default_image_path=image_task.image_path,
+        )
+    elif parsed_label is not None:
+        document = _document_from_parsed_label(
+            image_task=image_task,
+            source=model_output.model_name,
+            parsed_label=parsed_label,
+        )
+        warnings = []
+    else:
+        document = CanonicalDocument(
+            document_id=image_task.image_id,
+            source=model_output.model_name,
+            backend="qwen",
+            page_count=1,
+            blocks=[],
+        )
+        warnings = ["qwen_output_missing_document_blocks"]
+
+    if parsed_label is None:
+        parsed_label = derive_label_from_document(document)
+
+    if warnings and normalized_output.success and not normalized_output.error:
+        normalized_output.error = None
+
+    return normalized_output, document, parsed_label
+
+
+def derive_label_from_document(document: CanonicalDocument) -> ParsedLabel | None:
+    blocks = sorted(document.blocks, key=lambda item: (item.page_idx, item.order_index, item.block_id))
+    if not blocks:
+        return None
+
+    image_type = "document"
+    if any(block.structured_label.kind == "mermaid" or block.flowchart_graph for block in blocks):
+        image_type = "flowchart"
+    elif any(block.type == "table" for block in blocks):
+        image_type = "table"
+    elif any(block.type == "chart" for block in blocks):
+        image_type = "chart"
+    elif any(_is_seal_block(block) for block in blocks):
+        image_type = "document"
+
+    caption = _pick_caption(blocks)
+    visible_text = _deduplicate_texts(
+        [text for block in blocks for text in ([block.text] + list(block.visible_text))]
+    )
+    structured_label = _pick_structured_label(blocks)
+    ocr_regions = [region for block in blocks for region in block.ocr_regions]
+
+    return ParsedLabel(
+        image_type=image_type,
+        caption=caption,
+        caption_structured=CaptionStructured(
+            brief=caption,
+            visual_type=image_type,
+            main_subject=caption,
+            visible_title=caption if blocks and blocks[0].type == "title" else "",
+            key_visible_text=visible_text[:10],
+            structure_summary=_build_structure_summary(blocks=blocks, image_type=image_type),
+            caption_source="generated",
+            confidence="medium" if caption else "low",
+        ),
+        structured_label=structured_label,
+        flowchart_graph=_pick_flowchart_graph(blocks),
+        visible_text=visible_text,
+        ocr_regions=ocr_regions,
+        uncertainty="",
+        warnings=_deduplicate_texts([warning for block in blocks for warning in block.warnings]),
+    )
+
+
+def _canonical_document_from_payload(
+    document_id: str,
+    source: str,
+    payload: Any,
+    default_image_path: str,
+) -> tuple[CanonicalDocument, list[str]]:
+    warnings: list[str] = []
+    blocks: list[CanonicalBlock] = []
+
+    if isinstance(payload, dict):
+        if "content_list_v2" in payload:
+            payload = payload["content_list_v2"]
+        elif "content_list" in payload:
+            payload = payload["content_list"]
+        elif "pdf_info" in payload:
+            return _document_from_pdf_info(
+                document_id=document_id,
+                source=source,
+                pdf_info=payload.get("pdf_info"),
+                default_image_path=default_image_path,
+            )
+
+    if _looks_like_nested_pages(payload):
+        blocks = _blocks_from_content_list_v2(
+            pages=payload,
+            source=source,
+            default_image_path=default_image_path,
+        )
+    elif isinstance(payload, list):
+        blocks = _blocks_from_content_list_flat(
+            items=payload,
+            source=source,
+            default_image_path=default_image_path,
+        )
+    else:
+        warnings.append("unsupported_payload_shape")
+
+    page_count = max((block.page_idx for block in blocks), default=-1) + 1
+    document = CanonicalDocument(
+        document_id=document_id,
+        source=source,
+        backend="mineru_like",
+        page_count=max(1, page_count),
+        blocks=blocks,
+        warnings=warnings,
+        raw_metadata={},
+    )
+    return document, warnings
+
+
+def _document_from_pdf_info(
+    document_id: str,
+    source: str,
+    pdf_info: Any,
+    default_image_path: str,
+) -> tuple[CanonicalDocument, list[str]]:
+    warnings: list[str] = []
+    blocks: list[CanonicalBlock] = []
+
+    if not isinstance(pdf_info, list):
+        warnings.append("invalid_pdf_info_payload")
+    else:
+        for page in pdf_info:
+            if not isinstance(page, dict):
+                continue
+            page_idx = _coerce_non_negative_int(page.get("page_idx"), default=0)
+            page_blocks = page.get("para_blocks", [])
+            if not isinstance(page_blocks, list):
+                continue
+            for index, block in enumerate(page_blocks, start=1):
+                if not isinstance(block, dict):
+                    continue
+                canonical = _block_from_generic_payload(
+                    block=block,
+                    page_idx=page_idx,
+                    order_index=index,
+                    source=source,
+                    default_image_path=default_image_path,
+                )
+                blocks.append(canonical)
+
+    page_count = max((block.page_idx for block in blocks), default=-1) + 1
+    return (
+        CanonicalDocument(
+            document_id=document_id,
+            source=source,
+            backend="mineru_middle_json",
+            page_count=max(1, page_count),
+            blocks=blocks,
+            warnings=warnings,
+            raw_metadata={},
+        ),
+        warnings,
+    )
+
+
+def _blocks_from_content_list_v2(
+    pages: Any,
+    source: str,
+    default_image_path: str,
+) -> list[CanonicalBlock]:
+    blocks: list[CanonicalBlock] = []
+    if not isinstance(pages, list):
+        return blocks
+    for page_idx, page_blocks in enumerate(pages):
+        if not isinstance(page_blocks, list):
+            continue
+        for order_index, block in enumerate(page_blocks, start=1):
+            if not isinstance(block, dict):
+                continue
+            blocks.append(
+                _block_from_v2_payload(
+                    block=block,
+                    page_idx=page_idx,
+                    order_index=order_index,
+                    source=source,
+                    default_image_path=default_image_path,
+                )
+            )
+    return blocks
+
+
+def _blocks_from_content_list_flat(
+    items: Any,
+    source: str,
+    default_image_path: str,
+) -> list[CanonicalBlock]:
+    blocks: list[CanonicalBlock] = []
+    if not isinstance(items, list):
+        return blocks
+    page_order: dict[int, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        page_idx = _coerce_non_negative_int(item.get("page_idx"), default=0)
+        order_index = page_order.get(page_idx, 0) + 1
+        page_order[page_idx] = order_index
+        blocks.append(
+            _block_from_flat_payload(
+                block=item,
+                page_idx=page_idx,
+                order_index=order_index,
+                source=source,
+                default_image_path=default_image_path,
+            )
+        )
+    return blocks
+
+
+def _block_from_v2_payload(
+    block: dict[str, Any],
+    page_idx: int,
+    order_index: int,
+    source: str,
+    default_image_path: str,
+) -> CanonicalBlock:
+    block_type = _map_v2_type(str(block.get("type", "paragraph") or "paragraph"))
+    content = block.get("content") if isinstance(block.get("content"), dict) else {}
+    text = _extract_block_text(block_type=block_type, content=content, fallback=block.get("text"))
+    structured_label = _structured_label_from_block_payload(
+        block_type=block_type,
+        block=block,
+        content=content,
+    )
+    ocr_regions = _ocr_regions_from_block(block, content)
+    visible_text = _deduplicate_texts(_collect_visible_texts(content, text))
+    block_id = str(block.get("block_id") or f"p{page_idx:03d}_b{order_index:03d}")
+
+    normalized_content = dict(content)
+    if block_type in {"chart", "image", "table"} and "img_path" not in normalized_content:
+        normalized_content["img_path"] = default_image_path
+
+    return CanonicalBlock(
+        block_id=block_id,
+        page_idx=page_idx,
+        order_index=order_index,
+        type=block_type,
+        sub_type=_optional_text(block.get("sub_type")),
+        bbox=_normalize_bbox(block.get("bbox")),
+        text=text,
+        text_level=_coerce_non_negative_int(block.get("text_level")),
+        content=normalized_content,
+        source=source,
+        confidence=_coerce_float(block.get("score")),
+        structured_label=structured_label,
+        caption_structured=_caption_structured_from_block(
+            block_type=block_type,
+            text=text,
+            content=content,
+            visible_text=visible_text,
+        ),
+        flowchart_graph=_flowchart_graph_from_block(block),
+        visible_text=visible_text,
+        ocr_regions=ocr_regions,
+        warnings=[],
+        provenance={"source_block_type": block.get("type"), "format": "content_list_v2"},
+    )
+
+
+def _block_from_flat_payload(
+    block: dict[str, Any],
+    page_idx: int,
+    order_index: int,
+    source: str,
+    default_image_path: str,
+) -> CanonicalBlock:
+    mapped = dict(block)
+    block_type = _map_flat_type(str(block.get("type", "text") or "text"))
+    if block_type in {"title", "paragraph"}:
+        content = {
+            "title_content" if block_type == "title" else "paragraph_content": [
+                {"type": "text", "content": str(block.get("text", "") or "")}
+            ]
+        }
+        if block_type == "title":
+            content["level"] = _coerce_non_negative_int(block.get("text_level"), default=1)
+    else:
+        content = {key: value for key, value in mapped.items() if key not in {"type", "page_idx", "bbox", "text_level"}}
+
+    if block_type in {"chart", "image", "table"} and "img_path" not in content:
+        content["img_path"] = default_image_path
+
+    return _block_from_v2_payload(
+        block={
+            "block_id": block.get("block_id"),
+            "type": block_type,
+            "sub_type": block.get("sub_type"),
+            "bbox": block.get("bbox"),
+            "content": content,
+            "text_level": block.get("text_level"),
+            "score": block.get("score"),
+        },
+        page_idx=page_idx,
+        order_index=order_index,
+        source=source,
+        default_image_path=default_image_path,
+    )
+
+
+def _block_from_generic_payload(
+    block: dict[str, Any],
+    page_idx: int,
+    order_index: int,
+    source: str,
+    default_image_path: str,
+) -> CanonicalBlock:
+    block_type = _infer_generic_block_type(block)
+    content = {
+        "paragraph_content": [{"type": "text", "content": _extract_text_from_generic_block(block)}]
+    }
+    if block_type in {"chart", "image", "table"}:
+        content["img_path"] = default_image_path
+    return _block_from_v2_payload(
+        block={
+            "block_id": block.get("block_id"),
+            "type": block_type,
+            "sub_type": block.get("sub_type"),
+            "bbox": block.get("bbox"),
+            "content": content,
+            "score": block.get("score"),
+        },
+        page_idx=page_idx,
+        order_index=order_index,
+        source=source,
+        default_image_path=default_image_path,
+    )
+
+
+def _document_from_parsed_label(
+    image_task: ImageTask,
+    source: str,
+    parsed_label: ParsedLabel,
+) -> CanonicalDocument:
+    block_type = "image"
+    sub_type: str | None = None
+    content: dict[str, Any] = {"img_path": image_task.image_path}
+
+    if parsed_label.image_type == "table":
+        block_type = "table"
+        content["table_body"] = parsed_label.structured_label.content
+        content["table_caption"] = [parsed_label.caption] if parsed_label.caption else []
+    elif parsed_label.image_type in {"chart", "flowchart"}:
+        block_type = "chart"
+        sub_type = "flowchart" if parsed_label.image_type == "flowchart" else None
+        if parsed_label.caption:
+            content["chart_caption"] = [parsed_label.caption]
+        if parsed_label.structured_label.content:
+            content["content"] = parsed_label.structured_label.content
+    elif any(region.role == "seal" for region in parsed_label.ocr_regions):
+        block_type = "image"
+        sub_type = "seal"
+        if parsed_label.caption:
+            content["image_caption"] = [parsed_label.caption]
+    else:
+        if parsed_label.caption:
+            content["image_caption"] = [parsed_label.caption]
+
+    block = CanonicalBlock(
+        block_id="p000_b001",
+        page_idx=0,
+        order_index=1,
+        type=block_type,
+        sub_type=sub_type,
+        bbox=[0, 0, 1000, 1000],
+        text=parsed_label.caption,
+        text_level=None,
+        content=content,
+        source=source,
+        confidence=None,
+        structured_label=parsed_label.structured_label,
+        caption_structured=parsed_label.caption_structured,
+        flowchart_graph=parsed_label.flowchart_graph,
+        visible_text=parsed_label.visible_text,
+        ocr_regions=parsed_label.ocr_regions,
+        warnings=parsed_label.warnings,
+        provenance={"format": "parsed_label"},
+    )
+    return CanonicalDocument(
+        document_id=image_task.image_id,
+        source=source,
+        backend="qwen_label_only",
+        page_count=1,
+        blocks=[block],
+        warnings=[],
+        raw_metadata={},
+    )
+
+
+def _pick_caption(blocks: list[CanonicalBlock]) -> str:
+    for block in blocks:
+        if block.type == "title" and block.text.strip():
+            return block.text.strip()
+    for block in blocks:
+        caption = block.caption_structured.brief.strip()
+        if caption:
+            return caption
+    for block in blocks:
+        if block.text.strip():
+            return block.text.strip()
+    return ""
+
+
+def _pick_structured_label(blocks: list[CanonicalBlock]) -> StructuredLabel:
+    for block in blocks:
+        if block.structured_label.kind != "none" and block.structured_label.content.strip():
+            return block.structured_label
+    return StructuredLabel(kind="none", content="", format="none", source="none")
+
+
+def _pick_flowchart_graph(blocks: list[CanonicalBlock]) -> dict[str, Any] | None:
+    for block in blocks:
+        if block.flowchart_graph:
+            return block.flowchart_graph
+    return None
+
+
+def _build_structure_summary(blocks: list[CanonicalBlock], image_type: str) -> str:
+    if image_type == "flowchart":
+        return "流程图结构，已保留节点、边和可见关键文字。"
+    if image_type == "table":
+        return "表格结构，优先保留表体和表格说明。"
+    if image_type == "chart":
+        return "图表结构，优先保留图表标题、说明和可见关键文字。"
+    if any(_is_seal_block(block) for block in blocks):
+        return "图像中包含印章区域，已保留印章 OCR 候选。"
+    return "基于 MinerU 风格内容块构建的单页结构。"
+
+
+def _extract_raw_payload(model_output: ModelOutput) -> Any:
+    if model_output.parsed is not None:
+        return model_output.parsed
+    return _parse_json_object(model_output.raw_text)
+
+
+def _parse_json_object(raw_text: str) -> Any:
+    cleaned_text = _strip_code_fences(raw_text)
+    json_text, _ = _extract_first_json_object(cleaned_text)
+    if json_text is None:
+        return None
+    try:
+        return json.loads(json_text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _looks_like_nested_pages(payload: Any) -> bool:
+    return isinstance(payload, list) and (
+        not payload or isinstance(payload[0], list)
+    )
+
+
+def _map_v2_type(raw_type: str) -> str:
+    normalized = raw_type.strip().lower()
+    mapping = {
+        "text": "paragraph",
+        "paragraph": "paragraph",
+        "title": "title",
+        "image": "image",
+        "table": "table",
+        "chart": "chart",
+        "equation_interline": "equation_interline",
+        "equation": "equation_interline",
+        "code": "code",
+        "algorithm": "algorithm",
+        "list": "list",
+        "header": "page_header",
+        "page_header": "page_header",
+        "footer": "page_footer",
+        "page_footer": "page_footer",
+        "page_number": "page_number",
+        "aside_text": "page_aside_text",
+        "page_aside_text": "page_aside_text",
+        "page_footnote": "page_footnote",
+    }
+    return mapping.get(normalized, "paragraph")
+
+
+def _map_flat_type(raw_type: str) -> str:
+    normalized = raw_type.strip().lower()
+    if normalized == "text":
+        return "paragraph"
+    return _map_v2_type(normalized)
+
+
+def _extract_block_text(block_type: str, content: dict[str, Any], fallback: Any) -> str:
+    if block_type == "title":
+        return _join_span_content(content.get("title_content"))
+    if block_type == "paragraph":
+        return _join_span_content(content.get("paragraph_content"))
+    if block_type == "table":
+        captions = content.get("table_caption", [])
+        body = str(content.get("table_body", "") or "").strip()
+        return " ".join(_normalize_text_list(captions) + ([body] if body else []))
+    if block_type == "chart":
+        captions = content.get("chart_caption", [])
+        body = str(content.get("content", "") or "").strip()
+        return " ".join(_normalize_text_list(captions) + ([body] if body else []))
+    if block_type == "image":
+        captions = content.get("image_caption", [])
+        return " ".join(_normalize_text_list(captions))
+    if block_type == "list":
+        return " ".join(_normalize_text_list(content.get("list_items", [])))
+    if block_type == "equation_interline":
+        return str(content.get("math_content", "") or "").strip()
+    return str(fallback or "").strip()
+
+
+def _structured_label_from_block_payload(
+    block_type: str,
+    block: dict[str, Any],
+    content: dict[str, Any],
+) -> StructuredLabel:
+    if block_type == "table":
+        return StructuredLabel(
+            kind="table",
+            content=str(content.get("table_body", "") or ""),
+            format="markdown",
+            source="mineru",
+        )
+    if block_type == "chart" and str(block.get("sub_type") or "").strip().lower() == "flowchart":
+        mermaid = str(content.get("content", "") or "")
+        return StructuredLabel(
+            kind="mermaid" if mermaid.strip() else "text",
+            content=mermaid,
+            format="mermaid" if mermaid.strip() else "plain_text",
+            source="mineru",
+        )
+    return StructuredLabel(kind="none", content="", format="none", source="none")
+
+
+def _caption_structured_from_block(
+    block_type: str,
+    text: str,
+    content: dict[str, Any],
+    visible_text: list[str],
+) -> CaptionStructured:
+    brief = text.strip()
+    if not brief:
+        if block_type == "table":
+            captions = _normalize_text_list(content.get("table_caption", []))
+            brief = captions[0] if captions else ""
+        elif block_type == "chart":
+            captions = _normalize_text_list(content.get("chart_caption", []))
+            brief = captions[0] if captions else ""
+        elif block_type == "image":
+            captions = _normalize_text_list(content.get("image_caption", []))
+            brief = captions[0] if captions else ""
+    visual_type = "document"
+    if block_type == "table":
+        visual_type = "table"
+    elif block_type == "chart":
+        visual_type = "chart"
+    elif block_type == "image":
+        visual_type = "natural_image"
+    return CaptionStructured(
+        brief=brief,
+        visual_type=visual_type,
+        main_subject=brief,
+        visible_title=brief if block_type == "title" else "",
+        key_visible_text=visible_text[:10],
+        structure_summary="",
+        caption_source="generated",
+        confidence="medium" if brief else "low",
+    )
+
+
+def _flowchart_graph_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    flowchart_graph = block.get("flowchart_graph")
+    return flowchart_graph if isinstance(flowchart_graph, dict) else None
+
+
+def _ocr_regions_from_block(block: dict[str, Any], content: dict[str, Any]) -> list[OcrRegion]:
+    regions_input = block.get("ocr_regions")
+    if not isinstance(regions_input, list):
+        regions_input = content.get("ocr_regions")
+    if not isinstance(regions_input, list):
+        regions_input = []
+
+    regions: list[OcrRegion] = []
+    for item in regions_input:
+        if not isinstance(item, dict):
+            continue
+        regions.append(
+            OcrRegion(
+                role=str(item.get("role", "other") or "other"),
+                text=str(item.get("text", "") or ""),
+                bbox_hint=_normalize_bbox_hint(item.get("bbox_hint")),
+                confidence=str(item.get("confidence", "medium") or "medium"),
+            )
+        )
+    if str(block.get("sub_type") or "").strip().lower() == "seal" and not regions:
+        text = " ".join(_normalize_text_list(content.get("image_caption", [])))
+        if text.strip():
+            regions.append(
+                OcrRegion(role="seal", text=text.strip(), bbox_hint=None, confidence="medium")
+            )
+    return regions
+
+
+def _collect_visible_texts(content: dict[str, Any], text: str) -> list[str]:
+    values: list[str] = []
+    if text.strip():
+        values.append(text.strip())
+    for key in (
+        "title_content",
+        "paragraph_content",
+        "table_caption",
+        "table_footnote",
+        "chart_caption",
+        "chart_footnote",
+        "image_caption",
+        "image_footnote",
+        "list_items",
+    ):
+        value = content.get(key)
+        if key.endswith("_content"):
+            values.extend(_extract_span_texts(value))
+        else:
+            values.extend(_normalize_text_list(value))
+    return values
+
+
+def _extract_text_from_generic_block(block: dict[str, Any]) -> str:
+    if "text" in block:
+        return str(block.get("text", "") or "").strip()
+    lines = block.get("lines")
+    if not isinstance(lines, list):
+        return ""
+    texts: list[str] = []
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        spans = line.get("spans", [])
+        if not isinstance(spans, list):
+            continue
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            text = str(span.get("content", "") or "").strip()
+            if text:
+                texts.append(text)
+    return " ".join(texts).strip()
+
+
+def _infer_generic_block_type(block: dict[str, Any]) -> str:
+    raw_type = str(block.get("type", "") or "").strip().lower()
+    if raw_type in {"table", "chart", "image"}:
+        return raw_type
+    if raw_type in {"title", "doc_title"}:
+        return "title"
+    return "paragraph"
+
+
+def _join_span_content(value: Any) -> str:
+    texts = _extract_span_texts(value)
+    return " ".join(texts).strip()
+
+
+def _extract_span_texts(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    texts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("content", "") or "").strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _normalize_bbox(value: Any) -> list[int]:
+    if not isinstance(value, list) or len(value) != 4:
+        return []
+    numbers: list[float] = []
+    for item in value:
+        try:
+            numbers.append(float(item))
+        except (TypeError, ValueError):
+            return []
+    if all(0.0 <= item <= 1.0 for item in numbers):
+        numbers = [item * 1000 for item in numbers]
+    return [max(0, min(1000, int(round(item)))) for item in numbers]
+
+
+def _normalize_bbox_hint(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    numbers: list[float] = []
+    for item in value:
+        try:
+            numbers.append(float(item))
+        except (TypeError, ValueError):
+            return None
+    return numbers
+
+
+def _coerce_non_negative_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _is_seal_block(block: CanonicalBlock) -> bool:
+    if str(block.sub_type or "").strip().lower() == "seal":
+        return True
+    return any(str(region.role or "").strip() == "seal" for region in block.ocr_regions)
+
+
+def _deduplicate_texts(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        normalized = "".join(text.split()).lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(text)
+    return ordered
+
+
+def _merge_errors(current: str | None, message: str) -> str:
+    if not current:
+        return message
+    return f"{current}; {message}"
