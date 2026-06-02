@@ -57,6 +57,8 @@ def normalize_qwen_payload(
             payload=content_payload,
             default_image_path=image_task.image_path,
         )
+        if parsed_label is not None:
+            document = _apply_label_patch_to_document(document=document, parsed_label=parsed_label)
     elif parsed_label is not None:
         document = _document_from_parsed_label(
             image_task=image_task,
@@ -74,8 +76,9 @@ def normalize_qwen_payload(
         )
         warnings = ["qwen_output_missing_document_blocks"]
 
-    if parsed_label is None:
-        parsed_label = derive_label_from_document(document)
+    derived_label = derive_label_from_document(document)
+    if derived_label is not None:
+        parsed_label = derived_label
 
     if warnings and normalized_output.success and not normalized_output.error:
         normalized_output.error = None
@@ -454,6 +457,53 @@ def _document_from_parsed_label(
     )
 
 
+def _apply_label_patch_to_document(
+    document: CanonicalDocument,
+    parsed_label: ParsedLabel,
+) -> CanonicalDocument:
+    if not document.blocks:
+        return document
+
+    patched_document = document.model_copy(deep=True)
+    target = _pick_patch_target(blocks=patched_document.blocks, parsed_label=parsed_label)
+    if target is None:
+        return patched_document
+
+    if parsed_label.image_type == "table" and target.type == "table":
+        if parsed_label.structured_label.content.strip() and not str(target.content.get("table_body", "") or "").strip():
+            target.content["table_body"] = parsed_label.structured_label.content
+            target.structured_label = parsed_label.structured_label
+        _append_caption(target.content, "table_caption", parsed_label.caption)
+        return patched_document
+
+    if parsed_label.image_type in {"chart", "flowchart"} and target.type == "chart":
+        if parsed_label.image_type == "flowchart":
+            target.sub_type = "flowchart"
+        if parsed_label.structured_label.content.strip() and not str(target.content.get("content", "") or "").strip():
+            target.content["content"] = parsed_label.structured_label.content
+            target.structured_label = parsed_label.structured_label
+        if parsed_label.flowchart_graph and target.flowchart_graph is None:
+            target.flowchart_graph = parsed_label.flowchart_graph
+        _append_caption(target.content, "chart_caption", parsed_label.caption)
+        return patched_document
+
+    if any(region.role == "seal" for region in parsed_label.ocr_regions) and target.type == "image":
+        target.sub_type = target.sub_type or "seal"
+        target.ocr_regions = _merge_ocr_region_items(target.ocr_regions, parsed_label.ocr_regions)
+        _append_caption(target.content, "image_caption", parsed_label.caption)
+        return patched_document
+
+    if target.type == "image":
+        _append_caption(target.content, "image_caption", parsed_label.caption)
+    elif target.type == "chart":
+        _append_caption(target.content, "chart_caption", parsed_label.caption)
+    elif target.type == "table":
+        _append_caption(target.content, "table_caption", parsed_label.caption)
+    elif parsed_label.caption.strip() and not target.text.strip():
+        target.text = parsed_label.caption.strip()
+    return patched_document
+
+
 def _pick_caption(blocks: list[CanonicalBlock]) -> str:
     for block in blocks:
         if block.type == "title" and block.text.strip():
@@ -676,6 +726,32 @@ def _flowchart_graph_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
     return flowchart_graph if isinstance(flowchart_graph, dict) else None
 
 
+def _pick_patch_target(
+    blocks: list[CanonicalBlock],
+    parsed_label: ParsedLabel,
+) -> CanonicalBlock | None:
+    if parsed_label.image_type == "table":
+        for block in blocks:
+            if block.type == "table":
+                return block
+    elif parsed_label.image_type in {"chart", "flowchart"}:
+        for block in blocks:
+            if block.type == "chart":
+                return block
+    elif any(region.role == "seal" for region in parsed_label.ocr_regions):
+        for block in blocks:
+            if block.type == "image":
+                return block
+    return _pick_visual_block(blocks) or (blocks[0] if blocks else None)
+
+
+def _pick_visual_block(blocks: list[CanonicalBlock]) -> CanonicalBlock | None:
+    for block in blocks:
+        if block.type in {"chart", "image", "table"}:
+            return block
+    return None
+
+
 def _ocr_regions_from_block(block: dict[str, Any], content: dict[str, Any]) -> list[OcrRegion]:
     regions_input = block.get("ocr_regions")
     if not isinstance(regions_input, list):
@@ -689,10 +765,10 @@ def _ocr_regions_from_block(block: dict[str, Any], content: dict[str, Any]) -> l
             continue
         regions.append(
             OcrRegion(
-                role=str(item.get("role", "other") or "other"),
+                role=_normalize_ocr_role(item.get("role")),
                 text=str(item.get("text", "") or ""),
                 bbox_hint=_normalize_bbox_hint(item.get("bbox_hint")),
-                confidence=str(item.get("confidence", "medium") or "medium"),
+                confidence=_normalize_confidence(item.get("confidence")),
             )
         )
     if str(block.get("sub_type") or "").strip().lower() == "seal" and not regions:
@@ -830,10 +906,74 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _append_caption(content: dict[str, Any], key: str, caption: str) -> None:
+    text = str(caption or "").strip()
+    if not text:
+        return
+    existing = _normalize_text_list(content.get(key, []))
+    content[key] = _deduplicate_texts(existing + [text])
+
+
+def _normalize_ocr_role(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"seal", "stamp", "印章", "公章"}:
+        return "seal"
+    if normalized in {"watermark", "水印"}:
+        return "watermark"
+    if normalized in {"footer", "页脚", "底部文字"}:
+        return "footer"
+    if normalized in {"body", "正文"}:
+        return "body"
+    if normalized in {"title", "标题"}:
+        return "title"
+    return "other"
+
+
+def _normalize_confidence(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric >= 0.85:
+            return "high"
+        if numeric >= 0.5:
+            return "medium"
+        return "low"
+
+    normalized = str(value or "").strip().lower()
+    if normalized in {"high", "medium", "low"}:
+        return normalized
+    if normalized in {"very_high", "strong", "sure"}:
+        return "high"
+    if normalized in {"mid", "moderate"}:
+        return "medium"
+    if normalized in {"weak"}:
+        return "low"
+    try:
+        numeric = float(normalized)
+    except (TypeError, ValueError):
+        return "medium"
+    if numeric >= 0.85:
+        return "high"
+    if numeric >= 0.5:
+        return "medium"
+    return "low"
+
+
 def _is_seal_block(block: CanonicalBlock) -> bool:
     if str(block.sub_type or "").strip().lower() == "seal":
         return True
     return any(str(region.role or "").strip() == "seal" for region in block.ocr_regions)
+
+
+def _merge_ocr_region_items(left: list[OcrRegion], right: list[OcrRegion]) -> list[OcrRegion]:
+    merged: list[OcrRegion] = []
+    seen: set[tuple[str, str]] = set()
+    for region in list(left) + list(right):
+        key = (str(region.role or "").strip(), str(region.text or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(region)
+    return merged
 
 
 def _deduplicate_texts(values: list[str]) -> list[str]:
