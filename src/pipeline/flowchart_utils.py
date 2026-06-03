@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 
@@ -82,6 +83,83 @@ def build_flowchart_candidate_patch(
     return patch
 
 
+def mermaid_from_flowchart_graph(graph_payload: dict[str, Any] | None) -> str:
+    if not isinstance(graph_payload, dict):
+        return ""
+
+    raw_nodes = graph_payload.get("nodes")
+    raw_edges = graph_payload.get("edges")
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        return ""
+    if not isinstance(raw_edges, list):
+        raw_edges = []
+
+    nodes: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_nodes, start=1):
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id", "") or "").strip()
+        if not node_id:
+            continue
+        order_index = _coerce_int(item.get("order_index"), default=index)
+        nodes.append(
+            {
+                "node_id": node_id,
+                "order_index": order_index if order_index is not None else index,
+                "shape": str(item.get("shape", "") or "unknown").strip() or "unknown",
+                "text": str(item.get("text", "") or "").strip() or node_id,
+            }
+        )
+
+    if not nodes:
+        return ""
+
+    node_order_lookup = {item["node_id"]: int(item["order_index"]) for item in nodes}
+    lines = ["flowchart TD"]
+    for node in sorted(nodes, key=lambda item: (int(item["order_index"]), item["node_id"])):
+        lines.append(
+            _format_mermaid_node(
+                node_id=str(node["node_id"]),
+                text=str(node["text"]),
+                shape=str(node["shape"]),
+            )
+        )
+
+    edges: list[dict[str, str]] = []
+    for item in raw_edges:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source", "") or "").strip()
+        target = str(item.get("target", "") or "").strip()
+        if not source or not target:
+            continue
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "label": str(item.get("label", "") or "").strip(),
+            }
+        )
+
+    for edge in sorted(
+        edges,
+        key=lambda item: (
+            node_order_lookup.get(item["source"], 10**9),
+            node_order_lookup.get(item["target"], 10**9),
+            item["source"],
+            item["target"],
+        ),
+    ):
+        if edge["label"]:
+            lines.append(
+                f'{edge["source"]} -->|{_escape_mermaid_label(edge["label"])}| {edge["target"]}'
+            )
+        else:
+            lines.append(f'{edge["source"]} --> {edge["target"]}')
+
+    return "\n".join(lines)
+
+
 def _first_vote(values: Any) -> int | None:
     if not isinstance(values, list) or not values:
         return None
@@ -90,3 +168,30 @@ def _first_vote(values: Any) -> int | None:
         return int(first)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_mermaid_node(node_id: str, text: str, shape: str) -> str:
+    escaped_text = _escape_mermaid_text(text)
+    normalized_shape = str(shape or "").strip().lower()
+    if normalized_shape == "diamond":
+        return f'{node_id}{{"{escaped_text}"}}'
+    if normalized_shape == "rounded":
+        return f'{node_id}("{escaped_text}")'
+    if normalized_shape == "ellipse":
+        return f'{node_id}(("{escaped_text}"))'
+    return f'{node_id}["{escaped_text}"]'
+
+
+def _escape_mermaid_text(text: str) -> str:
+    return escape(str(text or "").strip(), quote=False).replace('"', '\\"')
+
+
+def _escape_mermaid_label(text: str) -> str:
+    return _escape_mermaid_text(text).replace("|", "/")
