@@ -89,6 +89,114 @@ def test_normalize_mineru_payload_normalizes_ocr_role_and_confidence() -> None:
     assert label.ocr_regions[0].role == "seal"
 
 
+def test_normalize_mineru_payload_unwraps_extraction_result_json_res() -> None:
+    image_task = ImageTask(
+        image_id="img-extract",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    model_output = ModelOutput(
+        image_id="img-extract",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={
+            "success": True,
+            "extraction_result": {
+                "page": 0,
+                "filename": "demo.png",
+                "md_res": "# demo",
+                "json_res": {
+                    "content_list_v2": [[
+                        {
+                            "type": "table",
+                            "bbox": [0, 0, 1000, 1000],
+                            "content": {
+                                "table_body": "|a|b|",
+                                "table_caption": ["表格标题"],
+                                "img_path": "data/demo.png",
+                            },
+                        }
+                    ]]
+                },
+            },
+        },
+    )
+
+    _, document, label = normalize_mineru_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert not document.warnings
+    assert len(document.blocks) == 1
+    assert document.blocks[0].type == "table"
+    assert label is not None
+    assert label.image_type == "table"
+
+
+def test_normalize_mineru_payload_unwraps_multi_page_extraction_result_list() -> None:
+    image_task = ImageTask(
+        image_id="img-extract-list",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    model_output = ModelOutput(
+        image_id="img-extract-list",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={
+            "extraction_result": [
+                {
+                    "page": 0,
+                    "filename": "demo.png",
+                    "md_res": "page0",
+                    "json_res": [
+                        {
+                            "type": "title",
+                            "bbox": [0, 0, 1000, 100],
+                            "content": {
+                                "title_content": [{"type": "text", "content": "第一页标题"}],
+                                "level": 1,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "page": 1,
+                    "filename": "demo.png",
+                    "md_res": "page1",
+                    "json_res": [
+                        {
+                            "type": "paragraph",
+                            "bbox": [0, 100, 1000, 200],
+                            "content": {
+                                "paragraph_content": [{"type": "text", "content": "第二页正文"}],
+                            },
+                        }
+                    ],
+                },
+            ]
+        },
+    )
+
+    _, document, label = normalize_mineru_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert not document.warnings
+    assert document.page_count == 2
+    assert len(document.blocks) == 2
+    assert document.blocks[0].type == "title"
+    assert document.blocks[1].type == "paragraph"
+    assert label is not None
+    assert label.caption == "第一页标题"
+
+
 def test_normalize_qwen_payload_prefers_mineru_style_document_as_source_of_truth() -> None:
     image_task = ImageTask(
         image_id="img-qwen",

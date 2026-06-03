@@ -570,10 +570,23 @@ def _extract_document_payload(payload: Any) -> Any | None:
         if current is None:
             return None
         if isinstance(current, list):
+            extraction_list_payload = _extract_page_result_list_payload(current)
+            if extraction_list_payload is not None:
+                return extraction_list_payload
             return current
         if not isinstance(current, dict):
             return None
 
+        extraction_result = current.get("extraction_result")
+        if extraction_result is not None:
+            extracted = _extract_extraction_result_payload(extraction_result)
+            if extracted is not None:
+                return extracted
+
+        if "json_res" in current:
+            extracted = _extract_document_payload(_coerce_embedded_payload(current.get("json_res")))
+            if extracted is not None:
+                return extracted
         if "content_list_v2" in current:
             return current["content_list_v2"]
         if "content_list" in current:
@@ -598,6 +611,72 @@ def _extract_document_payload(payload: Any) -> Any | None:
         if next_payload is None:
             return None
         current = next_payload
+
+
+def _extract_extraction_result_payload(value: Any) -> Any | None:
+    if isinstance(value, dict):
+        extracted = _extract_document_payload(_coerce_embedded_payload(value.get("json_res")))
+        if extracted is not None:
+            return extracted
+        return _extract_document_payload(value.get("pages"))
+    if isinstance(value, list):
+        return _extract_page_result_list_payload(value)
+    return None
+
+
+def _extract_page_result_list_payload(items: list[Any]) -> Any | None:
+    if not items:
+        return []
+    if not all(isinstance(item, dict) for item in items):
+        return None
+    if not any("json_res" in item or "md_res" in item or "filename" in item or "page" in item for item in items):
+        return None
+
+    ordered_pages: list[tuple[int, list[dict[str, Any]]]] = []
+    fallback_payload: Any | None = None
+    for index, item in enumerate(items):
+        page_index = _coerce_non_negative_int(item.get("page"), default=index) or index
+        candidate_payload = _coerce_embedded_payload(item.get("json_res"))
+        extracted = _extract_document_payload(candidate_payload)
+        if extracted is None:
+            continue
+        if fallback_payload is None:
+            fallback_payload = extracted
+        page_blocks = _coerce_page_blocks(extracted)
+        if page_blocks is None:
+            continue
+        ordered_pages.append((page_index, page_blocks))
+
+    if ordered_pages:
+        ordered_pages.sort(key=lambda item: item[0])
+        max_page_index = max(page_index for page_index, _ in ordered_pages)
+        pages: list[list[dict[str, Any]]] = [[] for _ in range(max_page_index + 1)]
+        for page_index, page_blocks in ordered_pages:
+            pages[page_index] = page_blocks
+        return pages
+    return fallback_payload
+
+
+def _coerce_embedded_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _coerce_page_blocks(payload: Any) -> list[dict[str, Any]] | None:
+    if isinstance(payload, list):
+        if not payload:
+            return []
+        if all(isinstance(item, dict) for item in payload):
+            return payload
+        if _looks_like_nested_pages(payload):
+            first_page = payload[0]
+            if isinstance(first_page, list) and all(isinstance(item, dict) for item in first_page):
+                return first_page
+    return None
 
 
 def _looks_like_nested_pages(payload: Any) -> bool:
