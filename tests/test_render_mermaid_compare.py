@@ -134,6 +134,7 @@ def test_generate_compare_page_is_offline_and_copies_local_asset(tmp_path, monke
     assert "assets/mermaid.min.js" in html
     assert "cdn" not in html.lower()
     assert (output_dir / "compare_mermaid" / "assets" / "mermaid.min.js").exists()
+    assert "Original Image" in html
 
 
 def test_collect_mermaid_snapshots_supports_legacy_final_and_issue_candidate_payload(tmp_path) -> None:
@@ -181,3 +182,91 @@ def test_collect_mermaid_snapshots_supports_legacy_final_and_issue_candidate_pay
     assert snapshots[2].render_code == "flowchart TD\nN001-->N002"
     assert snapshots[3].status == "valid"
     assert snapshots[3].render_code == "flowchart TD\nA-->B"
+
+
+def test_collect_mermaid_snapshots_supports_image_flowchart_blocks_and_qwen_issue_fallback(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    (output_dir / "normalized" / "mineru" / "figure1.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "blocks": [
+                        {
+                            "type": "image",
+                            "sub_type": "flowchart",
+                            "text": "```mermaid\ngraph TD\nA-->B\n```",
+                            "content": {
+                                "image_caption": ["```mermaid\ngraph TD\nA-->B\n```"],
+                                "img_path": "data/flowchart_crops/figure1.png",
+                            },
+                        }
+                    ]
+                },
+                "derived_label": {
+                    "image_type": "flowchart",
+                    "caption": "```mermaid\ngraph TD\nA-->B\n```",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "figure1.json").write_text(
+        json.dumps(
+            {
+                "parsed": {
+                    "filename": "figure1.png",
+                    "extraction_results": [
+                        {
+                            "page": 0,
+                            "json_res": [
+                                {
+                                    "type": "image",
+                                    "sub_type": "flowchart",
+                                    "content": "```mermaid\ngraph TD\nA-->B\n```",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "figure1_artifact.json").write_text(
+        json.dumps(
+            {
+                "graph_fusion": {},
+                "issues": [
+                    {
+                        "issue_type": "flowchart_candidate_review",
+                        "qwen_block": {
+                            "type": "chart",
+                            "sub_type": "flowchart",
+                            "content": {"content": "flowchart TD\nQ-->R"},
+                        },
+                        "candidate_payload": {
+                            "qwen_mermaid": "flowchart TD\nQ-->R",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshots = collect_mermaid_snapshots(image_id="figure1", output_dir=output_dir)
+
+    assert snapshots[0].status == "valid"
+    assert "A-->B" in snapshots[0].render_code
+    assert snapshots[1].status == "valid"
+    assert snapshots[1].render_code == "flowchart TD\nQ-->R"
+    assert snapshots[2].status == "valid"
+    assert snapshots[2].render_code == "flowchart TD\nQ-->R"
+    assert snapshots[3].status == "valid"
+    assert "A-->B" in snapshots[3].render_code

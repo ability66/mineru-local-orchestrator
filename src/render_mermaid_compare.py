@@ -13,6 +13,13 @@ from src.pipeline.flowchart_utils import looks_like_mermaid, mermaid_from_flowch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MERMAID_VENDOR_PATH = REPO_ROOT / "vendor" / "mermaid" / "mermaid.min.js"
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
 
 
 @dataclass
@@ -23,6 +30,14 @@ class MermaidSnapshot:
     render_code: str
     origin: str
     status: str
+    note: str = ""
+
+
+@dataclass
+class OriginalImageSnapshot:
+    title: str
+    source_path: str
+    data_url: str
     note: str = ""
 
 
@@ -53,6 +68,7 @@ def generate_compare_page(
     compare_dir: Path,
 ) -> Path:
     snapshots = collect_mermaid_snapshots(image_id=image_id, output_dir=output_dir)
+    original_image = collect_original_image_snapshot(image_id=image_id, output_dir=output_dir)
     compare_dir.mkdir(parents=True, exist_ok=True)
     asset_rel_path = ensure_mermaid_asset(compare_dir=compare_dir)
     html_path = compare_dir / f"{image_id}.html"
@@ -60,6 +76,7 @@ def generate_compare_page(
         build_compare_html(
             image_id=image_id,
             snapshots=snapshots,
+            original_image=original_image,
             mermaid_script_path=asset_rel_path.as_posix(),
         ),
         encoding="utf-8",
@@ -78,17 +95,37 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
     legacy_content_list = _load_json(final_dir / f"{image_id}_content_list.json")
     artifact_payload = _load_json(final_dir / f"{image_id}_artifact.json")
 
-    snapshots = [
-        _snapshot_from_normalized_payload(
-            payload=mineru_payload,
+    mineru_snapshot = _snapshot_from_normalized_payload(
+        payload=mineru_payload,
+        title="MinerU",
+        source_path=f"normalized/mineru/{image_id}.json",
+    )
+    if mineru_snapshot.status == "missing":
+        mineru_snapshot = _snapshot_from_artifact_issue_block(
+            payload=artifact_payload,
             title="MinerU",
-            source_path=f"normalized/mineru/{image_id}.json",
-        ),
-        _snapshot_from_normalized_payload(
-            payload=qwen_payload,
+            source_path=f"final/{image_id}_artifact.json",
+            block_key="mineru_block",
+            note_prefix="从 artifact.issue.mineru_block 回退",
+        )
+
+    qwen_snapshot = _snapshot_from_normalized_payload(
+        payload=qwen_payload,
+        title="Qwen",
+        source_path=f"normalized/qwen/{image_id}.json",
+    )
+    if qwen_snapshot.status == "missing":
+        qwen_snapshot = _snapshot_from_artifact_issue_block(
+            payload=artifact_payload,
             title="Qwen",
-            source_path=f"normalized/qwen/{image_id}.json",
-        ),
+            source_path=f"final/{image_id}_artifact.json",
+            block_key="qwen_block",
+            note_prefix="从 artifact.issue.qwen_block 回退",
+        )
+
+    return [
+        mineru_snapshot,
+        qwen_snapshot,
         _snapshot_from_artifact_payload(
             payload=artifact_payload,
             title="Fusion Candidate",
@@ -111,7 +148,52 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
             ),
         ),
     ]
-    return snapshots
+
+
+def collect_original_image_snapshot(image_id: str, output_dir: Path) -> OriginalImageSnapshot | None:
+    normalized_dir = output_dir / "normalized"
+    final_dir = output_dir / "final"
+
+    mineru_payload = _load_json(normalized_dir / "mineru" / f"{image_id}.json")
+    qwen_payload = _load_json(normalized_dir / "qwen" / f"{image_id}.json")
+    artifact_payload = _load_json(final_dir / f"{image_id}_artifact.json")
+    final_payload = _load_json(final_dir / f"{image_id}.json")
+
+    candidate_paths: list[tuple[str, Path]] = []
+    for label, payload in (
+        ("normalized/mineru", mineru_payload),
+        ("normalized/qwen", qwen_payload),
+    ):
+        blocks = _safe_blocks_from_document((payload or {}).get("document") if isinstance(payload, dict) else None)
+        path = _extract_img_path_from_blocks(blocks)
+        if path is not None:
+            candidate_paths.append((label, path))
+
+    if isinstance(artifact_payload, dict):
+        final_document = artifact_payload.get("final_document")
+        path = _extract_img_path_from_blocks(_safe_blocks_from_document(final_document))
+        if path is not None:
+            candidate_paths.append(("artifact.final_document", path))
+
+    if isinstance(final_payload, dict):
+        parsed = final_payload.get("parsed")
+        filename = str((parsed or {}).get("filename", "") or "").strip() if isinstance(parsed, dict) else ""
+        if filename:
+            guessed = _guess_image_path_from_filename(filename)
+            if guessed is not None:
+                candidate_paths.append(("final.parsed.filename", guessed))
+
+    for source_path, image_path in candidate_paths:
+        if image_path.exists() and image_path.is_file():
+            data_url = _build_image_data_url(image_path)
+            if data_url:
+                return OriginalImageSnapshot(
+                    title="Original Image",
+                    source_path=str(image_path),
+                    data_url=data_url,
+                    note=f"来源：{source_path}",
+                )
+    return None
 
 
 def ensure_mermaid_asset(compare_dir: Path) -> Path:
@@ -128,8 +210,10 @@ def ensure_mermaid_asset(compare_dir: Path) -> Path:
 def build_compare_html(
     image_id: str,
     snapshots: list[MermaidSnapshot],
+    original_image: OriginalImageSnapshot | None,
     mermaid_script_path: str,
 ) -> str:
+    original_image_html = _build_original_image_card(original_image)
     cards_html = "\n".join(_build_snapshot_card(index=index, snapshot=snapshot) for index, snapshot in enumerate(snapshots))
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -180,6 +264,9 @@ def build_compare_html(
       margin: 0;
       color: var(--muted);
       font-size: 15px;
+    }}
+    .image-panel {{
+      margin-bottom: 24px;
     }}
     .grid {{
       display: grid;
@@ -240,6 +327,23 @@ def build_compare_html(
       padding: 12px;
       overflow: auto;
     }}
+    .image-frame {{
+      min-height: 240px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 253, 248, 0.92);
+      border: 1px dashed rgba(213, 204, 184, 0.9);
+      padding: 12px;
+      overflow: auto;
+    }}
+    .image-frame img {{
+      max-width: 100%;
+      max-height: 720px;
+      object-fit: contain;
+      box-shadow: 0 10px 28px rgba(31, 31, 26, 0.16);
+      background: #fff;
+    }}
     .diagram-empty,
     .diagram-error {{
       width: 100%;
@@ -279,6 +383,9 @@ def build_compare_html(
     <section class="hero">
       <h1>Flowchart Mermaid 对比页</h1>
       <p>对比 {escape(image_id)} 的 MinerU、Qwen、Fusion Candidate 与 Final 流程图结果。页面完全离线，Mermaid 渲染脚本使用本地资源。</p>
+    </section>
+    <section class="image-panel">
+      {original_image_html}
     </section>
     <section class="grid">
       {cards_html}
@@ -323,6 +430,41 @@ def build_compare_html(
 </body>
 </html>
 """
+
+
+def _build_original_image_card(snapshot: OriginalImageSnapshot | None) -> str:
+    if snapshot is None:
+        return """
+      <article class="card">
+        <div class="card-head">
+          <h2>Original Image</h2>
+          <div class="meta">
+            <span class="badge status-missing">missing</span>
+            <span>未能定位原始图像路径</span>
+          </div>
+        </div>
+        <div class="diagram-wrap">
+          <div class="image-frame"><div class="diagram-empty">当前没有可展示的原始图像。</div></div>
+        </div>
+      </article>
+    """
+    return f"""
+      <article class="card">
+        <div class="card-head">
+          <h2>{escape(snapshot.title)}</h2>
+          <div class="meta">
+            <span class="badge status-valid">embedded image</span>
+            <span>文件：{escape(snapshot.source_path)}</span>
+            <span>说明：{escape(snapshot.note or '原始输入图像')}</span>
+          </div>
+        </div>
+        <div class="diagram-wrap">
+          <div class="image-frame">
+            <img src="{snapshot.data_url}" alt="{escape(snapshot.title)}" />
+          </div>
+        </div>
+      </article>
+    """
 
 
 def _build_snapshot_card(index: int, snapshot: MermaidSnapshot) -> str:
@@ -484,12 +626,13 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
     graph_fusion = payload.get("graph_fusion")
     if isinstance(graph_fusion, dict):
         mermaid = str(graph_fusion.get("mermaid", "") or "").strip()
-        if looks_like_mermaid(mermaid):
+        normalized_mermaid = _normalize_mermaid_text(mermaid)
+        if looks_like_mermaid(normalized_mermaid):
             return MermaidSnapshot(
                 title=title,
                 source_path=source_path,
                 code=mermaid,
-                render_code=mermaid,
+                render_code=normalized_mermaid,
                 origin="graph_fusion.mermaid",
                 status="valid",
                 note=f"fusion_status={graph_fusion.get('fusion_status', 'unknown')}, fusion_method={graph_fusion.get('fusion_method', 'unknown')}",
@@ -513,12 +656,13 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
         if not isinstance(candidate_payload, dict):
             continue
         candidate_mermaid = str(candidate_payload.get("candidate_mermaid", "") or "").strip()
-        if looks_like_mermaid(candidate_mermaid):
+        normalized_candidate_mermaid = _normalize_mermaid_text(candidate_mermaid)
+        if looks_like_mermaid(normalized_candidate_mermaid):
             return MermaidSnapshot(
                 title=title,
                 source_path=source_path,
                 code=candidate_mermaid,
-                render_code=candidate_mermaid,
+                render_code=normalized_candidate_mermaid,
                 origin=f"issues[{issue_index}].candidate_payload.candidate_mermaid",
                 status="valid",
                 note="来自流程图二阶段 issue 候选 Mermaid",
@@ -529,12 +673,13 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
             candidate_patch_mermaid = ""
             if isinstance(content_payload, dict):
                 candidate_patch_mermaid = str(content_payload.get("content", "") or "").strip()
-            if looks_like_mermaid(candidate_patch_mermaid):
+            normalized_candidate_patch_mermaid = _normalize_mermaid_text(candidate_patch_mermaid)
+            if looks_like_mermaid(normalized_candidate_patch_mermaid):
                 return MermaidSnapshot(
                     title=title,
                     source_path=source_path,
                     code=candidate_patch_mermaid,
-                    render_code=candidate_patch_mermaid,
+                    render_code=normalized_candidate_patch_mermaid,
                     origin=f"issues[{issue_index}].candidate_payload.candidate_patch.content.content",
                     status="valid",
                     note="来自流程图二阶段 issue 候选 patch",
@@ -551,6 +696,18 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                     status="derived",
                     note="由流程图二阶段 issue 候选 graph 反推 Mermaid",
                 )
+        qwen_mermaid = str(candidate_payload.get("qwen_mermaid", "") or "").strip()
+        normalized_qwen_mermaid = _normalize_mermaid_text(qwen_mermaid)
+        if looks_like_mermaid(normalized_qwen_mermaid):
+            return MermaidSnapshot(
+                title=title,
+                source_path=source_path,
+                code=qwen_mermaid,
+                render_code=normalized_qwen_mermaid,
+                origin=f"issues[{issue_index}].candidate_payload.qwen_mermaid",
+                status="valid",
+                note="graph_fusion 缺失，回退使用 qwen_mermaid 作为候选参考",
+            )
 
     return MermaidSnapshot(
         title=title,
@@ -575,27 +732,42 @@ def _extract_from_document_payload(
             continue
 
         content_text = _extract_block_content_text(block)
-        if looks_like_mermaid(content_text):
+        normalized_content_text = _normalize_mermaid_text(content_text)
+        if looks_like_mermaid(normalized_content_text):
             return MermaidSnapshot(
                 title=title,
                 source_path=source_path,
                 code=content_text,
-                render_code=content_text,
+                render_code=normalized_content_text,
                 origin=f"blocks[{index}].content",
                 status="valid",
                 note="直接来自块内容",
             )
 
         structured_content = _extract_structured_content(block)
-        if looks_like_mermaid(structured_content):
+        normalized_structured_content = _normalize_mermaid_text(structured_content)
+        if looks_like_mermaid(normalized_structured_content):
             return MermaidSnapshot(
                 title=title,
                 source_path=source_path,
                 code=structured_content,
-                render_code=structured_content,
+                render_code=normalized_structured_content,
                 origin=f"blocks[{index}].structured_label.content",
                 status="valid",
                 note="直接来自 structured_label",
+            )
+
+        text_content = str(block.get("text", "") or "").strip()
+        normalized_text_content = _normalize_mermaid_text(text_content)
+        if looks_like_mermaid(normalized_text_content):
+            return MermaidSnapshot(
+                title=title,
+                source_path=source_path,
+                code=text_content,
+                render_code=normalized_text_content,
+                origin=f"blocks[{index}].text",
+                status="valid",
+                note="直接来自块文本",
             )
 
         flowchart_graph = block.get("flowchart_graph")
@@ -611,7 +783,7 @@ def _extract_from_document_payload(
                 note="由 flowchart_graph 反推 Mermaid",
             )
 
-        raw_text = content_text or structured_content or _extract_caption_text(block)
+        raw_text = content_text or structured_content or text_content or _extract_caption_text(block)
         if raw_text and invalid_snapshot is None:
             invalid_snapshot = MermaidSnapshot(
                 title=title,
@@ -652,12 +824,13 @@ def _extract_from_label_payload(
 
     structured = label_payload.get("structured_label")
     structured_content = str((structured or {}).get("content", "") or "").strip() if isinstance(structured, dict) else ""
-    if looks_like_mermaid(structured_content):
+    normalized_structured_content = _normalize_mermaid_text(structured_content)
+    if looks_like_mermaid(normalized_structured_content):
         return MermaidSnapshot(
             title=title,
             source_path=source_path,
             code=structured_content,
-            render_code=structured_content,
+            render_code=normalized_structured_content,
             origin="derived_label.structured_label.content",
             status="valid",
             note="来自 derived_label",
@@ -676,15 +849,28 @@ def _extract_from_label_payload(
             note="由 derived_label.flowchart_graph 反推 Mermaid",
         )
 
-    if str(label_payload.get("image_type", "") or "").strip().lower() == "flowchart" and structured_content:
+    caption = str(label_payload.get("caption", "") or "").strip()
+    normalized_caption = _normalize_mermaid_text(caption)
+    if looks_like_mermaid(normalized_caption):
         return MermaidSnapshot(
             title=title,
             source_path=source_path,
-            code=structured_content,
+            code=caption,
+            render_code=normalized_caption,
+            origin="derived_label.caption",
+            status="valid",
+            note="来自 derived_label.caption",
+        )
+
+    if str(label_payload.get("image_type", "") or "").strip().lower() == "flowchart" and (structured_content or caption):
+        return MermaidSnapshot(
+            title=title,
+            source_path=source_path,
+            code=structured_content or caption,
             render_code="",
-            origin="derived_label.structured_label.content",
+            origin="derived_label",
             status="invalid",
-            note="derived_label 认为是流程图，但 structured_label.content 不是合法 Mermaid",
+            note="derived_label 认为是流程图，但可用文本不是合法 Mermaid",
         )
 
     return MermaidSnapshot(
@@ -707,6 +893,41 @@ def _safe_blocks_from_document(document_payload: Any) -> list[dict[str, Any]]:
     return [item for item in blocks if isinstance(item, dict)]
 
 
+def _snapshot_from_artifact_issue_block(
+    payload: Any,
+    title: str,
+    source_path: str,
+    block_key: str,
+    note_prefix: str,
+) -> MermaidSnapshot:
+    if not isinstance(payload, dict):
+        return MermaidSnapshot(
+            title=title,
+            source_path=source_path,
+            code="",
+            render_code="",
+            origin="missing_file",
+            status="missing",
+            note="未找到 artifact 输出文件",
+        )
+
+    blocks: list[dict[str, Any]] = []
+    for issue in payload.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        block = issue.get(block_key)
+        if isinstance(block, dict):
+            blocks.append(block)
+    snapshot = _extract_from_document_payload(
+        title=title,
+        source_path=source_path,
+        blocks=blocks,
+    )
+    if snapshot.status != "missing":
+        snapshot.note = f"{note_prefix}；{snapshot.note}".strip("；")
+    return snapshot
+
+
 def _flatten_content_list_v2(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         return []
@@ -719,9 +940,8 @@ def _flatten_content_list_v2(payload: Any) -> list[dict[str, Any]]:
 
 
 def _is_flowchart_like_block(block: dict[str, Any]) -> bool:
-    block_type = str(block.get("type", "") or "").strip().lower()
     sub_type = str(block.get("sub_type", "") or "").strip().lower()
-    if block_type == "chart" and sub_type == "flowchart":
+    if sub_type == "flowchart":
         return True
     structured_label = block.get("structured_label")
     if isinstance(structured_label, dict) and str(structured_label.get("kind", "") or "").strip().lower() == "mermaid":
@@ -732,7 +952,16 @@ def _is_flowchart_like_block(block: dict[str, Any]) -> bool:
 def _extract_block_content_text(block: dict[str, Any]) -> str:
     content = block.get("content")
     if isinstance(content, dict):
-        return str(content.get("content", "") or "").strip()
+        direct = str(content.get("content", "") or "").strip()
+        if direct:
+            return direct
+        for key in ("image_caption", "chart_caption"):
+            values = content.get(key)
+            if isinstance(values, list):
+                for item in values:
+                    text = str(item or "").strip()
+                    if text:
+                        return text
     if isinstance(content, str):
         return content.strip()
     return ""
@@ -748,10 +977,53 @@ def _extract_structured_content(block: dict[str, Any]) -> str:
 def _extract_caption_text(block: dict[str, Any]) -> str:
     content = block.get("content")
     if isinstance(content, dict):
-        chart_caption = content.get("chart_caption")
-        if isinstance(chart_caption, list):
-            return " ".join(str(item).strip() for item in chart_caption if str(item).strip()).strip()
+        for key in ("chart_caption", "image_caption"):
+            captions = content.get(key)
+            if isinstance(captions, list):
+                text = " ".join(str(item).strip() for item in captions if str(item).strip()).strip()
+                if text:
+                    return text
     return str(block.get("text", "") or "").strip()
+
+
+def _extract_img_path_from_blocks(blocks: list[dict[str, Any]]) -> Path | None:
+    for block in blocks:
+        content = block.get("content")
+        if not isinstance(content, dict):
+            continue
+        img_path = str(content.get("img_path", "") or "").strip()
+        if img_path:
+            return Path(img_path)
+    return None
+
+
+def _guess_image_path_from_filename(file_name: str) -> Path | None:
+    candidate = REPO_ROOT / "data" / file_name
+    if candidate.exists():
+        return candidate
+    matches = sorted((REPO_ROOT / "data").rglob(file_name))
+    return matches[0] if matches else None
+
+
+def _build_image_data_url(image_path: Path) -> str | None:
+    suffix = image_path.suffix.lower()
+    mime_type = IMAGE_MIME_TYPES.get(suffix)
+    if mime_type is None:
+        return None
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _normalize_mermaid_text(text: str) -> str:
+    value = str(text or "").strip()
+    if value.startswith("```") and value.endswith("```"):
+        lines = value.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        value = "\n".join(lines).strip()
+    return value
 
 
 def _load_json(path: Path) -> Any:
