@@ -19,8 +19,8 @@ except ImportError:
 
 from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
-from src.pipeline.adjudicator import adjudicate_documents
-from src.pipeline.issues import detect_seal_issues
+from src.pipeline.adjudicator import adjudicate_documents, build_flowchart_candidate_result
+from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
 from src.pipeline.llm_adjudicator import adjudicate_issues_with_llm
 from src.pipeline.normalizers import derive_label_from_document, normalize_mineru_payload, normalize_qwen_payload
 from src.pipeline.patches import apply_patch_decisions
@@ -132,7 +132,8 @@ def main() -> None:
     mineru_client = pick_client(clients, "minerupro")
     qwen_client = pick_client(clients, "qwen")
     recognition_prompt = load_prompt(args.prompts_config, "qwen_recognition_prompt")
-    adjudication_prompt = load_prompt(args.prompts_config, "qwen_adjudication_prompt")
+    seal_adjudication_prompt = load_prompt(args.prompts_config, "qwen_adjudication_prompt")
+    flowchart_adjudication_prompt = load_prompt(args.prompts_config, "qwen_flowchart_adjudication_prompt")
 
     image_tasks = load_image_tasks(args.data_dir)
     if args.limit is not None:
@@ -172,22 +173,53 @@ def main() -> None:
             qwen_document = empty_document(image_task=image_task, source="qwen_unconfigured")
             qwen_label = None
 
+        graph_fusion_result = build_flowchart_candidate_result(
+            mineru_label=mineru_label,
+            qwen_label=qwen_label,
+            mineru_output=mineru_output,
+            qwen_output=qwen_output,
+            fallback_visible_text=[
+                text
+                for block in mineru_document.blocks + qwen_document.blocks
+                for text in ([block.text] + list(block.visible_text))
+                if str(text or "").strip()
+            ],
+        )
         seal_issues = detect_seal_issues(
             image_task=image_task,
             mineru_document=mineru_document,
             qwen_document=qwen_document,
         )
-        patch_decisions, _patch_outputs = adjudicate_issues_with_llm(
+        flowchart_issues = detect_flowchart_issues(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            qwen_document=qwen_document,
+            mineru_label=mineru_label,
+            qwen_label=qwen_label,
+            graph_fusion_result=graph_fusion_result,
+        )
+        seal_patch_decisions, _seal_patch_outputs = adjudicate_issues_with_llm(
             client=qwen_client,
             image_task=image_task,
-            prompt=adjudication_prompt,
+            prompt=seal_adjudication_prompt,
             issues=seal_issues,
+            mode="seal_adjudication",
             retry=args.retry,
         )
+        flowchart_patch_decisions, _flowchart_patch_outputs = adjudicate_issues_with_llm(
+            client=qwen_client,
+            image_task=image_task,
+            prompt=flowchart_adjudication_prompt,
+            issues=flowchart_issues,
+            mode="flowchart_adjudication",
+            retry=args.retry,
+        )
+        all_issues = seal_issues + flowchart_issues
+        patch_decisions = seal_patch_decisions + flowchart_patch_decisions
         if patch_decisions:
             mineru_document = apply_patch_decisions(
                 mineru_document=mineru_document,
-                issues=seal_issues,
+                issues=all_issues,
                 patch_decisions=patch_decisions,
             )
             mineru_label = derive_label_from_document(mineru_document)
@@ -200,8 +232,9 @@ def main() -> None:
             qwen_label=qwen_label,
             mineru_output=mineru_output,
             qwen_output=qwen_output,
-            issues=seal_issues,
+            issues=all_issues,
             patch_decisions=patch_decisions,
+            graph_fusion_result_override=graph_fusion_result,
         )
         summary_record = write_image_result(
             output_dir=args.output_dir,

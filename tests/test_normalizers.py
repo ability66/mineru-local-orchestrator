@@ -409,3 +409,41 @@ def test_normalize_qwen_payload_accepts_flat_string_content_blocks() -> None:
     assert document.blocks[1].structured_label.kind == "mermaid"
     assert label is not None
     assert label.image_type == "flowchart"
+
+
+def test_normalize_qwen_payload_does_not_treat_plain_text_flowchart_content_as_mermaid() -> None:
+    image_task = ImageTask(
+        image_id="img-qwen-flow-text",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    payload = {
+        "content_list_v2": [[
+            {
+                "type": "chart",
+                "sub_type": "flowchart",
+                "bbox": [0, 100, 1000, 1000],
+                "content": "这是一个审批流程图，从申请到审批结束",
+            },
+        ]],
+    }
+    model_output = ModelOutput(
+        image_id="img-qwen-flow-text",
+        model_name="qwen",
+        success=True,
+        raw_text=json.dumps(payload, ensure_ascii=False),
+    )
+
+    _, document, label = normalize_qwen_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    block = document.blocks[0]
+    assert block.sub_type == "flowchart"
+    assert "content" not in block.content
+    assert block.content["chart_caption"] == ["这是一个审批流程图，从申请到审批结束"]
+    assert block.structured_label.kind == "text"
+    assert label is not None
+    assert label.image_type == "flowchart"

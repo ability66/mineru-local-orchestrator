@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.schema import CanonicalBlock, CanonicalDocument, OcrRegion, PatchDecision
+from src.pipeline.flowchart_utils import looks_like_mermaid
+from src.schema import CanonicalBlock, CanonicalDocument, OcrRegion, PatchDecision, StructuredLabel
 
 
 def apply_patch_decisions(
@@ -23,17 +24,21 @@ def apply_patch_decisions(
         if target_block is None and issue is not None:
             target_block = block_lookup.get(str(issue.target_block_id or ""))
 
+        patch_payload = _resolve_patch_payload(issue=issue, decision=decision)
+        if not patch_payload and decision.decision != "use_qwen_fields":
+            continue
+
         if target_block is None:
             added_block = _build_block_from_issue(issue)
-            if added_block is None or decision.decision not in {"merge", "add_qwen_block", "use_qwen_fields"}:
+            if added_block is None or decision.decision not in {"keep_candidate", "merge", "add_qwen_block", "use_qwen_fields"}:
                 continue
-            _apply_patch_to_block(added_block, decision.patch)
+            _apply_patch_to_block(added_block, patch_payload)
             _append_block(patched, added_block)
             block_lookup[added_block.block_id] = added_block
             applied_issue_ids.append(decision.issue_id)
             continue
 
-        _apply_patch_to_block(target_block, decision.patch)
+        _apply_patch_to_block(target_block, patch_payload)
         target_block.provenance["llm_patch_decision"] = decision.decision
         target_block.provenance["llm_patch_issue_id"] = decision.issue_id
         if decision.reason.strip():
@@ -78,14 +83,62 @@ def _apply_patch_to_block(block: CanonicalBlock, patch: dict[str, Any]) -> None:
         block.text = str(patch.get("text") or "").strip()
     if isinstance(patch.get("content"), dict):
         block.content.update(_clean_content_dict(patch.get("content")))
+    if isinstance(patch.get("flowchart_graph"), dict):
+        block.flowchart_graph = patch.get("flowchart_graph")
     if isinstance(patch.get("ocr_regions"), list):
         incoming_regions = [_region_from_payload(item) for item in patch.get("ocr_regions") if isinstance(item, dict)]
         block.ocr_regions = _merge_regions(block.ocr_regions, [item for item in incoming_regions if item is not None])
     if isinstance(patch.get("visible_text"), list):
         block.visible_text = _deduplicate_texts(block.visible_text + [str(item).strip() for item in patch.get("visible_text") if str(item).strip()])
 
-    if block.type == "image" and "img_path" not in block.content:
+    _refresh_block_semantics(block)
+
+    if block.type in {"image", "chart", "table"} and "img_path" not in block.content:
         block.content["img_path"] = ""
+
+
+def _resolve_patch_payload(issue: Any, decision: PatchDecision) -> dict[str, Any]:
+    payload = dict(decision.patch or {})
+    if decision.decision != "keep_candidate":
+        return payload
+    candidate_payload = issue.candidate_payload if issue is not None else None
+    candidate_patch = (
+        dict(candidate_payload.get("candidate_patch") or {})
+        if isinstance(candidate_payload, dict)
+        else {}
+    )
+    candidate_patch.update(payload)
+    return candidate_patch
+
+
+def _refresh_block_semantics(block: CanonicalBlock) -> None:
+    if block.type == "chart" and str(block.sub_type or "").strip().lower() == "flowchart":
+        mermaid = str(block.content.get("content", "") or "").strip()
+        if looks_like_mermaid(mermaid):
+            block.structured_label = StructuredLabel(
+                kind="mermaid",
+                content=mermaid,
+                format="mermaid",
+                source="fused_graph" if block.flowchart_graph else "model",
+            )
+        elif block.flowchart_graph is not None:
+            block.structured_label = StructuredLabel(
+                kind="text",
+                content=mermaid,
+                format="plain_text" if mermaid else "none",
+                source="fused_graph",
+            )
+        return
+
+    if block.type == "table":
+        table_body = str(block.content.get("table_body", "") or "").strip()
+        if table_body:
+            block.structured_label = StructuredLabel(
+                kind="table",
+                content=table_body,
+                format="markdown",
+                source="model",
+            )
 
 
 def _clean_content_dict(payload: dict[str, Any]) -> dict[str, Any]:

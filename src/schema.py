@@ -90,9 +90,11 @@ IssueType = Literal[
     "seal_type_disagreement",
     "seal_ocr_conflict",
     "seal_unmatched_qwen_candidate",
+    "flowchart_candidate_review",
 ]
 PatchDecisionType = Literal[
     "keep_mineru",
+    "keep_candidate",
     "use_qwen_fields",
     "merge",
     "add_qwen_block",
@@ -238,6 +240,7 @@ class Issue(BaseModel):
     target_block_id: str | None = None
     mineru_block: dict[str, Any] | None = None
     qwen_block: dict[str, Any] | None = None
+    candidate_payload: dict[str, Any] | None = None
     reasons: list[str] = Field(default_factory=list)
 
 

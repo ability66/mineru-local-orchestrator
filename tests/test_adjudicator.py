@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from src.graph_fusion import FusedGraphResult
 from src.pipeline.adjudicator import adjudicate_documents
 from src.schema import (
     CanonicalBlock,
@@ -268,6 +269,222 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
     assert artifact.consensus is not None
     assert artifact.consensus.decision == "accepted"
     assert artifact.review_required is False
+
+
+def test_adjudicator_auto_accepts_flowchart_mode_when_second_stage_keeps_candidate() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-accept",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-accept",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B",
+                    format="mermaid",
+                    source="fused_graph",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-accept",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
+                source="qwen",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B",
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content="flowchart TD\nA-->B",
+            format="mermaid",
+            source="fused_graph",
+        ),
+    )
+    qwen_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content="flowchart TD\nA-->B",
+            format="mermaid",
+            source="model",
+        ),
+    )
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=ModelOutput(image_id="img-flow-accept", model_name="mineru", success=True, raw_text="{}"),
+        qwen_output=ModelOutput(image_id="img-flow-accept", model_name="qwen", success=True, raw_text="{}"),
+        issues=[
+            Issue(
+                issue_id="flowchart-review-m1",
+                issue_type="flowchart_candidate_review",
+                page_idx=0,
+                target_block_id="m1",
+                reasons=["flowchart_requires_second_stage_review"],
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="flowchart-review-m1",
+                target_block_id="m1",
+                decision="keep_candidate",
+                patch={},
+                reason="候选 Mermaid 可直接采用",
+            )
+        ],
+        graph_fusion_result_override=FusedGraphResult(
+            mermaid="flowchart TD\nA-->B",
+            fusion_method="visual_order",
+            fusion_status="fused",
+            graph_confidence=0.95,
+        ),
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "accepted"
+    assert artifact.review_required is False
+
+
+def test_adjudicator_reviews_flowchart_mode_when_final_mermaid_missing() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-review",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-review",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "chart_caption": ["流程图"]},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-review",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "chart_caption": ["流程图说明"]},
+                source="qwen",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+    )
+    qwen_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+    )
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=ModelOutput(image_id="img-flow-review", model_name="mineru", success=True, raw_text="{}"),
+        qwen_output=ModelOutput(image_id="img-flow-review", model_name="qwen", success=True, raw_text="{}"),
+        issues=[
+            Issue(
+                issue_id="flowchart-review-m1",
+                issue_type="flowchart_candidate_review",
+                page_idx=0,
+                target_block_id="m1",
+                reasons=["flowchart_requires_second_stage_review"],
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="flowchart-review-m1",
+                target_block_id="m1",
+                decision="keep_mineru",
+                patch={},
+                reason="当前无法确认候选",
+            )
+        ],
+        graph_fusion_result_override=FusedGraphResult(
+            mermaid="",
+            fusion_method="visual_order",
+            fusion_status="partial",
+            graph_confidence=0.3,
+        ),
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "review"
+    assert artifact.review_required is True
 
 
 def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:

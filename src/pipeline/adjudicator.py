@@ -6,6 +6,7 @@ from typing import Any
 from src.decision import decide_consensus
 from src.graph_fusion import fuse_mermaid_outputs
 from src.pipeline.alignment import BlockMatch, align_blocks
+from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
 from src.schema import (
     AdjudicationArtifact,
@@ -35,6 +36,7 @@ def adjudicate_documents(
     qwen_output: ModelOutput | None,
     issues: list[Issue] | None = None,
     patch_decisions: list[PatchDecision] | None = None,
+    graph_fusion_result_override: Any | None = None,
 ) -> AdjudicationArtifact:
     base_document = mineru_document if mineru_document.blocks or not qwen_document.blocks else qwen_document
     candidate_document = qwen_document if base_document is mineru_document else mineru_document
@@ -76,7 +78,7 @@ def adjudicate_documents(
         },
     )
 
-    graph_fusion_result = _maybe_fuse_flowchart(
+    graph_fusion_result = graph_fusion_result_override or build_flowchart_candidate_result(
         mineru_label=mineru_label,
         qwen_label=qwen_label,
         mineru_output=mineru_output,
@@ -113,11 +115,34 @@ def adjudicate_documents(
         patch_decisions=patch_decisions or [],
         existing=consensus,
     )
+    consensus = _override_flowchart_mode_consensus(
+        image_id=image_task.image_id,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        issues=issues or [],
+        patch_decisions=patch_decisions or [],
+        graph_fusion_result=graph_fusion_result,
+        existing=consensus,
+    )
     preferred_label, allow_type_override, allow_graph_override = _pick_enrichment_policy(
         mineru_label=mineru_label,
         qwen_label=qwen_label,
         consensus=consensus,
     )
+    if _is_issue_driven_flowchart_mode(
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        labels=[label for label in (mineru_label, qwen_label) if label is not None],
+        issues=issues or [],
+        graph_fusion_result=graph_fusion_result,
+    ):
+        preferred_label = mineru_label or qwen_label
+        allow_type_override = False
+        allow_graph_override = False
     _inject_label_enrichment(
         final_document=final_document,
         preferred_label=preferred_label,
@@ -282,7 +307,13 @@ def _inject_label_enrichment(
         target.type = "chart"
         if preferred_label.image_type == "flowchart":
             target.sub_type = "flowchart"
-        if preferred_label.structured_label.content.strip():
+        if (
+            preferred_label.image_type != "flowchart"
+            and preferred_label.structured_label.content.strip()
+        ) or (
+            preferred_label.image_type == "flowchart"
+            and looks_like_mermaid(preferred_label.structured_label.content)
+        ):
             target.content["content"] = preferred_label.structured_label.content
             target.structured_label = preferred_label.structured_label
         if preferred_label.caption.strip():
@@ -341,6 +372,22 @@ def _maybe_fuse_flowchart(
 
     outputs = [output for output, _ in paired]
     return fuse_mermaid_outputs(labels, outputs, fallback_visible_text)
+
+
+def build_flowchart_candidate_result(
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+    mineru_output: ModelOutput | None,
+    qwen_output: ModelOutput | None,
+    fallback_visible_text: list[str],
+) -> Any | None:
+    return _maybe_fuse_flowchart(
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        fallback_visible_text=fallback_visible_text,
+    )
 
 
 def _build_validation_result(
@@ -505,6 +552,86 @@ def _override_stamp_mode_consensus(
     )
 
 
+def _override_flowchart_mode_consensus(
+    image_id: str,
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+    mineru_output: ModelOutput | None,
+    qwen_output: ModelOutput | None,
+    issues: list[Issue],
+    patch_decisions: list[PatchDecision],
+    graph_fusion_result: Any | None,
+    existing: ConsensusResult | None,
+) -> ConsensusResult | None:
+    labels = [label for label in (mineru_label, qwen_label) if label is not None]
+    if not _is_issue_driven_flowchart_mode(
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        labels=labels,
+        issues=issues,
+        graph_fusion_result=graph_fusion_result,
+    ):
+        return existing
+
+    flowchart_issues = [issue for issue in issues if issue.issue_type == "flowchart_candidate_review"]
+    if not flowchart_issues:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["flowchart mode requires a second-stage review issue"],
+            escalation_reasons=["flowchart_issue_missing"],
+            existing=existing,
+        )
+
+    both_succeeded = bool(
+        mineru_output is not None
+        and qwen_output is not None
+        and mineru_output.success
+        and qwen_output.success
+    )
+    both_parsed = mineru_label is not None and qwen_label is not None
+    if not both_succeeded:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["flowchart mode requires both models to succeed before auto-accept"],
+            escalation_reasons=["flowchart_mode_model_failure"],
+            existing=existing,
+        )
+    if not both_parsed:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["flowchart mode requires both models to produce parsable labels before auto-accept"],
+            escalation_reasons=["flowchart_mode_missing_parsed_label"],
+            existing=existing,
+        )
+
+    unresolved_issues = _find_unresolved_flowchart_issues(
+        mineru_document=mineru_document,
+        issues=flowchart_issues,
+        patch_decisions=patch_decisions,
+    )
+    if unresolved_issues:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["flowchart issues remain unresolved after second-stage adjudication"] + unresolved_issues,
+            escalation_reasons=["flowchart_issues_unresolved"],
+            existing=existing,
+        )
+
+    return _build_issue_driven_consensus(
+        image_id=image_id,
+        decision="accepted",
+        reasons=["flowchart candidate reviewed by second-stage adjudication"],
+        escalation_reasons=[],
+        existing=existing,
+    )
+
+
 def _is_issue_driven_stamp_mode(
     mineru_document: CanonicalDocument,
     qwen_document: CanonicalDocument,
@@ -518,12 +645,38 @@ def _is_issue_driven_stamp_mode(
     return any(_is_seal_like_block(block) for block in mineru_document.blocks + qwen_document.blocks)
 
 
+def _is_issue_driven_flowchart_mode(
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    labels: list[ParsedLabel],
+    issues: list[Issue],
+    graph_fusion_result: Any | None,
+) -> bool:
+    if any(issue.issue_type == "flowchart_candidate_review" for issue in issues):
+        return True
+    if graph_fusion_result is not None and str(getattr(graph_fusion_result, "mermaid", "") or "").strip():
+        return True
+    if any(label.image_type == "flowchart" for label in labels):
+        return True
+    return any(_is_flowchart_like_block(block) for block in mineru_document.blocks + qwen_document.blocks)
+
+
 def _is_seal_like_block(block: CanonicalBlock) -> bool:
     if block.type != "image":
         return False
     if str(block.sub_type or "").strip().lower() == "seal":
         return True
     return any(str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions)
+
+
+def _is_flowchart_like_block(block: CanonicalBlock) -> bool:
+    if block.type != "chart":
+        return False
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return True
+    if block.structured_label.kind == "mermaid":
+        return True
+    return bool(block.flowchart_graph)
 
 
 def _find_unresolved_stamp_issues(
@@ -541,6 +694,38 @@ def _find_unresolved_stamp_issues(
             continue
         if str(decision.reason or "").strip() in failure_reasons:
             unresolved.append(f"patch_decision_unavailable:{issue.issue_id}")
+    return unresolved
+
+
+def _find_unresolved_flowchart_issues(
+    mineru_document: CanonicalDocument,
+    issues: list[Issue],
+    patch_decisions: list[PatchDecision],
+) -> list[str]:
+    decision_lookup = {decision.issue_id: decision for decision in patch_decisions}
+    block_lookup = {block.block_id: block for block in mineru_document.blocks}
+    unresolved: list[str] = []
+    failure_reasons = {"llm_patch_unavailable", "llm_patch_invalid_json"}
+
+    for issue in issues:
+        decision = decision_lookup.get(issue.issue_id)
+        if decision is None:
+            unresolved.append(f"missing_patch_decision:{issue.issue_id}")
+            continue
+        if str(decision.reason or "").strip() in failure_reasons:
+            unresolved.append(f"patch_decision_unavailable:{issue.issue_id}")
+            continue
+        target_block_id = str(decision.target_block_id or issue.target_block_id or "").strip()
+        target_block = block_lookup.get(target_block_id) if target_block_id else None
+        if target_block is None:
+            unresolved.append(f"missing_flowchart_target:{issue.issue_id}")
+            continue
+        if str(target_block.sub_type or "").strip().lower() != "flowchart":
+            unresolved.append(f"target_not_flowchart:{issue.issue_id}")
+            continue
+        final_mermaid = str(target_block.content.get("content", "") or "").strip()
+        if not looks_like_mermaid(final_mermaid):
+            unresolved.append(f"target_missing_valid_mermaid:{issue.issue_id}")
     return unresolved
 
 

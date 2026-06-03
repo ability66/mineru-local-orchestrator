@@ -135,6 +135,14 @@ class QwenLocalClient(BaseLocalClient):
                 "以下是一个需要局部仲裁的印章 issue，请只输出 patch 决策 JSON，不要输出解释性正文：\n"
                 f"{serialized}"
             )
+        if mode == "flowchart_adjudication":
+            issue_payload = context.get("issue_payload")
+            serialized = json.dumps(issue_payload, ensure_ascii=False, indent=2)
+            return (
+                "以下是一个需要局部仲裁的流程图 issue，其中包含图融合候选 Mermaid，请判断是否保留候选或修正它。"
+                "请只输出 patch 决策 JSON，不要输出解释性正文：\n"
+                f"{serialized}"
+            )
 
         mineru_payload = context.get("mineru_payload")
         if mineru_payload is not None:

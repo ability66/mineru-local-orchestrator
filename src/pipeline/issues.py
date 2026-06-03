@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from src.pipeline.alignment import align_blocks, bbox_iou
-from src.schema import CanonicalBlock, CanonicalDocument, ImageTask, Issue
+from src.pipeline.flowchart_utils import build_flowchart_candidate_patch, build_flowchart_graph_payload, looks_like_mermaid
+from src.schema import CanonicalBlock, CanonicalDocument, ImageTask, Issue, ParsedLabel
 
 
 def detect_seal_issues(
@@ -41,6 +43,108 @@ def detect_seal_issues(
         )
 
     return _deduplicate_issues(issues)
+
+
+def detect_flowchart_issues(
+    image_task: ImageTask,
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+    graph_fusion_result: Any | None,
+) -> list[Issue]:
+    del image_task
+    if not _has_flowchart_signal(
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        graph_fusion_result=graph_fusion_result,
+    ):
+        return []
+
+    matches = align_blocks(mineru_document.blocks, qwen_document.blocks)
+    qwen_flowchart_block = _pick_flowchart_block(qwen_document.blocks)
+    mineru_flowchart_block = _pick_flowchart_block(mineru_document.blocks)
+    match_lookup = {match.candidate_index: match for match in matches}
+
+    target_block: CanonicalBlock | None = None
+    if qwen_flowchart_block is not None:
+        qwen_index = next(
+            (
+                index
+                for index, block in enumerate(qwen_document.blocks)
+                if block.block_id == qwen_flowchart_block.block_id
+            ),
+            None,
+        )
+        if qwen_index is not None and qwen_index in match_lookup:
+            target_block = mineru_document.blocks[match_lookup[qwen_index].base_index]
+        if target_block is None:
+            target_block = _find_best_flowchart_target_block(mineru_document.blocks, qwen_flowchart_block)
+    if target_block is None:
+        target_block = mineru_flowchart_block or _pick_visual_block(mineru_document.blocks)
+
+    qwen_mermaid = _extract_flowchart_mermaid(qwen_document.blocks, qwen_label)
+    mineru_mermaid = _extract_flowchart_mermaid(mineru_document.blocks, mineru_label)
+    candidate_mermaid = str(getattr(graph_fusion_result, "mermaid", "") or "").strip()
+    if not looks_like_mermaid(candidate_mermaid):
+        candidate_mermaid = ""
+
+    graph_payload = build_flowchart_graph_payload(graph_fusion_result)
+    candidate_payload = {
+        "candidate_mermaid": candidate_mermaid,
+        "candidate_patch": build_flowchart_candidate_patch(candidate_mermaid, graph_payload),
+        "graph_fusion": asdict(graph_fusion_result) if graph_fusion_result is not None else None,
+        "qwen_mermaid": qwen_mermaid,
+        "mineru_mermaid": mineru_mermaid,
+    }
+
+    reasons = ["flowchart_requires_second_stage_review"]
+    if graph_fusion_result is None:
+        reasons.append("graph_fusion_candidate_missing")
+    else:
+        fusion_status = str(getattr(graph_fusion_result, "fusion_status", "") or "").strip().lower()
+        fusion_method = str(getattr(graph_fusion_result, "fusion_method", "") or "").strip().lower()
+        graph_confidence = float(getattr(graph_fusion_result, "graph_confidence", 0.0) or 0.0)
+        if not candidate_mermaid:
+            reasons.append("graph_fusion_candidate_missing_mermaid")
+        if fusion_method == "mermaid_fallback":
+            reasons.append("graph_fusion_used_mermaid_fallback")
+        if fusion_status and fusion_status != "fused":
+            reasons.append(f"graph_fusion_status:{fusion_status}")
+        if graph_confidence < 0.75:
+            reasons.append("graph_fusion_low_confidence")
+
+    if _has_flowchart_block_or_label(qwen_document.blocks, qwen_label) and not qwen_mermaid:
+        reasons.append("qwen_flowchart_missing_mermaid")
+    if _has_flowchart_block_or_label(mineru_document.blocks, mineru_label) and not mineru_mermaid:
+        reasons.append("mineru_flowchart_missing_mermaid")
+    if qwen_mermaid and candidate_mermaid and _normalize_text(qwen_mermaid) != _normalize_text(candidate_mermaid):
+        reasons.append("qwen_candidate_mermaid_conflict")
+
+    qwen_block_payload = qwen_flowchart_block.model_dump() if qwen_flowchart_block is not None else None
+    mineru_block_payload = target_block.model_dump() if target_block is not None else None
+    issue_id_target = target_block.block_id if target_block is not None else (
+        qwen_flowchart_block.block_id if qwen_flowchart_block is not None else "flowchart"
+    )
+    page_idx = (
+        target_block.page_idx
+        if target_block is not None
+        else (qwen_flowchart_block.page_idx if qwen_flowchart_block is not None else 0)
+    )
+    return [
+        Issue(
+            issue_id=f"flowchart-review-{issue_id_target}",
+            issue_type="flowchart_candidate_review",
+            page_idx=page_idx,
+            target_block_id=target_block.block_id if target_block is not None else None,
+            mineru_block=mineru_block_payload,
+            qwen_block=qwen_block_payload,
+            candidate_payload=candidate_payload,
+            reasons=_deduplicate_texts(reasons),
+        )
+    ]
 
 
 def _detect_pair_issue(mineru_block: CanonicalBlock, qwen_block: CanonicalBlock | None) -> Issue | None:
@@ -106,12 +210,95 @@ def _find_best_target_block(mineru_blocks: list[CanonicalBlock], qwen_block: Can
     )
 
 
+def _find_best_flowchart_target_block(
+    mineru_blocks: list[CanonicalBlock],
+    qwen_block: CanonicalBlock,
+) -> CanonicalBlock | None:
+    same_page_visuals = [
+        block
+        for block in mineru_blocks
+        if block.page_idx == qwen_block.page_idx and block.type in {"chart", "image", "table"}
+    ]
+    if not same_page_visuals:
+        return None
+    return max(
+        same_page_visuals,
+        key=lambda block: (
+            bbox_iou(block.bbox, qwen_block.bbox),
+            1 if block.type == "chart" else 0,
+            1 if str(block.sub_type or "").strip().lower() == "flowchart" else 0,
+        ),
+    )
+
+
 def _is_seal_candidate(block: CanonicalBlock) -> bool:
     if block.type != "image":
         return False
     if str(block.sub_type or "").strip().lower() == "seal":
         return True
     return any(str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions)
+
+
+def _is_flowchart_candidate(block: CanonicalBlock) -> bool:
+    if block.type != "chart":
+        return False
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return True
+    if block.structured_label.kind == "mermaid":
+        return True
+    return bool(block.flowchart_graph)
+
+
+def _has_flowchart_signal(
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+    graph_fusion_result: Any | None,
+) -> bool:
+    if graph_fusion_result is not None and str(getattr(graph_fusion_result, "mermaid", "") or "").strip():
+        return True
+    if _has_flowchart_block_or_label(mineru_document.blocks, mineru_label):
+        return True
+    return _has_flowchart_block_or_label(qwen_document.blocks, qwen_label)
+
+
+def _has_flowchart_block_or_label(
+    blocks: list[CanonicalBlock],
+    label: ParsedLabel | None,
+) -> bool:
+    if label is not None and label.image_type == "flowchart":
+        return True
+    return any(_is_flowchart_candidate(block) for block in blocks)
+
+
+def _pick_flowchart_block(blocks: list[CanonicalBlock]) -> CanonicalBlock | None:
+    for block in blocks:
+        if _is_flowchart_candidate(block):
+            return block
+    return _pick_visual_block(blocks)
+
+
+def _pick_visual_block(blocks: list[CanonicalBlock]) -> CanonicalBlock | None:
+    for block in blocks:
+        if block.type in {"chart", "image", "table"}:
+            return block
+    return None
+
+
+def _extract_flowchart_mermaid(
+    blocks: list[CanonicalBlock],
+    label: ParsedLabel | None,
+) -> str:
+    for block in blocks:
+        content = str(block.content.get("content", "") or "").strip()
+        if _is_flowchart_candidate(block) and looks_like_mermaid(content):
+            return content
+    if label is not None and label.image_type == "flowchart":
+        candidate = str(label.structured_label.content or "").strip()
+        if looks_like_mermaid(candidate):
+            return candidate
+    return ""
 
 
 def _seal_texts(block: CanonicalBlock) -> list[str]:

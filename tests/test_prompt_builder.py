@@ -14,6 +14,8 @@ def test_load_prompt_reads_named_prompts(tmp_path) -> None:
                 "  recognition body",
                 "qwen_adjudication_prompt: |",
                 "  adjudication body",
+                "qwen_flowchart_adjudication_prompt: |",
+                "  flowchart adjudication body",
             ]
         ),
         encoding="utf-8",
@@ -22,3 +24,4 @@ def test_load_prompt_reads_named_prompts(tmp_path) -> None:
     assert load_prompt(prompt_path, "default_prompt") == "default body"
     assert load_prompt(prompt_path, "qwen_recognition_prompt") == "recognition body"
     assert load_prompt(prompt_path, "qwen_adjudication_prompt") == "adjudication body"
+    assert load_prompt(prompt_path, "qwen_flowchart_adjudication_prompt") == "flowchart adjudication body"

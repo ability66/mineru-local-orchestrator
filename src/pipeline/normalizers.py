@@ -8,6 +8,7 @@ from src.normalizer import (
     _strip_code_fences,
     normalize_model_output,
 )
+from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.schema import (
     CanonicalBlock,
     CanonicalDocument,
@@ -92,7 +93,7 @@ def derive_label_from_document(document: CanonicalDocument) -> ParsedLabel | Non
         return None
 
     image_type = "document"
-    if any(block.structured_label.kind == "mermaid" or block.flowchart_graph for block in blocks):
+    if any(_is_flowchart_block(block) for block in blocks):
         image_type = "flowchart"
     elif any(block.type == "table" for block in blocks):
         image_type = "table"
@@ -425,7 +426,9 @@ def _document_from_parsed_label(
         sub_type = "flowchart" if parsed_label.image_type == "flowchart" else None
         if parsed_label.caption:
             content["chart_caption"] = [parsed_label.caption]
-        if parsed_label.structured_label.content:
+        if parsed_label.image_type != "flowchart" and parsed_label.structured_label.content:
+            content["content"] = parsed_label.structured_label.content
+        elif looks_like_mermaid(parsed_label.structured_label.content):
             content["content"] = parsed_label.structured_label.content
     elif any(region.role == "seal" for region in parsed_label.ocr_regions):
         block_type = "image"
@@ -489,7 +492,10 @@ def _apply_label_patch_to_document(
     if parsed_label.image_type in {"chart", "flowchart"} and target.type == "chart":
         if parsed_label.image_type == "flowchart":
             target.sub_type = "flowchart"
-        if parsed_label.structured_label.content.strip() and not str(target.content.get("content", "") or "").strip():
+        if (
+            looks_like_mermaid(parsed_label.structured_label.content)
+            and not str(target.content.get("content", "") or "").strip()
+        ):
             target.content["content"] = parsed_label.structured_label.content
             target.structured_label = parsed_label.structured_label
         if parsed_label.flowchart_graph and target.flowchart_graph is None:
@@ -793,6 +799,10 @@ def _content_dict_from_flat_text(
     if block_type == "table":
         return {"table_body": raw_text}
     if block_type == "chart":
+        if str(block.get("sub_type") or "").strip().lower() == "flowchart":
+            if looks_like_mermaid(raw_text):
+                return {"content": raw_text}
+            return {"chart_caption": [raw_text]} if raw_text else {}
         return {"content": raw_text}
     if block_type == "image":
         return {"image_caption": [raw_text]} if raw_text else {}
@@ -841,12 +851,20 @@ def _structured_label_from_block_payload(
             source="mineru",
         )
     if block_type == "chart" and str(block.get("sub_type") or "").strip().lower() == "flowchart":
-        mermaid = str(content.get("content", "") or "")
+        mermaid = str(content.get("content", "") or "").strip()
+        caption_fallback = " ".join(_normalize_text_list(content.get("chart_caption", []))).strip()
+        if looks_like_mermaid(mermaid):
+            return StructuredLabel(
+                kind="mermaid",
+                content=mermaid,
+                format="mermaid",
+                source="mineru",
+            )
         return StructuredLabel(
-            kind="mermaid" if mermaid.strip() else "text",
-            content=mermaid,
-            format="mermaid" if mermaid.strip() else "plain_text",
-            source="mineru",
+            kind="text" if caption_fallback else "none",
+            content=caption_fallback,
+            format="plain_text" if caption_fallback else "none",
+            source="mineru" if caption_fallback else "none",
         )
     return StructuredLabel(kind="none", content="", format="none", source="none")
 
@@ -890,6 +908,14 @@ def _caption_structured_from_block(
 def _flowchart_graph_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
     flowchart_graph = block.get("flowchart_graph")
     return flowchart_graph if isinstance(flowchart_graph, dict) else None
+
+
+def _is_flowchart_block(block: CanonicalBlock) -> bool:
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return True
+    if block.structured_label.kind == "mermaid":
+        return True
+    return bool(block.flowchart_graph)
 
 
 def _pick_patch_target(

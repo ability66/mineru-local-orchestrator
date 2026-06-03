@@ -62,3 +62,68 @@ def test_apply_patch_decisions_merges_seal_fields_into_mineru_document() -> None
     assert block.ocr_regions[0].role == "seal"
     assert block.ocr_regions[0].text == "某某公司"
     assert block.provenance["llm_patch_decision"] == "merge"
+
+
+def test_apply_patch_decisions_supports_keep_candidate_for_flowchart() -> None:
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-1",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "chart_caption": ["流程图"]},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    issues = [
+        Issue(
+            issue_id="flowchart-review-m1",
+            issue_type="flowchart_candidate_review",
+            page_idx=0,
+            target_block_id="m1",
+            candidate_payload={
+                "candidate_patch": {
+                    "type": "chart",
+                    "sub_type": "flowchart",
+                    "content": {"content": "flowchart TD\nA-->B"},
+                    "flowchart_graph": {
+                        "node_order_rule": "fused_visual_order",
+                        "nodes": [
+                            {"node_id": "N001", "order_index": 1, "shape": "rectangle", "text": "A"},
+                            {"node_id": "N002", "order_index": 2, "shape": "rectangle", "text": "B"},
+                        ],
+                        "edges": [{"source": "N001", "target": "N002", "label": ""}],
+                    },
+                }
+            },
+            reasons=["flowchart_requires_second_stage_review"],
+        )
+    ]
+    patch_decisions = [
+        PatchDecision(
+            issue_id="flowchart-review-m1",
+            target_block_id="m1",
+            decision="keep_candidate",
+            patch={},
+            reason="候选 Mermaid 可直接采用",
+        )
+    ]
+
+    patched = apply_patch_decisions(
+        mineru_document=mineru_document,
+        issues=issues,
+        patch_decisions=patch_decisions,
+    )
+
+    block = patched.blocks[0]
+    assert block.sub_type == "flowchart"
+    assert block.content["content"] == "flowchart TD\nA-->B"
+    assert block.structured_label.kind == "mermaid"
+    assert block.flowchart_graph is not None

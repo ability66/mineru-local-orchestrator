@@ -45,7 +45,8 @@ qwen_recognition_prompt: |
   - 必须包含 `bbox`，格式 `[x0, y0, x1, y1]`，坐标范围 0-1000
   - 可以包含 `angle`
   - 可以包含 `sub_type`
-  - `content` 尽量使用简洁字符串，尤其是当前第一版的印章场景
+  - `content` 对印章等场景尽量使用简洁字符串
+  - 但如果块是流程图，则 `content` 必须输出 Mermaid 代码，而不是自然语言说明
 
   块类型约束：
   - 标题：`type=title`
@@ -60,6 +61,12 @@ qwen_recognition_prompt: |
   - 如果是印章，务必设置 `sub_type=seal`
   - 如果能读到印章文字，把文字写进 `content`
   - 如果看不清文字，可以保留空字符串，但不要伪造文字
+
+  流程图补充要求：
+  - 如果是流程图，务必设置 `type=chart` 且 `sub_type=flowchart`
+  - `content` 必须是 Mermaid 代码，推荐从 `flowchart TD` 开始
+  - 如果确定是流程图，但暂时无法稳定写出 Mermaid，请把 `content` 留空字符串，不要写自然语言概述冒充 Mermaid
+  - 如果输出了 Mermaid，必须尽量保留节点、连线、分支与方向信息，不要只写一句概括
 
 qwen_adjudication_prompt: |
   你是第二阶段的局部仲裁模型。当前只处理“印章”相关冲突。
@@ -115,5 +122,55 @@ qwen_adjudication_prompt: |
   - 不要改页结构、不要改块顺序、不要大改 bbox
   - 如果只是文字补充，优先使用 `merge`
   - 如果无法确定，使用 `keep_mineru`
+
+  只输出 JSON，不要附加说明文字。
+
+qwen_flowchart_adjudication_prompt: |
+  你是第二阶段的局部仲裁模型。当前只处理“流程图”相关冲突。
+
+  你会收到：
+  - 原图
+  - 一个 issue JSON
+  - issue 里会包含 MinerU 块、Qwen 第一阶段块、图融合候选 Mermaid、冲突原因
+
+  你的任务不是重写整份结果，而是只输出一个 patch 决策 JSON。
+
+  允许的 decision：
+  - keep_mineru
+  - keep_candidate
+  - use_qwen_fields
+  - merge
+  - reject_issue
+
+  输出 JSON 结构固定为：
+  - issue_id
+  - target_block_id
+  - decision
+  - patch
+  - reason
+
+  `patch` 只允许包含这些字段：
+  - type
+  - sub_type
+  - content
+  - flowchart_graph
+  - visible_text
+
+  其中：
+  - `keep_candidate` 表示直接采用 issue 里给出的图融合候选 Mermaid
+  - 如果你认为候选 Mermaid 基本正确，只需使用 `keep_candidate`，`patch` 可以为空对象
+  - 如果你认为候选 Mermaid 需要修正，使用 `merge`，并在 `patch.content.content` 中给出修正后的 Mermaid
+  - 如果你认为应保留 MinerU 当前结果，使用 `keep_mineru`
+  - `type` 只允许是 `chart`
+  - `sub_type` 只允许是 `flowchart`
+  - `content.content` 必须是 Mermaid 代码，不能是自然语言解释
+  - 如果给出 `flowchart_graph`，它必须与 Mermaid 语义一致
+
+  仲裁原则：
+  - 默认保留 MinerU 的块位置和页结构
+  - 优先参考图融合候选 Mermaid，再决定是否修正
+  - 只有在确实更合理时，才用 Qwen 第一阶段结果修正候选
+  - 不要改页结构、不要改块顺序、不要大改 bbox
+  - 如果无法确定，优先使用 `keep_mineru`
 
   只输出 JSON，不要附加说明文字。

@@ -13,6 +13,7 @@ def adjudicate_issues_with_llm(
     image_task: ImageTask,
     prompt: str,
     issues: list[Issue],
+    mode: str,
     retry: int = 0,
 ) -> tuple[list[PatchDecision], list[ModelOutput]]:
     if client is None or not issues:
@@ -27,7 +28,7 @@ def adjudicate_issues_with_llm(
             prompt=prompt,
             retry=retry,
             context={
-                "mode": "seal_adjudication",
+                "mode": mode,
                 "issue_payload": issue.model_dump(),
             },
         )
@@ -99,10 +100,19 @@ def _parse_json_object(raw_text: str) -> object:
 
 def _normalize_decision(value: object) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"keep_mineru", "use_qwen_fields", "merge", "add_qwen_block", "reject_issue"}:
+    if normalized in {
+        "keep_mineru",
+        "keep_candidate",
+        "use_qwen_fields",
+        "merge",
+        "add_qwen_block",
+        "reject_issue",
+    }:
         return normalized
     if normalized in {"keep", "preserve"}:
         return "keep_mineru"
+    if normalized in {"keep_fusion", "keep_candidate_patch", "keep_graph_candidate"}:
+        return "keep_candidate"
     if normalized in {"use_qwen", "use_qwen_patch"}:
         return "use_qwen_fields"
     return "keep_mineru"
