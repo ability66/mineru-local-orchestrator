@@ -25,15 +25,14 @@
 - `outputs/raw/qwen/{image_id}.json`
 - `outputs/normalized/mineru/{image_id}.json`
 - `outputs/normalized/qwen/{image_id}.json`
-- `outputs/final/{image_id}_content_list_v2.json`
-- `outputs/final/{image_id}_content_list.json`
+- `outputs/final/{image_id}.json`
 - `outputs/final/{image_id}_artifact.json`
 - `outputs/summary.jsonl`
 
 说明：
 
-- `content_list_v2.json` 按页分组，便于程序消费
-- `content_list.json` 保留 MinerU 传统的扁平 `page_idx` 风格
+- `final/{image_id}.json` 是主产物，外层对齐 `tmp.json` 风格，核心结果在 `parsed.extraction_results[].json_res`
+- `Qwen` 只作为补充和仲裁来源，不再作为并列最终结果格式暴露
 - `artifact.json` 保存双源仲裁、graph fusion、review 原因等 debug 信息
 
 ## 关于 MinerU 输出兼容
@@ -81,4 +80,3 @@ uv run python -m src.main \
 - `MinerUPro 2.5` 本地端口、路径、请求示例、返回示例
 - `qwen 122b` 本地端口、协议、模型名、是否视觉输入
 - 一份你认可的 MinerU 标准输出样例
-

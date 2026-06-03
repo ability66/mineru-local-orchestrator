@@ -78,11 +78,15 @@ def write_image_result(
     )
 
     final_document = artifact.final_document
+    final_output = build_final_output(
+        image_task=image_task,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        artifact=artifact,
+    )
     content_list_v2 = build_content_list_v2(final_document)
-    content_list = build_content_list(final_document)
-
-    _write_json(directories["final"] / f"{image_task.image_id}_content_list_v2.json", content_list_v2)
-    _write_json(directories["final"] / f"{image_task.image_id}_content_list.json", content_list)
+    _remove_legacy_final_files(directories["final"], image_task.image_id)
+    _write_json(directories["final"] / f"{image_task.image_id}.json", final_output)
     _write_json(directories["final"] / f"{image_task.image_id}_artifact.json", artifact.model_dump())
 
     return build_summary_record(
@@ -92,6 +96,86 @@ def write_image_result(
         artifact=artifact,
         content_list_v2=content_list_v2,
     )
+
+
+def build_final_output(
+    image_task: ImageTask,
+    mineru_output: ModelOutput | None,
+    qwen_output: ModelOutput | None,
+    artifact: AdjudicationArtifact,
+) -> dict[str, Any]:
+    parsed = build_final_parsed_payload(image_task=image_task, document=artifact.final_document)
+    success = bool(artifact.final_document.blocks)
+    errors = [
+        str(value).strip()
+        for value in (
+            mineru_output.error if mineru_output is not None else None,
+            qwen_output.error if qwen_output is not None else None,
+            "; ".join(artifact.reasons) if artifact.reasons else None,
+        )
+        if str(value or "").strip()
+    ]
+    latency_values = [
+        output.latency_ms
+        for output in (mineru_output, qwen_output)
+        if output is not None and output.latency_ms is not None
+    ]
+
+    return {
+        "image_id": image_task.image_id,
+        "model_name": (
+            mineru_output.model_name
+            if mineru_output is not None and str(mineru_output.model_name or "").strip()
+            else artifact.final_document.source or "adjudicated"
+        ),
+        "success": success,
+        "raw_text": json.dumps(parsed, ensure_ascii=False),
+        "parsed": parsed,
+        "error": None if success else (errors[0] if errors else "no_final_blocks"),
+        "latency_ms": sum(latency_values) if latency_values else None,
+        "vendor": (
+            mineru_output.vendor
+            if mineru_output is not None and str(mineru_output.vendor or "").strip()
+            else "adjudicated"
+        ),
+        "source_type": (
+            mineru_output.source_type
+            if mineru_output is not None and str(mineru_output.source_type or "").strip()
+            else "final"
+        ),
+    }
+
+
+def build_final_parsed_payload(image_task: ImageTask, document: CanonicalDocument) -> dict[str, Any]:
+    pages = build_extraction_results(document=document, file_name=image_task.file_name)
+    return {
+        "filename": image_task.file_name,
+        "total_pages": len(pages),
+        "extraction_results": pages,
+    }
+
+
+def build_extraction_results(document: CanonicalDocument, file_name: str) -> list[dict[str, Any]]:
+    page_count = max(document.page_count, max((block.page_idx for block in document.blocks), default=-1) + 1, 1)
+    pages: list[dict[str, Any]] = []
+    for page_idx in range(page_count):
+        page_blocks = [
+            _canonical_block_to_extraction_item(block)
+            for block in sorted(
+                document.blocks,
+                key=lambda item: (item.page_idx, item.order_index, item.block_id),
+            )
+            if block.page_idx == page_idx
+        ]
+        pages.append(
+            {
+                "page": page_idx,
+                "file_name": file_name,
+                "md_res": "",
+                "json_res": page_blocks,
+            }
+        )
+    return pages
 
 
 def build_content_list_v2(document: CanonicalDocument) -> list[list[dict[str, Any]]]:
@@ -182,6 +266,24 @@ def _canonical_block_to_flat_item(block: CanonicalBlock) -> dict[str, Any]:
     return {key: value for key, value in item.items() if value not in (None, [], "")}
 
 
+def _canonical_block_to_extraction_item(block: CanonicalBlock) -> dict[str, Any]:
+    item = {
+        "type": _type_for_extraction(block),
+        "bbox": block.bbox,
+        "angle": _angle_for_extraction(block),
+        "content": _content_for_extraction(block),
+    }
+    if block.sub_type:
+        item["sub_type"] = block.sub_type
+    if block.flowchart_graph is not None:
+        item["flowchart_graph"] = block.flowchart_graph
+    if block.ocr_regions:
+        item["ocr_regions"] = [region.model_dump() for region in block.ocr_regions]
+    if block.type == "title" and block.text_level is not None:
+        item["text_level"] = block.text_level
+    return item
+
+
 def _content_for_v2(block: CanonicalBlock) -> dict[str, Any]:
     if block.content:
         content = json.loads(json.dumps(block.content, ensure_ascii=False))
@@ -249,9 +351,54 @@ def _content_for_flat(block: CanonicalBlock) -> dict[str, Any]:
     return content
 
 
+def _type_for_extraction(block: CanonicalBlock) -> str:
+    source_type = str(block.provenance.get("source_block_type", "") or "").strip()
+    if source_type:
+        return source_type
+    if block.type == "paragraph":
+        return "text"
+    return block.type
+
+
+def _angle_for_extraction(block: CanonicalBlock) -> int:
+    angle = block.provenance.get("source_angle")
+    try:
+        return int(round(float(angle)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _content_for_extraction(block: CanonicalBlock) -> str:
+    content = _content_for_v2(block)
+    if block.type in {"title", "paragraph"}:
+        return block.text
+    if block.type == "table":
+        return str(content.get("table_body", "") or "").strip()
+    if block.type == "chart":
+        return str(content.get("content", "") or block.text).strip()
+    if block.type == "image":
+        captions = content.get("image_caption", [])
+        if isinstance(captions, list) and captions:
+            return str(captions[0] or "").strip()
+        return block.text
+    if block.type == "equation_interline":
+        return str(content.get("math_content", "") or block.text).strip()
+    if block.type == "list":
+        items = content.get("list_items", [])
+        return "\n".join(str(item).strip() for item in items if str(item).strip())
+    return block.text
+
+
 def _single_text_list(text: str) -> list[str]:
     normalized = str(text or "").strip()
     return [normalized] if normalized else []
+
+
+def _remove_legacy_final_files(final_dir: Path, image_id: str) -> None:
+    for suffix in ("_content_list_v2.json", "_content_list.json"):
+        legacy_path = final_dir / f"{image_id}{suffix}"
+        if legacy_path.exists():
+            legacy_path.unlink()
 
 
 def _write_json(path: Path, payload: Any) -> None:
