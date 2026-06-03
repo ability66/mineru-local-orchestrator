@@ -136,7 +136,7 @@ def test_normalize_mineru_payload_unwraps_extraction_result_json_res() -> None:
     assert label.image_type == "table"
 
 
-def test_normalize_mineru_payload_unwraps_multi_page_extraction_result_list() -> None:
+def test_normalize_mineru_payload_unwraps_tmp_shape_extraction_results_with_flat_json_res() -> None:
     image_task = ImageTask(
         image_id="img-extract-list",
         image_path="data/demo.png",
@@ -149,37 +149,45 @@ def test_normalize_mineru_payload_unwraps_multi_page_extraction_result_list() ->
         success=True,
         raw_text="",
         parsed={
-            "extraction_result": [
-                {
-                    "page": 0,
-                    "filename": "demo.png",
-                    "md_res": "page0",
-                    "json_res": [
-                        {
-                            "type": "title",
-                            "bbox": [0, 0, 1000, 100],
-                            "content": {
-                                "title_content": [{"type": "text", "content": "第一页标题"}],
-                                "level": 1,
+            "parsed": {
+                "filename": "demo.png",
+                "total_pages": 2,
+                "extraction_results": [
+                    {
+                        "page": 0,
+                        "file_name": "demo.png",
+                        "md_res": "page0",
+                        "json_res": [
+                            {
+                                "type": "title",
+                                "bbox": [0, 0, 1000, 100],
+                                "angle": 0,
+                                "content": "第一页标题",
+                            }
+                        ],
+                    },
+                    {
+                        "page": 1,
+                        "file_name": "demo.png",
+                        "md_res": "page1",
+                        "json_res": [
+                            {
+                                "type": "text",
+                                "bbox": [0, 100, 1000, 200],
+                                "angle": 0,
+                                "content": "第二页正文",
                             },
-                        }
-                    ],
-                },
-                {
-                    "page": 1,
-                    "filename": "demo.png",
-                    "md_res": "page1",
-                    "json_res": [
-                        {
-                            "type": "paragraph",
-                            "bbox": [0, 100, 1000, 200],
-                            "content": {
-                                "paragraph_content": [{"type": "text", "content": "第二页正文"}],
+                            {
+                                "type": "image",
+                                "bbox": [0, 200, 400, 500],
+                                "angle": 90,
+                                "content": "某某公司印章",
+                                "sub_type": "seal",
                             },
-                        }
-                    ],
-                },
-            ]
+                        ],
+                    },
+                ],
+            }
         },
     )
 
@@ -190,9 +198,21 @@ def test_normalize_mineru_payload_unwraps_multi_page_extraction_result_list() ->
 
     assert not document.warnings
     assert document.page_count == 2
-    assert len(document.blocks) == 2
+    assert len(document.blocks) == 3
     assert document.blocks[0].type == "title"
     assert document.blocks[1].type == "paragraph"
+    assert document.blocks[0].text == "第一页标题"
+    assert document.blocks[0].content["title_content"][0]["content"] == "第一页标题"
+    assert document.blocks[1].text == "第二页正文"
+    assert document.blocks[1].content["paragraph_content"][0]["content"] == "第二页正文"
+    assert document.blocks[2].type == "image"
+    assert document.blocks[2].sub_type == "seal"
+    assert document.blocks[2].text == "某某公司印章"
+    assert document.blocks[2].content["image_caption"] == ["某某公司印章"]
+    assert document.blocks[2].ocr_regions[0].role == "seal"
+    assert document.blocks[2].ocr_regions[0].text == "某某公司印章"
+    assert document.blocks[2].provenance["format"] == "json_res_flat"
+    assert document.blocks[2].provenance["source_angle"] == 90.0
     assert label is not None
     assert label.caption == "第一页标题"
 
@@ -293,5 +313,50 @@ def test_normalize_qwen_payload_uses_top_level_summary_only_as_mineru_style_patc
     assert block.sub_type == "flowchart"
     assert block.content["content"] == "flowchart TD\nA-->B"
     assert block.flowchart_graph is not None
+    assert label is not None
+    assert label.image_type == "flowchart"
+
+
+def test_normalize_qwen_payload_accepts_flat_string_content_blocks() -> None:
+    image_task = ImageTask(
+        image_id="img-qwen-flat",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    payload = {
+        "content_list_v2": [[
+            {
+                "type": "title",
+                "bbox": [0, 0, 1000, 100],
+                "content": "示例标题",
+            },
+            {
+                "type": "chart",
+                "sub_type": "flowchart",
+                "bbox": [0, 100, 1000, 1000],
+                "content": "flowchart TD\nA-->B",
+            },
+        ]],
+    }
+    model_output = ModelOutput(
+        image_id="img-qwen-flat",
+        model_name="qwen",
+        success=True,
+        raw_text=json.dumps(payload, ensure_ascii=False),
+    )
+
+    _, document, label = normalize_qwen_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert document.blocks[0].type == "title"
+    assert document.blocks[0].text == "示例标题"
+    assert document.blocks[0].content["title_content"][0]["content"] == "示例标题"
+    assert document.blocks[1].type == "chart"
+    assert document.blocks[1].sub_type == "flowchart"
+    assert document.blocks[1].content["content"] == "flowchart TD\nA-->B"
+    assert document.blocks[1].structured_label.kind == "mermaid"
     assert label is not None
     assert label.image_type == "flowchart"

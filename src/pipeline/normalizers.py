@@ -286,20 +286,26 @@ def _block_from_v2_payload(
     default_image_path: str,
 ) -> CanonicalBlock:
     block_type = _map_v2_type(str(block.get("type", "paragraph") or "paragraph"))
-    content = block.get("content") if isinstance(block.get("content"), dict) else {}
-    text = _extract_block_text(block_type=block_type, content=content, fallback=block.get("text"))
+    normalized_content = _normalize_v2_content(
+        block_type=block_type,
+        block=block,
+        default_image_path=default_image_path,
+    )
+    text = _extract_block_text(
+        block_type=block_type,
+        content=normalized_content,
+        fallback=block.get("text") if block.get("text") is not None else block.get("content"),
+    )
     structured_label = _structured_label_from_block_payload(
         block_type=block_type,
         block=block,
-        content=content,
+        content=normalized_content,
     )
-    ocr_regions = _ocr_regions_from_block(block, content)
-    visible_text = _deduplicate_texts(_collect_visible_texts(content, text))
+    ocr_regions = _ocr_regions_from_block(block, normalized_content)
+    visible_text = _deduplicate_texts(_collect_visible_texts(normalized_content, text))
     block_id = str(block.get("block_id") or f"p{page_idx:03d}_b{order_index:03d}")
-
-    normalized_content = dict(content)
-    if block_type in {"chart", "image", "table"} and "img_path" not in normalized_content:
-        normalized_content["img_path"] = default_image_path
+    raw_content = block.get("content")
+    payload_format = "content_list_v2" if isinstance(raw_content, dict) else "json_res_flat"
 
     return CanonicalBlock(
         block_id=block_id,
@@ -317,14 +323,18 @@ def _block_from_v2_payload(
         caption_structured=_caption_structured_from_block(
             block_type=block_type,
             text=text,
-            content=content,
+            content=normalized_content,
             visible_text=visible_text,
         ),
         flowchart_graph=_flowchart_graph_from_block(block),
         visible_text=visible_text,
         ocr_regions=ocr_regions,
         warnings=[],
-        provenance={"source_block_type": block.get("type"), "format": "content_list_v2"},
+        provenance={
+            "source_block_type": block.get("type"),
+            "source_angle": _coerce_float(block.get("angle")),
+            "format": payload_format,
+        },
     )
 
 
@@ -564,7 +574,7 @@ def _parse_json_object(raw_text: str) -> Any:
 def _extract_document_payload(payload: Any) -> Any | None:
     current = payload
     visited: set[int] = set()
-    wrapper_keys = ("data", "result", "payload", "output", "response")
+    wrapper_keys = ("parsed", "data", "result", "payload", "output", "response")
 
     while True:
         if current is None:
@@ -580,6 +590,12 @@ def _extract_document_payload(payload: Any) -> Any | None:
         extraction_result = current.get("extraction_result")
         if extraction_result is not None:
             extracted = _extract_extraction_result_payload(extraction_result)
+            if extracted is not None:
+                return extracted
+
+        extraction_results = current.get("extraction_results")
+        if extraction_results is not None:
+            extracted = _extract_extraction_result_payload(extraction_results)
             if extracted is not None:
                 return extracted
 
@@ -629,7 +645,14 @@ def _extract_page_result_list_payload(items: list[Any]) -> Any | None:
         return []
     if not all(isinstance(item, dict) for item in items):
         return None
-    if not any("json_res" in item or "md_res" in item or "filename" in item or "page" in item for item in items):
+    if not any(
+        "json_res" in item
+        or "md_res" in item
+        or "filename" in item
+        or "file_name" in item
+        or "page" in item
+        for item in items
+    ):
         return None
 
     ordered_pages: list[tuple[int, list[dict[str, Any]]]] = []
@@ -716,6 +739,55 @@ def _map_flat_type(raw_type: str) -> str:
     if normalized == "text":
         return "paragraph"
     return _map_v2_type(normalized)
+
+
+def _normalize_v2_content(
+    block_type: str,
+    block: dict[str, Any],
+    default_image_path: str,
+) -> dict[str, Any]:
+    raw_content = block.get("content")
+    if isinstance(raw_content, dict):
+        normalized_content = dict(raw_content)
+    else:
+        normalized_content = _content_dict_from_flat_text(
+            block_type=block_type,
+            raw_text=str(raw_content or "").strip(),
+            block=block,
+        )
+
+    if block_type in {"chart", "image", "table"} and "img_path" not in normalized_content:
+        normalized_content["img_path"] = default_image_path
+    return normalized_content
+
+
+def _content_dict_from_flat_text(
+    block_type: str,
+    raw_text: str,
+    block: dict[str, Any],
+) -> dict[str, Any]:
+    if block_type == "title":
+        return {
+            "title_content": [{"type": "text", "content": raw_text}] if raw_text else [],
+            "level": _coerce_non_negative_int(block.get("text_level"), default=1) or 1,
+        }
+    if block_type == "paragraph":
+        return {
+            "paragraph_content": [{"type": "text", "content": raw_text}] if raw_text else []
+        }
+    if block_type == "table":
+        return {"table_body": raw_text}
+    if block_type == "chart":
+        return {"content": raw_text}
+    if block_type == "image":
+        return {"image_caption": [raw_text]} if raw_text else {}
+    if block_type == "list":
+        return {"list_items": [raw_text]} if raw_text else {}
+    if block_type == "equation_interline":
+        return {"math_content": raw_text, "math_type": "plain_text"} if raw_text else {}
+    if raw_text:
+        return {"text": raw_text}
+    return {}
 
 
 def _extract_block_text(block_type: str, content: dict[str, Any], fallback: Any) -> str:
