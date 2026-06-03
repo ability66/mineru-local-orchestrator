@@ -85,6 +85,19 @@ CaptionSource = Literal["generated"]
 CaptionConfidence = Literal["low", "medium", "high"]
 OcrRegionRole = Literal["seal", "watermark", "footer", "body", "title", "other"]
 OcrRegionConfidence = Literal["low", "medium", "high"]
+IssueType = Literal[
+    "seal_missing_ocr",
+    "seal_type_disagreement",
+    "seal_ocr_conflict",
+    "seal_unmatched_qwen_candidate",
+]
+PatchDecisionType = Literal[
+    "keep_mineru",
+    "use_qwen_fields",
+    "merge",
+    "add_qwen_block",
+    "reject_issue",
+]
 
 
 class ImageTask(BaseModel):
@@ -218,6 +231,24 @@ class CanonicalDocument(BaseModel):
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class Issue(BaseModel):
+    issue_id: str
+    issue_type: IssueType
+    page_idx: int = 0
+    target_block_id: str | None = None
+    mineru_block: dict[str, Any] | None = None
+    qwen_block: dict[str, Any] | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+
+class PatchDecision(BaseModel):
+    issue_id: str
+    target_block_id: str | None = None
+    decision: PatchDecisionType = "keep_mineru"
+    patch: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+
+
 class AdjudicationArtifact(BaseModel):
     image_id: str
     final_document: CanonicalDocument
@@ -229,3 +260,5 @@ class AdjudicationArtifact(BaseModel):
     review_required: bool = False
     reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    issues: list[Issue] = Field(default_factory=list)
+    patch_decisions: list[PatchDecision] = Field(default_factory=list)

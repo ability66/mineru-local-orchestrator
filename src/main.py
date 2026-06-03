@@ -20,8 +20,11 @@ except ImportError:
 from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import adjudicate_documents
-from src.pipeline.normalizers import normalize_mineru_payload, normalize_qwen_payload
-from src.prompt_builder import load_default_prompt
+from src.pipeline.issues import detect_seal_issues
+from src.pipeline.llm_adjudicator import adjudicate_issues_with_llm
+from src.pipeline.normalizers import derive_label_from_document, normalize_mineru_payload, normalize_qwen_payload
+from src.pipeline.patches import apply_patch_decisions
+from src.prompt_builder import load_prompt
 from src.schema import CanonicalDocument, ImageTask, ModelOutput
 from src.writer import (
     append_summary_record,
@@ -128,7 +131,8 @@ def main() -> None:
     clients = build_clients(model_configs=model_configs, request_timeout=args.request_timeout)
     mineru_client = pick_client(clients, "minerupro")
     qwen_client = pick_client(clients, "qwen")
-    prompt = load_default_prompt(args.prompts_config)
+    recognition_prompt = load_prompt(args.prompts_config, "qwen_recognition_prompt")
+    adjudication_prompt = load_prompt(args.prompts_config, "qwen_adjudication_prompt")
 
     image_tasks = load_image_tasks(args.data_dir)
     if args.limit is not None:
@@ -141,7 +145,7 @@ def main() -> None:
         mineru_output = call_with_retry(
             client=mineru_client,
             image_task=image_task,
-            prompt=prompt,
+            prompt=recognition_prompt,
             retry=args.retry,
         )
         if mineru_output is not None:
@@ -153,13 +157,11 @@ def main() -> None:
             mineru_document = empty_document(image_task=image_task, source="mineru_unconfigured")
             mineru_label = None
 
-        qwen_context = {"mineru_payload": mineru_output.parsed if mineru_output is not None else []}
         qwen_output = call_with_retry(
             client=qwen_client,
             image_task=image_task,
-            prompt=prompt,
+            prompt=recognition_prompt,
             retry=args.retry,
-            context=qwen_context,
         )
         if qwen_output is not None:
             qwen_output, qwen_document, qwen_label = normalize_qwen_payload(
@@ -170,6 +172,26 @@ def main() -> None:
             qwen_document = empty_document(image_task=image_task, source="qwen_unconfigured")
             qwen_label = None
 
+        seal_issues = detect_seal_issues(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            qwen_document=qwen_document,
+        )
+        patch_decisions, _patch_outputs = adjudicate_issues_with_llm(
+            client=qwen_client,
+            image_task=image_task,
+            prompt=adjudication_prompt,
+            issues=seal_issues,
+            retry=args.retry,
+        )
+        if patch_decisions:
+            mineru_document = apply_patch_decisions(
+                mineru_document=mineru_document,
+                issues=seal_issues,
+                patch_decisions=patch_decisions,
+            )
+            mineru_label = derive_label_from_document(mineru_document)
+
         artifact = adjudicate_documents(
             image_task=image_task,
             mineru_document=mineru_document,
@@ -179,6 +201,8 @@ def main() -> None:
             mineru_output=mineru_output,
             qwen_output=qwen_output,
         )
+        artifact.issues = seal_issues
+        artifact.patch_decisions = patch_decisions
         summary_record = write_image_result(
             output_dir=args.output_dir,
             image_task=image_task,

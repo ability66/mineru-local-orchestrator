@@ -127,12 +127,25 @@ class QwenLocalClient(BaseLocalClient):
         return "\n\n".join(part for part in base if part.strip())
 
     def _format_context_block(self, context: dict[str, Any]) -> str:
+        mode = str(context.get("mode", "") or "").strip().lower()
+        if mode == "seal_adjudication":
+            issue_payload = context.get("issue_payload")
+            serialized = json.dumps(issue_payload, ensure_ascii=False, indent=2)
+            return (
+                "以下是一个需要局部仲裁的印章 issue，请只输出 patch 决策 JSON，不要输出解释性正文：\n"
+                f"{serialized}"
+            )
+
         mineru_payload = context.get("mineru_payload")
-        serialized = json.dumps(mineru_payload, ensure_ascii=False, indent=2)
-        return (
-            "以下是 MinerU 的初步结构化结果，请以纠偏和补充为主，不要机械重写：\n"
-            f"{serialized}"
-        )
+        if mineru_payload is not None:
+            serialized = json.dumps(mineru_payload, ensure_ascii=False, indent=2)
+            return (
+                "以下是 MinerU 的初步结构化结果，请以纠偏和补充为主，不要机械重写：\n"
+                f"{serialized}"
+            )
+
+        serialized = json.dumps(context, ensure_ascii=False, indent=2)
+        return f"以下是附加上下文信息：\n{serialized}"
 
     def _build_url(self) -> str:
         base = str(self.base_url or "").rstrip("/")
@@ -177,4 +190,3 @@ class QwenLocalClient(BaseLocalClient):
                     fragments.append(text)
             return "\n".join(fragments)
         return str(content)
-

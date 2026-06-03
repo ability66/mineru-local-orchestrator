@@ -9,6 +9,10 @@ except ImportError:
 
 
 def load_default_prompt(config_path: Path) -> str:
+    return load_prompt(config_path=config_path, prompt_name="default_prompt")
+
+
+def load_prompt(config_path: Path, prompt_name: str) -> str:
     if not config_path.exists():
         raise FileNotFoundError(f"Prompt config not found: {config_path}")
 
@@ -18,18 +22,23 @@ def load_default_prompt(config_path: Path) -> str:
     else:
         data = _fallback_prompt_parser(raw_text)
 
-    prompt = data.get("default_prompt")
+    prompt = data.get(prompt_name)
     if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError("Missing non-empty 'default_prompt' in prompts config")
+        raise ValueError(f"Missing non-empty '{prompt_name}' in prompts config")
 
     return prompt.strip()
 
 
 def _fallback_prompt_parser(raw_text: str) -> dict[str, str]:
     lines = raw_text.splitlines()
+    prompts: dict[str, str] = {}
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped.startswith("default_prompt:"):
+        if not stripped.endswith(": |") and not stripped.endswith(":|") and ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        if not key.endswith("_prompt") and key != "default_prompt":
             continue
 
         if stripped.endswith("|"):
@@ -42,9 +51,11 @@ def _fallback_prompt_parser(raw_text: str) -> dict[str, str]:
                     block.append("")
                     continue
                 break
-            return {"default_prompt": "\n".join(block).rstrip()}
+            prompts[key] = "\n".join(block).rstrip()
+            continue
 
-        _, _, value = stripped.partition(":")
-        return {"default_prompt": value.strip().strip("'").strip('"')}
+        prompts[key] = value.strip().strip("'").strip('"')
 
-    raise ValueError("Missing 'default_prompt' in prompts config")
+    if not prompts:
+        raise ValueError("Missing prompt entries in prompts config")
+    return prompts
