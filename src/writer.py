@@ -277,8 +277,6 @@ def _canonical_block_to_extraction_item(block: CanonicalBlock) -> dict[str, Any]
         item["sub_type"] = block.sub_type
     if block.flowchart_graph is not None:
         item["flowchart_graph"] = block.flowchart_graph
-    if block.ocr_regions:
-        item["ocr_regions"] = [region.model_dump() for region in block.ocr_regions]
     if block.type == "title" and block.text_level is not None:
         item["text_level"] = block.text_level
     return item

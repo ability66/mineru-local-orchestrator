@@ -9,6 +9,7 @@ from src.schema import (
     CaptionStructured,
     ImageTask,
     ModelOutput,
+    OcrRegion,
     StructuredLabel,
 )
 from src.writer import build_content_list, build_content_list_v2, write_image_result
@@ -50,6 +51,7 @@ def test_writer_preserves_flowchart_and_seal_blocks() -> None:
                 content={"img_path": "/tmp/demo.png", "image_caption": ["某某公司印章"]},
                 source="adjudicated",
                 caption_structured=CaptionStructured(brief="某某公司印章"),
+                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
             ),
         ],
     )
@@ -174,6 +176,7 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(tmp_pat
     assert blocks[1]["type"] == "image"
     assert blocks[1]["sub_type"] == "seal"
     assert blocks[1]["content"] == "某某公司印章"
+    assert "ocr_regions" not in blocks[1]
     assert not (final_dir / "img-1_content_list_v2.json").exists()
     assert not (final_dir / "img-1_content_list.json").exists()
     assert (final_dir / "img-1_artifact.json").exists()
