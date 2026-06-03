@@ -134,3 +134,50 @@ def test_generate_compare_page_is_offline_and_copies_local_asset(tmp_path, monke
     assert "assets/mermaid.min.js" in html
     assert "cdn" not in html.lower()
     assert (output_dir / "compare_mermaid" / "assets" / "mermaid.min.js").exists()
+
+
+def test_collect_mermaid_snapshots_supports_legacy_final_and_issue_candidate_payload(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    (output_dir / "normalized" / "mineru" / "demo.json").write_text(
+        json.dumps({"document": {"blocks": []}, "derived_label": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "demo.json").write_text(
+        json.dumps({"document": {"blocks": []}, "derived_label": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "demo_content_list_v2.json").write_text(
+        json.dumps(
+            [[{"type": "chart", "sub_type": "flowchart", "content": {"content": "flowchart TD\nA-->B"}}]],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "demo_artifact.json").write_text(
+        json.dumps(
+            {
+                "graph_fusion": {},
+                "issues": [
+                    {
+                        "issue_type": "flowchart_candidate_review",
+                        "candidate_payload": {
+                            "candidate_mermaid": "flowchart TD\nN001-->N002",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshots = collect_mermaid_snapshots(image_id="demo", output_dir=output_dir)
+
+    assert snapshots[2].status == "valid"
+    assert snapshots[2].render_code == "flowchart TD\nN001-->N002"
+    assert snapshots[3].status == "valid"
+    assert snapshots[3].render_code == "flowchart TD\nA-->B"

@@ -25,6 +25,7 @@ from src.pipeline.llm_adjudicator import adjudicate_issues_with_llm
 from src.pipeline.normalizers import derive_label_from_document, normalize_mineru_payload, normalize_qwen_payload
 from src.pipeline.patches import apply_patch_decisions
 from src.prompt_builder import load_prompt
+from src.render_mermaid_compare import generate_compare_page
 from src.schema import CanonicalDocument, ImageTask, ModelOutput
 from src.writer import (
     append_summary_record,
@@ -46,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--retry", type=int, default=0)
     parser.add_argument("--request-timeout", type=int, default=180)
+    parser.add_argument("--manual-compare-mode", action="store_true")
     return parser.parse_args()
 
 
@@ -247,6 +249,15 @@ def main() -> None:
             qwen_label=qwen_label,
             artifact=artifact,
         )
+        if args.manual_compare_mode:
+            try:
+                generate_compare_page(
+                    image_id=image_task.image_id,
+                    output_dir=args.output_dir,
+                    compare_dir=args.output_dir / "compare_mermaid",
+                )
+            except Exception as exc:
+                print(f"[manual-compare] failed for {image_task.image_id}: {type(exc).__name__}: {exc}")
         append_summary_record(summary_path, summary_record)
 
     print(f"Processed {len(image_tasks)} images")

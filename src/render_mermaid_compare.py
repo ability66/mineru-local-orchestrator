@@ -74,6 +74,8 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
     mineru_payload = _load_json(normalized_dir / "mineru" / f"{image_id}.json")
     qwen_payload = _load_json(normalized_dir / "qwen" / f"{image_id}.json")
     final_payload = _load_json(final_dir / f"{image_id}.json")
+    legacy_content_list_v2 = _load_json(final_dir / f"{image_id}_content_list_v2.json")
+    legacy_content_list = _load_json(final_dir / f"{image_id}_content_list.json")
     artifact_payload = _load_json(final_dir / f"{image_id}_artifact.json")
 
     snapshots = [
@@ -94,8 +96,19 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
         ),
         _snapshot_from_final_payload(
             payload=final_payload,
+            artifact_payload=artifact_payload,
+            legacy_content_list_v2=legacy_content_list_v2,
+            legacy_content_list=legacy_content_list,
             title="Final",
-            source_path=f"final/{image_id}.json",
+            source_path=(
+                f"final/{image_id}.json"
+                if final_payload is not None
+                else (
+                    f"final/{image_id}_content_list_v2.json"
+                    if legacy_content_list_v2 is not None
+                    else f"final/{image_id}_content_list.json"
+                )
+            ),
         ),
     ]
     return snapshots
@@ -388,29 +401,72 @@ def _snapshot_from_normalized_payload(payload: Any, title: str, source_path: str
     return label_snapshot
 
 
-def _snapshot_from_final_payload(payload: Any, title: str, source_path: str) -> MermaidSnapshot:
-    if not isinstance(payload, dict):
-        return MermaidSnapshot(
+def _snapshot_from_final_payload(
+    payload: Any,
+    artifact_payload: Any,
+    legacy_content_list_v2: Any,
+    legacy_content_list: Any,
+    title: str,
+    source_path: str,
+) -> MermaidSnapshot:
+    if isinstance(payload, dict):
+        parsed = payload.get("parsed")
+        extraction_results = parsed.get("extraction_results") if isinstance(parsed, dict) else None
+        blocks: list[dict[str, Any]] = []
+        if isinstance(extraction_results, list):
+            for page in extraction_results:
+                if not isinstance(page, dict):
+                    continue
+                page_blocks = page.get("json_res")
+                if isinstance(page_blocks, list):
+                    blocks.extend(item for item in page_blocks if isinstance(item, dict))
+        snapshot = _extract_from_document_payload(title=title, source_path=source_path, blocks=blocks)
+        if snapshot.status != "missing":
+            return snapshot
+
+    legacy_blocks_v2 = _flatten_content_list_v2(legacy_content_list_v2)
+    if legacy_blocks_v2:
+        snapshot = _extract_from_document_payload(
             title=title,
             source_path=source_path,
-            code="",
-            render_code="",
-            origin="missing_file",
-            status="missing",
-            note="未找到 final 输出文件",
+            blocks=legacy_blocks_v2,
         )
+        if snapshot.status != "missing":
+            snapshot.note = f"{snapshot.note}；来自 legacy content_list_v2".strip("；")
+            return snapshot
 
-    parsed = payload.get("parsed")
-    extraction_results = parsed.get("extraction_results") if isinstance(parsed, dict) else None
-    blocks: list[dict[str, Any]] = []
-    if isinstance(extraction_results, list):
-        for page in extraction_results:
-            if not isinstance(page, dict):
-                continue
-            page_blocks = page.get("json_res")
-            if isinstance(page_blocks, list):
-                blocks.extend(item for item in page_blocks if isinstance(item, dict))
-    return _extract_from_document_payload(title=title, source_path=source_path, blocks=blocks)
+    if isinstance(legacy_content_list, list):
+        legacy_blocks = [item for item in legacy_content_list if isinstance(item, dict)]
+        snapshot = _extract_from_document_payload(
+            title=title,
+            source_path=source_path,
+            blocks=legacy_blocks,
+        )
+        if snapshot.status != "missing":
+            snapshot.note = f"{snapshot.note}；来自 legacy content_list".strip("；")
+            return snapshot
+
+    if isinstance(artifact_payload, dict):
+        final_document = artifact_payload.get("final_document")
+        artifact_blocks = _safe_blocks_from_document(final_document)
+        snapshot = _extract_from_document_payload(
+            title=title,
+            source_path=f"{source_path} (artifact fallback)",
+            blocks=artifact_blocks,
+        )
+        if snapshot.status != "missing":
+            snapshot.note = f"{snapshot.note}；来自 artifact.final_document 回退".strip("；")
+            return snapshot
+
+    return MermaidSnapshot(
+        title=title,
+        source_path=source_path,
+        code="",
+        render_code="",
+        origin="missing_file",
+        status="missing",
+        note="未找到 final 输出文件，且 legacy / artifact 回退也没有流程图内容",
+    )
 
 
 def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) -> MermaidSnapshot:
@@ -449,6 +505,52 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 status="derived",
                 note=f"由 graph_fusion 图结构反推，fusion_status={graph_fusion.get('fusion_status', 'unknown')}",
             )
+
+    for issue_index, issue in enumerate(payload.get("issues") or []):
+        if not isinstance(issue, dict) or str(issue.get("issue_type", "") or "").strip() != "flowchart_candidate_review":
+            continue
+        candidate_payload = issue.get("candidate_payload")
+        if not isinstance(candidate_payload, dict):
+            continue
+        candidate_mermaid = str(candidate_payload.get("candidate_mermaid", "") or "").strip()
+        if looks_like_mermaid(candidate_mermaid):
+            return MermaidSnapshot(
+                title=title,
+                source_path=source_path,
+                code=candidate_mermaid,
+                render_code=candidate_mermaid,
+                origin=f"issues[{issue_index}].candidate_payload.candidate_mermaid",
+                status="valid",
+                note="来自流程图二阶段 issue 候选 Mermaid",
+            )
+        candidate_patch = candidate_payload.get("candidate_patch")
+        if isinstance(candidate_patch, dict):
+            content_payload = candidate_patch.get("content")
+            candidate_patch_mermaid = ""
+            if isinstance(content_payload, dict):
+                candidate_patch_mermaid = str(content_payload.get("content", "") or "").strip()
+            if looks_like_mermaid(candidate_patch_mermaid):
+                return MermaidSnapshot(
+                    title=title,
+                    source_path=source_path,
+                    code=candidate_patch_mermaid,
+                    render_code=candidate_patch_mermaid,
+                    origin=f"issues[{issue_index}].candidate_payload.candidate_patch.content.content",
+                    status="valid",
+                    note="来自流程图二阶段 issue 候选 patch",
+                )
+            flowchart_graph = candidate_patch.get("flowchart_graph")
+            derived = mermaid_from_flowchart_graph(flowchart_graph if isinstance(flowchart_graph, dict) else None)
+            if derived:
+                return MermaidSnapshot(
+                    title=title,
+                    source_path=source_path,
+                    code=derived,
+                    render_code=derived,
+                    origin=f"issues[{issue_index}].candidate_payload.candidate_patch.flowchart_graph",
+                    status="derived",
+                    note="由流程图二阶段 issue 候选 graph 反推 Mermaid",
+                )
 
     return MermaidSnapshot(
         title=title,
@@ -603,6 +705,17 @@ def _safe_blocks_from_document(document_payload: Any) -> list[dict[str, Any]]:
     if not isinstance(blocks, list):
         return []
     return [item for item in blocks if isinstance(item, dict)]
+
+
+def _flatten_content_list_v2(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    for page in payload:
+        if not isinstance(page, list):
+            continue
+        blocks.extend(item for item in page if isinstance(item, dict))
+    return blocks
 
 
 def _is_flowchart_like_block(block: dict[str, Any]) -> bool:
