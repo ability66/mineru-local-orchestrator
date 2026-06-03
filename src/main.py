@@ -200,9 +200,9 @@ def main() -> None:
             qwen_label=qwen_label,
             mineru_output=mineru_output,
             qwen_output=qwen_output,
+            issues=seal_issues,
+            patch_decisions=patch_decisions,
         )
-        artifact.issues = seal_issues
-        artifact.patch_decisions = patch_decisions
         summary_record = write_image_result(
             output_dir=args.output_dir,
             image_task=image_task,

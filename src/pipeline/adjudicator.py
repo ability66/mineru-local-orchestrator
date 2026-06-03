@@ -13,12 +13,15 @@ from src.schema import (
     CanonicalDocument,
     ConsensusResult,
     ImageTask,
+    Issue,
     ModelOutput,
     OcrRegion,
+    PatchDecision,
     ParsedLabel,
     StructuredLabel,
 )
 from src.scorer import score_consensus
+from src.seal_utils import is_stamp_mode
 from src.validators import ValidationResult
 
 
@@ -30,6 +33,8 @@ def adjudicate_documents(
     qwen_label: ParsedLabel | None,
     mineru_output: ModelOutput | None,
     qwen_output: ModelOutput | None,
+    issues: list[Issue] | None = None,
+    patch_decisions: list[PatchDecision] | None = None,
 ) -> AdjudicationArtifact:
     base_document = mineru_document if mineru_document.blocks or not qwen_document.blocks else qwen_document
     candidate_document = qwen_document if base_document is mineru_document else mineru_document
@@ -96,6 +101,18 @@ def adjudicate_documents(
         validation_result=validation_result,
         graph_fusion_result=graph_fusion_result,
     )
+    consensus = _override_stamp_mode_consensus(
+        image_id=image_task.image_id,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        issues=issues or [],
+        patch_decisions=patch_decisions or [],
+        existing=consensus,
+    )
     preferred_label, allow_type_override, allow_graph_override = _pick_enrichment_policy(
         mineru_label=mineru_label,
         qwen_label=qwen_label,
@@ -130,6 +147,8 @@ def adjudicate_documents(
         review_required=consensus is None or consensus.decision != "accepted",
         reasons=_deduplicate(reasons),
         warnings=_deduplicate(final_document.warnings),
+        issues=list(issues or []),
+        patch_decisions=list(patch_decisions or []),
     )
 
 
@@ -411,6 +430,145 @@ def _build_consensus(
         score_result=score_result,
         validation_result=validation_result,
         graph_fusion_result=graph_fusion_result,
+    )
+
+
+def _override_stamp_mode_consensus(
+    image_id: str,
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+    mineru_output: ModelOutput | None,
+    qwen_output: ModelOutput | None,
+    issues: list[Issue],
+    patch_decisions: list[PatchDecision],
+    existing: ConsensusResult | None,
+) -> ConsensusResult | None:
+    labels = [label for label in (mineru_label, qwen_label) if label is not None]
+    if not _is_issue_driven_stamp_mode(
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        labels=labels,
+        issues=issues,
+    ):
+        return existing
+
+    both_succeeded = bool(
+        mineru_output is not None
+        and qwen_output is not None
+        and mineru_output.success
+        and qwen_output.success
+    )
+    both_parsed = mineru_label is not None and qwen_label is not None
+    if not both_succeeded:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["stamp mode requires both models to succeed before auto-accept"],
+            escalation_reasons=["stamp_mode_model_failure"],
+            existing=existing,
+        )
+    if not both_parsed:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["stamp mode requires both models to produce parsable labels before auto-accept"],
+            escalation_reasons=["stamp_mode_missing_parsed_label"],
+            existing=existing,
+        )
+    if not issues:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="accepted",
+            reasons=["no seal issues detected"],
+            escalation_reasons=[],
+            existing=existing,
+        )
+
+    unresolved_issues = _find_unresolved_stamp_issues(issues=issues, patch_decisions=patch_decisions)
+    if unresolved_issues:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["seal issues remain unresolved after second-stage adjudication"] + unresolved_issues,
+            escalation_reasons=["stamp_issues_unresolved"],
+            existing=existing,
+        )
+
+    return _build_issue_driven_consensus(
+        image_id=image_id,
+        decision="accepted",
+        reasons=["seal issues resolved by second-stage adjudication"],
+        escalation_reasons=[],
+        existing=existing,
+    )
+
+
+def _is_issue_driven_stamp_mode(
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    labels: list[ParsedLabel],
+    issues: list[Issue],
+) -> bool:
+    if issues:
+        return True
+    if labels and is_stamp_mode(labels):
+        return True
+    return any(_is_seal_like_block(block) for block in mineru_document.blocks + qwen_document.blocks)
+
+
+def _is_seal_like_block(block: CanonicalBlock) -> bool:
+    if block.type != "image":
+        return False
+    if str(block.sub_type or "").strip().lower() == "seal":
+        return True
+    return any(str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions)
+
+
+def _find_unresolved_stamp_issues(
+    issues: list[Issue],
+    patch_decisions: list[PatchDecision],
+) -> list[str]:
+    decision_lookup = {decision.issue_id: decision for decision in patch_decisions}
+    unresolved: list[str] = []
+    failure_reasons = {"llm_patch_unavailable", "llm_patch_invalid_json"}
+
+    for issue in issues:
+        decision = decision_lookup.get(issue.issue_id)
+        if decision is None:
+            unresolved.append(f"missing_patch_decision:{issue.issue_id}")
+            continue
+        if str(decision.reason or "").strip() in failure_reasons:
+            unresolved.append(f"patch_decision_unavailable:{issue.issue_id}")
+    return unresolved
+
+
+def _build_issue_driven_consensus(
+    image_id: str,
+    decision: str,
+    reasons: list[str],
+    escalation_reasons: list[str],
+    existing: ConsensusResult | None,
+) -> ConsensusResult:
+    metrics = existing.model_dump() if existing is not None else {}
+    accepted = decision == "accepted"
+    return ConsensusResult(
+        image_id=image_id,
+        type_agreement=1.0 if accepted else float(metrics.get("type_agreement", 0.0)),
+        caption_agreement=1.0 if accepted else float(metrics.get("caption_agreement", 0.0)),
+        structure_agreement=1.0 if accepted else float(metrics.get("structure_agreement", 0.0)),
+        seal_agreement=1.0 if accepted else float(metrics.get("seal_agreement", 1.0)),
+        overall_score=1.0 if accepted else float(metrics.get("overall_score", 0.0)),
+        evidence_score=1.0 if accepted else float(metrics.get("evidence_score", 0.0)),
+        validator_score=1.0 if accepted else float(metrics.get("validator_score", 0.0)),
+        hallucination_risk=0.0 if accepted else float(metrics.get("hallucination_risk", 1.0)),
+        accept_score=1.0 if accepted else float(metrics.get("accept_score", 0.0)),
+        decision=decision,  # type: ignore[arg-type]
+        reasons=_deduplicate(reasons),
+        validation_errors=[],
+        validation_warnings=[],
+        escalation_reasons=_deduplicate(escalation_reasons),
     )
 
 

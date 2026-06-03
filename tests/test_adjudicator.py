@@ -6,8 +6,10 @@ from src.schema import (
     CanonicalDocument,
     CaptionStructured,
     ImageTask,
+    Issue,
     ModelOutput,
     OcrRegion,
+    PatchDecision,
     ParsedLabel,
     StructuredLabel,
 )
@@ -175,3 +177,190 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
     assert artifact.review_required is True
     assert artifact.final_document.blocks[0].type == "table"
     assert artifact.final_document.blocks[0].structured_label.kind == "table"
+
+
+def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
+    image_task = ImageTask(
+        image_id="img-3",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-3",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[100, 100, 300, 300],
+                text="某某公司印章",
+                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                source="mineru",
+                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                caption_structured=CaptionStructured(brief="某某公司印章"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-3",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[100, 100, 300, 300],
+                text="某某公司印章",
+                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                source="qwen",
+                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                caption_structured=CaptionStructured(brief="某某公司印章"),
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="document",
+        caption="某某公司印章",
+        caption_structured=CaptionStructured(
+            brief="某某公司印章",
+            visual_type="document",
+            main_subject="某某公司印章",
+            confidence="high",
+        ),
+        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+    )
+    qwen_label = ParsedLabel(
+        image_type="document",
+        caption="某某公司印章",
+        caption_structured=CaptionStructured(
+            brief="某某公司印章",
+            visual_type="document",
+            main_subject="某某公司印章",
+            confidence="high",
+        ),
+        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=ModelOutput(image_id="img-3", model_name="mineru", success=True, raw_text="{}"),
+        qwen_output=ModelOutput(image_id="img-3", model_name="qwen", success=True, raw_text="{}"),
+        issues=[],
+        patch_decisions=[],
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "accepted"
+    assert artifact.review_required is False
+
+
+def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
+    image_task = ImageTask(
+        image_id="img-4",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-4",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[100, 100, 300, 300],
+                text="",
+                content={"img_path": "data/demo.png"},
+                source="mineru",
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-4",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[100, 100, 300, 300],
+                text="某某公司印章",
+                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                source="qwen",
+                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="document",
+        caption="",
+        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+    )
+    qwen_label = ParsedLabel(
+        image_type="document",
+        caption="某某公司印章",
+        caption_structured=CaptionStructured(
+            brief="某某公司印章",
+            visual_type="document",
+            main_subject="某某公司印章",
+            confidence="high",
+        ),
+        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=ModelOutput(image_id="img-4", model_name="mineru", success=True, raw_text="{}"),
+        qwen_output=ModelOutput(image_id="img-4", model_name="qwen", success=True, raw_text="{}"),
+        issues=[
+            Issue(
+                issue_id="seal-missing-ocr-m1",
+                issue_type="seal_missing_ocr",
+                page_idx=0,
+                target_block_id="m1",
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="seal-missing-ocr-m1",
+                target_block_id="m1",
+                decision="keep_mineru",
+                patch={},
+                reason="llm_patch_unavailable",
+            )
+        ],
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "review"
+    assert artifact.review_required is True
