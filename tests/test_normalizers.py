@@ -136,6 +136,55 @@ def test_normalize_mineru_payload_unwraps_extraction_result_json_res() -> None:
     assert label.image_type == "table"
 
 
+def test_normalize_mineru_payload_converts_one_based_pages_to_zero_based() -> None:
+    image_task = ImageTask(
+        image_id="img-one-based",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    model_output = ModelOutput(
+        image_id="img-one-based",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={
+            "parsed": {
+                "filename": "demo.png",
+                "total_pages": 1,
+                "extraction_results": [
+                    {
+                        "page": 1,
+                        "file_name": "demo.png",
+                        "md_res": "page1",
+                        "json_res": [
+                            {
+                                "type": "text",
+                                "bbox": [0, 100, 1000, 200],
+                                "angle": 0,
+                                "content": "第一页正文",
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    _, document, label = normalize_mineru_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert not document.warnings
+    assert document.page_count == 1
+    assert len(document.blocks) == 1
+    assert document.blocks[0].page_idx == 0
+    assert document.blocks[0].text == "第一页正文"
+    assert label is not None
+    assert label.caption == "第一页正文"
+
+
 def test_normalize_mineru_payload_unwraps_tmp_shape_extraction_results_with_flat_json_res() -> None:
     image_task = ImageTask(
         image_id="img-extract-list",

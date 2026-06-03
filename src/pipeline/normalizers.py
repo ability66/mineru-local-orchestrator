@@ -655,10 +655,11 @@ def _extract_page_result_list_payload(items: list[Any]) -> Any | None:
     ):
         return None
 
+    normalized_page_indexes = _normalize_page_indexes(items)
     ordered_pages: list[tuple[int, list[dict[str, Any]]]] = []
     fallback_payload: Any | None = None
     for index, item in enumerate(items):
-        page_index = _coerce_non_negative_int(item.get("page"), default=index) or index
+        page_index = normalized_page_indexes[index]
         candidate_payload = _coerce_embedded_payload(item.get("json_res"))
         extracted = _extract_document_payload(candidate_payload)
         if extracted is None:
@@ -678,6 +679,20 @@ def _extract_page_result_list_payload(items: list[Any]) -> Any | None:
             pages[page_index] = page_blocks
         return pages
     return fallback_payload
+
+
+def _normalize_page_indexes(items: list[dict[str, Any]]) -> list[int]:
+    explicit_pages = [_coerce_non_negative_int(item.get("page")) for item in items]
+    normalized_explicit = [page for page in explicit_pages if page is not None]
+    subtract_one = bool(normalized_explicit) and 0 not in normalized_explicit and min(normalized_explicit) == 1
+
+    normalized_pages: list[int] = []
+    for index, page in enumerate(explicit_pages):
+        if page is None:
+            normalized_pages.append(index)
+            continue
+        normalized_pages.append(max(0, page - 1) if subtract_one else page)
+    return normalized_pages
 
 
 def _coerce_embedded_payload(value: Any) -> Any:
