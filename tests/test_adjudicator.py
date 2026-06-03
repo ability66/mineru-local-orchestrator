@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from src.graph_fusion import FusedGraphResult
 from src.pipeline.adjudicator import adjudicate_documents
 from src.schema import (
     CanonicalBlock,
@@ -271,7 +270,7 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
     assert artifact.review_required is False
 
 
-def test_adjudicator_auto_accepts_flowchart_mode_when_second_stage_keeps_candidate() -> None:
+def test_adjudicator_auto_accepts_flowchart_mode_when_no_graph_issues() -> None:
     image_task = ImageTask(
         image_id="img-flow-accept",
         image_path="data/demo.png",
@@ -360,30 +359,8 @@ def test_adjudicator_auto_accepts_flowchart_mode_when_second_stage_keeps_candida
         qwen_label=qwen_label,
         mineru_output=ModelOutput(image_id="img-flow-accept", model_name="mineru", success=True, raw_text="{}"),
         qwen_output=ModelOutput(image_id="img-flow-accept", model_name="qwen", success=True, raw_text="{}"),
-        issues=[
-            Issue(
-                issue_id="flowchart-review-m1",
-                issue_type="flowchart_candidate_review",
-                page_idx=0,
-                target_block_id="m1",
-                reasons=["flowchart_requires_second_stage_review"],
-            )
-        ],
-        patch_decisions=[
-            PatchDecision(
-                issue_id="flowchart-review-m1",
-                target_block_id="m1",
-                decision="keep_candidate",
-                patch={},
-                reason="候选 Mermaid 可直接采用",
-            )
-        ],
-        graph_fusion_result_override=FusedGraphResult(
-            mermaid="flowchart TD\nA-->B",
-            fusion_method="visual_order",
-            fusion_status="fused",
-            graph_confidence=0.95,
-        ),
+        issues=[],
+        patch_decisions=[],
     )
 
     assert artifact.consensus is not None
@@ -459,10 +436,10 @@ def test_adjudicator_reviews_flowchart_mode_when_final_mermaid_missing() -> None
         issues=[
             Issue(
                 issue_id="flowchart-review-m1",
-                issue_type="flowchart_candidate_review",
+                issue_type="flowchart_graph_conflict",
                 page_idx=0,
                 target_block_id="m1",
-                reasons=["flowchart_requires_second_stage_review"],
+                reasons=["flowchart_graph_conflict_detected"],
             )
         ],
         patch_decisions=[
@@ -474,12 +451,6 @@ def test_adjudicator_reviews_flowchart_mode_when_final_mermaid_missing() -> None
                 reason="当前无法确认候选",
             )
         ],
-        graph_fusion_result_override=FusedGraphResult(
-            mermaid="",
-            fusion_method="visual_order",
-            fusion_status="partial",
-            graph_confidence=0.3,
-        ),
     )
 
     assert artifact.consensus is not None

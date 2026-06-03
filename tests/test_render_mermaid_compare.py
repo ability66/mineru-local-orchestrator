@@ -164,9 +164,9 @@ def test_collect_mermaid_snapshots_supports_legacy_final_and_issue_candidate_pay
                 "graph_fusion": {},
                 "issues": [
                     {
-                        "issue_type": "flowchart_candidate_review",
+                        "issue_type": "flowchart_graph_conflict",
                         "candidate_payload": {
-                            "candidate_mermaid": "flowchart TD\nN001-->N002",
+                            "reference_mermaid": "flowchart TD\nN001-->N002",
                         },
                     }
                 ],
@@ -243,14 +243,14 @@ def test_collect_mermaid_snapshots_supports_image_flowchart_blocks_and_qwen_issu
                 "graph_fusion": {},
                 "issues": [
                     {
-                        "issue_type": "flowchart_candidate_review",
+                        "issue_type": "flowchart_graph_conflict",
                         "qwen_block": {
                             "type": "chart",
                             "sub_type": "flowchart",
                             "content": {"content": "flowchart TD\nQ-->R"},
                         },
                         "candidate_payload": {
-                            "qwen_mermaid": "flowchart TD\nQ-->R",
+                            "reference_mermaid": "flowchart TD\nQ-->R",
                         },
                     }
                 ],

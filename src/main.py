@@ -19,7 +19,7 @@ except ImportError:
 
 from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
-from src.pipeline.adjudicator import adjudicate_documents, build_flowchart_candidate_result
+from src.pipeline.adjudicator import adjudicate_documents
 from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
 from src.pipeline.llm_adjudicator import adjudicate_issues_with_llm
 from src.pipeline.normalizers import derive_label_from_document, normalize_mineru_payload, normalize_qwen_payload
@@ -175,18 +175,6 @@ def main() -> None:
             qwen_document = empty_document(image_task=image_task, source="qwen_unconfigured")
             qwen_label = None
 
-        graph_fusion_result = build_flowchart_candidate_result(
-            mineru_label=mineru_label,
-            qwen_label=qwen_label,
-            mineru_output=mineru_output,
-            qwen_output=qwen_output,
-            fallback_visible_text=[
-                text
-                for block in mineru_document.blocks + qwen_document.blocks
-                for text in ([block.text] + list(block.visible_text))
-                if str(text or "").strip()
-            ],
-        )
         seal_issues = detect_seal_issues(
             image_task=image_task,
             mineru_document=mineru_document,
@@ -198,7 +186,6 @@ def main() -> None:
             qwen_document=qwen_document,
             mineru_label=mineru_label,
             qwen_label=qwen_label,
-            graph_fusion_result=graph_fusion_result,
         )
         seal_patch_decisions, _seal_patch_outputs = adjudicate_issues_with_llm(
             client=qwen_client,
@@ -236,7 +223,6 @@ def main() -> None:
             qwen_output=qwen_output,
             issues=all_issues,
             patch_decisions=patch_decisions,
-            graph_fusion_result_override=graph_fusion_result,
         )
         summary_record = write_image_result(
             output_dir=args.output_dir,

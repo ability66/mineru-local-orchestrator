@@ -90,6 +90,7 @@ IssueType = Literal[
     "seal_type_disagreement",
     "seal_ocr_conflict",
     "seal_unmatched_qwen_candidate",
+    "flowchart_graph_conflict",
     "flowchart_candidate_review",
 ]
 PatchDecisionType = Literal[

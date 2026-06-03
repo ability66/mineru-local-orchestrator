@@ -113,6 +113,6 @@ def _normalize_decision(value: object) -> str:
         return "keep_mineru"
     if normalized in {"keep_fusion", "keep_candidate_patch", "keep_graph_candidate"}:
         return "keep_candidate"
-    if normalized in {"use_qwen", "use_qwen_patch"}:
+    if normalized in {"use_qwen", "use_qwen_patch", "use_reference", "adopt_qwen", "adopt_reference"}:
         return "use_qwen_fields"
     return "keep_mineru"

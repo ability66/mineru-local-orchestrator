@@ -128,7 +128,7 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
         qwen_snapshot,
         _snapshot_from_artifact_payload(
             payload=artifact_payload,
-            title="Fusion Candidate",
+            title="Flowchart Reference",
             source_path=f"final/{image_id}_artifact.json",
         ),
         _snapshot_from_final_payload(
@@ -650,11 +650,47 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
             )
 
     for issue_index, issue in enumerate(payload.get("issues") or []):
-        if not isinstance(issue, dict) or str(issue.get("issue_type", "") or "").strip() != "flowchart_candidate_review":
+        if not isinstance(issue, dict) or str(issue.get("issue_type", "") or "").strip() not in {
+            "flowchart_candidate_review",
+            "flowchart_graph_conflict",
+        }:
             continue
         candidate_payload = issue.get("candidate_payload")
         if not isinstance(candidate_payload, dict):
             continue
+        reference_mermaid = str(
+            candidate_payload.get("reference_mermaid")
+            or candidate_payload.get("qwen_mermaid")
+            or ""
+        ).strip()
+        normalized_reference_mermaid = _normalize_mermaid_text(reference_mermaid)
+        if looks_like_mermaid(normalized_reference_mermaid):
+            return MermaidSnapshot(
+                title=title,
+                source_path=source_path,
+                code=reference_mermaid,
+                render_code=normalized_reference_mermaid,
+                origin=f"issues[{issue_index}].candidate_payload.reference_mermaid",
+                status="valid",
+                note="来自流程图冲突 issue 的参考 Mermaid",
+            )
+        reference_patch = candidate_payload.get("reference_patch")
+        if isinstance(reference_patch, dict):
+            content_payload = reference_patch.get("content")
+            reference_patch_mermaid = ""
+            if isinstance(content_payload, dict):
+                reference_patch_mermaid = str(content_payload.get("content", "") or "").strip()
+            normalized_reference_patch_mermaid = _normalize_mermaid_text(reference_patch_mermaid)
+            if looks_like_mermaid(normalized_reference_patch_mermaid):
+                return MermaidSnapshot(
+                    title=title,
+                    source_path=source_path,
+                    code=reference_patch_mermaid,
+                    render_code=normalized_reference_patch_mermaid,
+                    origin=f"issues[{issue_index}].candidate_payload.reference_patch.content.content",
+                    status="valid",
+                    note="来自流程图冲突 issue 的参考 patch",
+                )
         candidate_mermaid = str(candidate_payload.get("candidate_mermaid", "") or "").strip()
         normalized_candidate_mermaid = _normalize_mermaid_text(candidate_mermaid)
         if looks_like_mermaid(normalized_candidate_mermaid):
@@ -706,7 +742,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 render_code=normalized_qwen_mermaid,
                 origin=f"issues[{issue_index}].candidate_payload.qwen_mermaid",
                 status="valid",
-                note="graph_fusion 缺失，回退使用 qwen_mermaid 作为候选参考",
+                note="回退使用 qwen_mermaid 作为参考",
             )
 
     return MermaidSnapshot(
@@ -716,7 +752,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
         render_code="",
         origin="graph_fusion",
         status="missing",
-        note="artifact 中没有可渲染的流程图候选",
+        note="artifact 中没有可渲染的流程图参考 Mermaid",
     )
 
 

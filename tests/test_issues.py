@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from src.graph_fusion import FusedGraphResult
 from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
 from src.schema import CanonicalBlock, CanonicalDocument, CaptionStructured, ImageTask, OcrRegion, ParsedLabel, StructuredLabel
 
@@ -106,7 +105,7 @@ def test_detect_seal_issue_when_qwen_marks_plain_image_as_seal() -> None:
     assert issues[0].issue_type == "seal_type_disagreement"
 
 
-def test_detect_flowchart_issue_includes_graph_fusion_candidate() -> None:
+def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference() -> None:
     image_task = ImageTask(
         image_id="img-flow-1",
         image_path="data/demo.png",
@@ -125,8 +124,14 @@ def test_detect_flowchart_issue_includes_graph_fusion_candidate() -> None:
                 sub_type="flowchart",
                 bbox=[0, 0, 1000, 1000],
                 text="流程图",
-                content={"img_path": "data/demo.png", "chart_caption": ["流程图"]},
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
                 source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B",
+                    format="mermaid",
+                    source="mineru",
+                ),
                 caption_structured=CaptionStructured(brief="流程图"),
             )
         ],
@@ -143,11 +148,11 @@ def test_detect_flowchart_issue_includes_graph_fusion_candidate() -> None:
                 sub_type="flowchart",
                 bbox=[0, 0, 1000, 1000],
                 text="流程图",
-                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B\nB-->C"},
                 source="qwen",
                 structured_label=StructuredLabel(
                     kind="mermaid",
-                    content="flowchart TD\nA-->B",
+                    content="flowchart TD\nA-->B\nB-->C",
                     format="mermaid",
                     source="model",
                 ),
@@ -161,16 +166,10 @@ def test_detect_flowchart_issue_includes_graph_fusion_candidate() -> None:
         caption_structured=CaptionStructured(brief="流程图"),
         structured_label=StructuredLabel(
             kind="mermaid",
-            content="flowchart TD\nA-->B",
+            content="flowchart TD\nA-->B\nB-->C",
             format="mermaid",
             source="model",
         ),
-    )
-    graph_fusion_result = FusedGraphResult(
-        mermaid="flowchart TD\nA-->B",
-        fusion_method="visual_order",
-        fusion_status="fused",
-        graph_confidence=0.92,
     )
 
     issues = detect_flowchart_issues(
@@ -179,11 +178,13 @@ def test_detect_flowchart_issue_includes_graph_fusion_candidate() -> None:
         qwen_document=qwen_document,
         mineru_label=None,
         qwen_label=qwen_label,
-        graph_fusion_result=graph_fusion_result,
     )
 
-    assert len(issues) == 1
-    assert issues[0].issue_type == "flowchart_candidate_review"
-    assert issues[0].target_block_id == "m1"
-    assert issues[0].candidate_payload is not None
-    assert issues[0].candidate_payload["candidate_mermaid"] == "flowchart TD\nA-->B"
+    assert issues
+    assert all(issue.issue_type == "flowchart_graph_conflict" for issue in issues)
+    assert all(issue.target_block_id == "m1" for issue in issues)
+    assert any(issue.candidate_payload and issue.candidate_payload["reference_mermaid"] == "flowchart TD\nA-->B\nB-->C" for issue in issues)
+    assert any(
+        issue.candidate_payload and issue.candidate_payload["graph_diff"]["diff_kind"] in {"missing_node", "missing_edge"}
+        for issue in issues
+    )

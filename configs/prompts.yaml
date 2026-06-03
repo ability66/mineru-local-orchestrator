@@ -67,6 +67,7 @@ qwen_recognition_prompt: |
   - `content` 必须是 Mermaid 代码，推荐从 `flowchart TD` 开始
   - 如果确定是流程图，但暂时无法稳定写出 Mermaid，请把 `content` 留空字符串，不要写自然语言概述冒充 Mermaid
   - 如果输出了 Mermaid，必须尽量保留节点、连线、分支与方向信息，不要只写一句概括
+  - 如果输出长度受限，优先保证流程图 Mermaid 自身完整，次要描述可以省略
 
 qwen_adjudication_prompt: |
   你是第二阶段的局部仲裁模型。当前只处理“印章”相关冲突。
@@ -131,13 +132,12 @@ qwen_flowchart_adjudication_prompt: |
   你会收到：
   - 原图
   - 一个 issue JSON
-  - issue 里会包含 MinerU 块、Qwen 第一阶段块、图融合候选 Mermaid、冲突原因
+  - issue 里会包含 MinerU 当前块、Qwen 第一阶段块、当前 Mermaid、参考 Mermaid、图结构冲突详情
 
   你的任务不是重写整份结果，而是只输出一个 patch 决策 JSON。
 
   允许的 decision：
   - keep_mineru
-  - keep_candidate
   - use_qwen_fields
   - merge
   - reject_issue
@@ -157,9 +157,9 @@ qwen_flowchart_adjudication_prompt: |
   - visible_text
 
   其中：
-  - `keep_candidate` 表示直接采用 issue 里给出的图融合候选 Mermaid
-  - 如果你认为候选 Mermaid 基本正确，只需使用 `keep_candidate`，`patch` 可以为空对象
-  - 如果你认为候选 Mermaid 需要修正，使用 `merge`，并在 `patch.content.content` 中给出修正后的 Mermaid
+  - `use_qwen_fields` 表示直接采用 issue 里参考 Mermaid 对应的流程图结果
+  - 如果你认为当前 Mermaid 基本正确，使用 `keep_mineru`
+  - 如果你认为需要修正，使用 `merge`，并在 `patch.content.content` 中给出修正后的**完整 Mermaid**
   - 如果你认为应保留 MinerU 当前结果，使用 `keep_mineru`
   - `type` 只允许是 `chart`
   - `sub_type` 只允许是 `flowchart`
@@ -168,8 +168,9 @@ qwen_flowchart_adjudication_prompt: |
 
   仲裁原则：
   - 默认保留 MinerU 的块位置和页结构
-  - 优先参考图融合候选 Mermaid，再决定是否修正
-  - 只有在确实更合理时，才用 Qwen 第一阶段结果修正候选
+  - 重点判断 issue 里列出的节点、连边、方向、标签冲突
+  - 只有在参考 Mermaid 确实更合理时，才使用 `use_qwen_fields`
+  - 如果两边都不完全对，使用 `merge` 给出修正后的完整 Mermaid
   - 不要改页结构、不要改块顺序、不要大改 bbox
   - 如果无法确定，优先使用 `keep_mineru`
 

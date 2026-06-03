@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.pipeline.flowchart_utils import looks_like_mermaid
+from src.pipeline.flowchart_utils import flowchart_graph_from_mermaid, looks_like_mermaid, normalize_mermaid_text
 from src.schema import CanonicalBlock, CanonicalDocument, OcrRegion, PatchDecision, StructuredLabel
 
 
@@ -91,6 +91,7 @@ def _apply_patch_to_block(block: CanonicalBlock, patch: dict[str, Any]) -> None:
     if isinstance(patch.get("visible_text"), list):
         block.visible_text = _deduplicate_texts(block.visible_text + [str(item).strip() for item in patch.get("visible_text") if str(item).strip()])
 
+    _refresh_flowchart_payload(block)
     _refresh_block_semantics(block)
 
     if block.type in {"image", "chart", "table"} and "img_path" not in block.content:
@@ -99,16 +100,38 @@ def _apply_patch_to_block(block: CanonicalBlock, patch: dict[str, Any]) -> None:
 
 def _resolve_patch_payload(issue: Any, decision: PatchDecision) -> dict[str, Any]:
     payload = dict(decision.patch or {})
-    if decision.decision != "keep_candidate":
-        return payload
     candidate_payload = issue.candidate_payload if issue is not None else None
-    candidate_patch = (
-        dict(candidate_payload.get("candidate_patch") or {})
-        if isinstance(candidate_payload, dict)
-        else {}
-    )
-    candidate_patch.update(payload)
-    return candidate_patch
+    if not isinstance(candidate_payload, dict):
+        return payload
+
+    issue_type = str(getattr(issue, "issue_type", "") or "").strip()
+    if decision.decision == "keep_candidate":
+        candidate_patch = dict(candidate_payload.get("candidate_patch") or {})
+        candidate_patch.update(payload)
+        return candidate_patch
+    if decision.decision == "use_qwen_fields":
+        reference_patch = dict(candidate_payload.get("reference_patch") or {})
+        reference_patch.update(payload)
+        return reference_patch
+    if issue_type == "flowchart_graph_conflict" and decision.decision == "merge":
+        if "content" in payload or "flowchart_graph" in payload:
+            reference_patch = dict(candidate_payload.get("reference_patch") or {})
+            reference_patch.update(payload)
+            return reference_patch
+    return payload
+
+
+def _refresh_flowchart_payload(block: CanonicalBlock) -> None:
+    if str(block.sub_type or "").strip().lower() != "flowchart":
+        return
+
+    mermaid = normalize_mermaid_text(str(block.content.get("content", "") or "").strip())
+    if looks_like_mermaid(mermaid):
+        block.content["content"] = mermaid
+        if block.flowchart_graph is None:
+            derived_graph = flowchart_graph_from_mermaid(mermaid)
+            if derived_graph is not None:
+                block.flowchart_graph = derived_graph
 
 
 def _refresh_block_semantics(block: CanonicalBlock) -> None:

@@ -4,14 +4,36 @@ from html import escape
 from typing import Any
 
 
+def normalize_mermaid_text(text: str) -> str:
+    value = str(text or "").strip()
+    if value.startswith("```") and value.endswith("```"):
+        lines = value.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        value = "\n".join(lines).strip()
+    return value
+
+
 def looks_like_mermaid(content: str) -> bool:
-    text = str(content or "").strip()
+    text = normalize_mermaid_text(content)
     if not text:
         return False
 
     from src.graph_fusion import extract_weak_flowchart_graph_from_mermaid
 
     return extract_weak_flowchart_graph_from_mermaid(text) is not None
+
+
+def flowchart_graph_from_mermaid(content: str) -> dict[str, Any] | None:
+    text = normalize_mermaid_text(content)
+    if not text:
+        return None
+
+    from src.graph_fusion import extract_weak_flowchart_graph_from_mermaid
+
+    return extract_weak_flowchart_graph_from_mermaid(text)
 
 
 def build_flowchart_graph_payload(graph_fusion_result: Any) -> dict[str, Any] | None:
@@ -76,11 +98,80 @@ def build_flowchart_candidate_patch(
         "type": "chart",
         "sub_type": "flowchart",
     }
-    if looks_like_mermaid(mermaid):
-        patch["content"] = {"content": str(mermaid or "").strip()}
+    normalized_mermaid = normalize_mermaid_text(mermaid)
+    if looks_like_mermaid(normalized_mermaid):
+        patch["content"] = {"content": normalized_mermaid}
     if graph_payload is not None:
         patch["flowchart_graph"] = graph_payload
     return patch
+
+
+def build_flowchart_patch_from_mermaid(mermaid: str) -> dict[str, Any]:
+    normalized_mermaid = normalize_mermaid_text(mermaid)
+    return build_flowchart_candidate_patch(
+        mermaid=normalized_mermaid,
+        graph_payload=flowchart_graph_from_mermaid(normalized_mermaid),
+    )
+
+
+def diff_flowchart_graphs(
+    current_graph: dict[str, Any] | None,
+    reference_graph: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    current_nodes = _node_signatures(current_graph)
+    reference_nodes = _node_signatures(reference_graph)
+    current_edges = _edge_signatures(current_graph, current_nodes)
+    reference_edges = _edge_signatures(reference_graph, reference_nodes)
+
+    diffs: list[dict[str, Any]] = []
+
+    for node_key, reference_node in reference_nodes.items():
+        if node_key not in current_nodes:
+            diffs.append(
+                {
+                    "diff_kind": "missing_node",
+                    "node_key": node_key,
+                    "reference_node": reference_node,
+                }
+            )
+
+    for edge_key, reference_edge in reference_edges.items():
+        if edge_key in current_edges:
+            continue
+        reverse_key = _reverse_edge_key(edge_key)
+        if reverse_key in current_edges:
+            diffs.append(
+                {
+                    "diff_kind": "edge_direction_conflict",
+                    "edge_key": edge_key,
+                    "reference_edge": reference_edge,
+                    "current_edge": current_edges[reverse_key],
+                }
+            )
+            continue
+        labelless_key = _edge_key_without_label(edge_key)
+        current_labelless = {
+            _edge_key_without_label(item_key): item for item_key, item in current_edges.items()
+        }
+        if labelless_key in current_labelless:
+            diffs.append(
+                {
+                    "diff_kind": "edge_label_conflict",
+                    "edge_key": edge_key,
+                    "reference_edge": reference_edge,
+                    "current_edge": current_labelless[labelless_key],
+                }
+            )
+            continue
+        diffs.append(
+            {
+                "diff_kind": "missing_edge",
+                "edge_key": edge_key,
+                "reference_edge": reference_edge,
+            }
+        )
+
+    return diffs
 
 
 def mermaid_from_flowchart_graph(graph_payload: dict[str, Any] | None) -> str:
@@ -158,6 +249,79 @@ def mermaid_from_flowchart_graph(graph_payload: dict[str, Any] | None) -> str:
             lines.append(f'{edge["source"]} --> {edge["target"]}')
 
     return "\n".join(lines)
+
+
+def _node_signatures(graph_payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(graph_payload, dict):
+        return {}
+    raw_nodes = graph_payload.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return {}
+
+    nodes: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(raw_nodes, start=1):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "") or "").strip()
+        node_id = str(item.get("node_id", "") or "").strip()
+        signature = _normalize_graph_text(text) or f"id:{node_id or index}"
+        nodes[signature] = {
+            "node_id": node_id or f"N{index:03d}",
+            "order_index": _coerce_int(item.get("order_index"), default=index) or index,
+            "shape": str(item.get("shape", "") or "unknown").strip() or "unknown",
+            "text": text or node_id or f"N{index:03d}",
+        }
+    return nodes
+
+
+def _edge_signatures(
+    graph_payload: dict[str, Any] | None,
+    node_lookup: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(graph_payload, dict):
+        return {}
+    raw_edges = graph_payload.get("edges")
+    if not isinstance(raw_edges, list):
+        return {}
+
+    id_to_key = {
+        str(node.get("node_id", "") or "").strip(): node_key
+        for node_key, node in node_lookup.items()
+    }
+    edges: dict[str, dict[str, Any]] = {}
+    for item in raw_edges:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source", "") or "").strip()
+        target_id = str(item.get("target", "") or "").strip()
+        if not source_id or not target_id:
+            continue
+        source_key = id_to_key.get(source_id, f"id:{source_id}")
+        target_key = id_to_key.get(target_id, f"id:{target_id}")
+        label = str(item.get("label", "") or "").strip()
+        signature = f"{source_key}|{_normalize_graph_text(label)}|{target_key}"
+        edges[signature] = {
+            "source": source_key,
+            "target": target_key,
+            "label": label,
+            "source_text": node_lookup.get(source_key, {}).get("text", source_id),
+            "target_text": node_lookup.get(target_key, {}).get("text", target_id),
+        }
+    return edges
+
+
+def _reverse_edge_key(edge_key: str) -> str:
+    source, label, target = edge_key.split("|", 2)
+    return f"{target}|{label}|{source}"
+
+
+def _edge_key_without_label(edge_key: str) -> str:
+    source, _label, target = edge_key.split("|", 2)
+    return f"{source}||{target}"
+
+
+def _normalize_graph_text(value: Any) -> str:
+    return "".join(str(value or "").split()).lower()
 
 
 def _first_vote(values: Any) -> int | None:

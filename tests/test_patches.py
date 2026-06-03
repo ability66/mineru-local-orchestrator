@@ -64,7 +64,7 @@ def test_apply_patch_decisions_merges_seal_fields_into_mineru_document() -> None
     assert block.provenance["llm_patch_decision"] == "merge"
 
 
-def test_apply_patch_decisions_supports_keep_candidate_for_flowchart() -> None:
+def test_apply_patch_decisions_supports_use_qwen_fields_for_flowchart_reference() -> None:
     mineru_document = CanonicalDocument(
         document_id="img-flow-1",
         source="mineru",
@@ -85,11 +85,11 @@ def test_apply_patch_decisions_supports_keep_candidate_for_flowchart() -> None:
     issues = [
         Issue(
             issue_id="flowchart-review-m1",
-            issue_type="flowchart_candidate_review",
+            issue_type="flowchart_graph_conflict",
             page_idx=0,
             target_block_id="m1",
             candidate_payload={
-                "candidate_patch": {
+                "reference_patch": {
                     "type": "chart",
                     "sub_type": "flowchart",
                     "content": {"content": "flowchart TD\nA-->B"},
@@ -103,16 +103,16 @@ def test_apply_patch_decisions_supports_keep_candidate_for_flowchart() -> None:
                     },
                 }
             },
-            reasons=["flowchart_requires_second_stage_review"],
+            reasons=["flowchart_graph_conflict_detected"],
         )
     ]
     patch_decisions = [
         PatchDecision(
             issue_id="flowchart-review-m1",
             target_block_id="m1",
-            decision="keep_candidate",
+            decision="use_qwen_fields",
             patch={},
-            reason="候选 Mermaid 可直接采用",
+            reason="参考 Mermaid 可直接采用",
         )
     ]
 

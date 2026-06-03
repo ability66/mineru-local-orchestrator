@@ -4,7 +4,6 @@ from dataclasses import asdict
 from typing import Any
 
 from src.decision import decide_consensus
-from src.graph_fusion import fuse_mermaid_outputs
 from src.pipeline.alignment import BlockMatch, align_blocks
 from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
@@ -78,13 +77,7 @@ def adjudicate_documents(
         },
     )
 
-    graph_fusion_result = graph_fusion_result_override or build_flowchart_candidate_result(
-        mineru_label=mineru_label,
-        qwen_label=qwen_label,
-        mineru_output=mineru_output,
-        qwen_output=qwen_output,
-        fallback_visible_text=_collect_visible_text(final_document.blocks),
-    )
+    graph_fusion_result = graph_fusion_result_override
     validation_result = _build_validation_result(
         image_id=image_task.image_id,
         base_document=base_document,
@@ -138,7 +131,6 @@ def adjudicate_documents(
         qwen_document=qwen_document,
         labels=[label for label in (mineru_label, qwen_label) if label is not None],
         issues=issues or [],
-        graph_fusion_result=graph_fusion_result,
     ):
         preferred_label = mineru_label or qwen_label
         allow_type_override = False
@@ -348,32 +340,6 @@ def _should_add_unmatched_qwen_block(block: CanonicalBlock) -> bool:
     return False
 
 
-def _maybe_fuse_flowchart(
-    mineru_label: ParsedLabel | None,
-    qwen_label: ParsedLabel | None,
-    mineru_output: ModelOutput | None,
-    qwen_output: ModelOutput | None,
-    fallback_visible_text: list[str],
-) -> Any | None:
-    paired = [
-        (output, label)
-        for output, label in (
-            (mineru_output, mineru_label),
-            (qwen_output, qwen_label),
-        )
-        if output is not None and label is not None
-    ]
-    if len(paired) < 2:
-        return None
-
-    labels = [label for _, label in paired]
-    if not any(label.image_type == "flowchart" for label in labels):
-        return None
-
-    outputs = [output for output, _ in paired]
-    return fuse_mermaid_outputs(labels, outputs, fallback_visible_text)
-
-
 def build_flowchart_candidate_result(
     mineru_label: ParsedLabel | None,
     qwen_label: ParsedLabel | None,
@@ -381,13 +347,8 @@ def build_flowchart_candidate_result(
     qwen_output: ModelOutput | None,
     fallback_visible_text: list[str],
 ) -> Any | None:
-    return _maybe_fuse_flowchart(
-        mineru_label=mineru_label,
-        qwen_label=qwen_label,
-        mineru_output=mineru_output,
-        qwen_output=qwen_output,
-        fallback_visible_text=fallback_visible_text,
-    )
+    del mineru_label, qwen_label, mineru_output, qwen_output, fallback_visible_text
+    return None
 
 
 def _build_validation_result(
@@ -571,19 +532,16 @@ def _override_flowchart_mode_consensus(
         qwen_document=qwen_document,
         labels=labels,
         issues=issues,
-        graph_fusion_result=graph_fusion_result,
     ):
         return existing
 
-    flowchart_issues = [issue for issue in issues if issue.issue_type == "flowchart_candidate_review"]
-    if not flowchart_issues:
-        return _build_issue_driven_consensus(
-            image_id=image_id,
-            decision="review",
-            reasons=["flowchart mode requires a second-stage review issue"],
-            escalation_reasons=["flowchart_issue_missing"],
-            existing=existing,
-        )
+    del graph_fusion_result
+
+    flowchart_issues = [
+        issue
+        for issue in issues
+        if issue.issue_type in {"flowchart_graph_conflict", "flowchart_candidate_review"}
+    ]
 
     both_succeeded = bool(
         mineru_output is not None
@@ -609,6 +567,23 @@ def _override_flowchart_mode_consensus(
             existing=existing,
         )
 
+    if not flowchart_issues:
+        if _has_valid_flowchart_mermaid(mineru_document):
+            return _build_issue_driven_consensus(
+                image_id=image_id,
+                decision="accepted",
+                reasons=["no flowchart graph conflicts detected"],
+                escalation_reasons=[],
+                existing=existing,
+            )
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=["flowchart detected but final mermaid is still missing"],
+            escalation_reasons=["flowchart_missing_final_mermaid"],
+            existing=existing,
+        )
+
     unresolved_issues = _find_unresolved_flowchart_issues(
         mineru_document=mineru_document,
         issues=flowchart_issues,
@@ -626,7 +601,7 @@ def _override_flowchart_mode_consensus(
     return _build_issue_driven_consensus(
         image_id=image_id,
         decision="accepted",
-        reasons=["flowchart candidate reviewed by second-stage adjudication"],
+        reasons=["flowchart graph conflicts resolved by second-stage adjudication"],
         escalation_reasons=[],
         existing=existing,
     )
@@ -650,11 +625,8 @@ def _is_issue_driven_flowchart_mode(
     qwen_document: CanonicalDocument,
     labels: list[ParsedLabel],
     issues: list[Issue],
-    graph_fusion_result: Any | None,
 ) -> bool:
-    if any(issue.issue_type == "flowchart_candidate_review" for issue in issues):
-        return True
-    if graph_fusion_result is not None and str(getattr(graph_fusion_result, "mermaid", "") or "").strip():
+    if any(issue.issue_type in {"flowchart_graph_conflict", "flowchart_candidate_review"} for issue in issues):
         return True
     if any(label.image_type == "flowchart" for label in labels):
         return True
@@ -670,7 +642,7 @@ def _is_seal_like_block(block: CanonicalBlock) -> bool:
 
 
 def _is_flowchart_like_block(block: CanonicalBlock) -> bool:
-    if block.type != "chart":
+    if block.type not in {"chart", "image"}:
         return False
     if str(block.sub_type or "").strip().lower() == "flowchart":
         return True
@@ -727,6 +699,16 @@ def _find_unresolved_flowchart_issues(
         if not looks_like_mermaid(final_mermaid):
             unresolved.append(f"target_missing_valid_mermaid:{issue.issue_id}")
     return unresolved
+
+
+def _has_valid_flowchart_mermaid(document: CanonicalDocument) -> bool:
+    for block in document.blocks:
+        if not _is_flowchart_like_block(block):
+            continue
+        mermaid = str(block.content.get("content", "") or "").strip()
+        if looks_like_mermaid(mermaid):
+            return True
+    return False
 
 
 def _build_issue_driven_consensus(

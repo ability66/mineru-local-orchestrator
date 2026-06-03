@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from src.pipeline.alignment import align_blocks, bbox_iou
-from src.pipeline.flowchart_utils import build_flowchart_candidate_patch, build_flowchart_graph_payload, looks_like_mermaid
+from src.pipeline.flowchart_utils import (
+    build_flowchart_patch_from_mermaid,
+    diff_flowchart_graphs,
+    flowchart_graph_from_mermaid,
+    looks_like_mermaid,
+    mermaid_from_flowchart_graph,
+    normalize_mermaid_text,
+)
 from src.schema import CanonicalBlock, CanonicalDocument, ImageTask, Issue, ParsedLabel
 
 
@@ -51,15 +57,15 @@ def detect_flowchart_issues(
     qwen_document: CanonicalDocument,
     mineru_label: ParsedLabel | None,
     qwen_label: ParsedLabel | None,
-    graph_fusion_result: Any | None,
+    graph_fusion_result: Any | None = None,
 ) -> list[Issue]:
+    del graph_fusion_result
     del image_task
     if not _has_flowchart_signal(
         mineru_document=mineru_document,
         qwen_document=qwen_document,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
-        graph_fusion_result=graph_fusion_result,
     ):
         return []
 
@@ -85,43 +91,10 @@ def detect_flowchart_issues(
     if target_block is None:
         target_block = mineru_flowchart_block or _pick_visual_block(mineru_document.blocks)
 
-    qwen_mermaid = _extract_flowchart_mermaid(qwen_document.blocks, qwen_label)
-    mineru_mermaid = _extract_flowchart_mermaid(mineru_document.blocks, mineru_label)
-    candidate_mermaid = str(getattr(graph_fusion_result, "mermaid", "") or "").strip()
-    if not looks_like_mermaid(candidate_mermaid):
-        candidate_mermaid = ""
-
-    graph_payload = build_flowchart_graph_payload(graph_fusion_result)
-    candidate_payload = {
-        "candidate_mermaid": candidate_mermaid,
-        "candidate_patch": build_flowchart_candidate_patch(candidate_mermaid, graph_payload),
-        "graph_fusion": asdict(graph_fusion_result) if graph_fusion_result is not None else None,
-        "qwen_mermaid": qwen_mermaid,
-        "mineru_mermaid": mineru_mermaid,
-    }
-
-    reasons = ["flowchart_requires_second_stage_review"]
-    if graph_fusion_result is None:
-        reasons.append("graph_fusion_candidate_missing")
-    else:
-        fusion_status = str(getattr(graph_fusion_result, "fusion_status", "") or "").strip().lower()
-        fusion_method = str(getattr(graph_fusion_result, "fusion_method", "") or "").strip().lower()
-        graph_confidence = float(getattr(graph_fusion_result, "graph_confidence", 0.0) or 0.0)
-        if not candidate_mermaid:
-            reasons.append("graph_fusion_candidate_missing_mermaid")
-        if fusion_method == "mermaid_fallback":
-            reasons.append("graph_fusion_used_mermaid_fallback")
-        if fusion_status and fusion_status != "fused":
-            reasons.append(f"graph_fusion_status:{fusion_status}")
-        if graph_confidence < 0.75:
-            reasons.append("graph_fusion_low_confidence")
-
-    if _has_flowchart_block_or_label(qwen_document.blocks, qwen_label) and not qwen_mermaid:
-        reasons.append("qwen_flowchart_missing_mermaid")
-    if _has_flowchart_block_or_label(mineru_document.blocks, mineru_label) and not mineru_mermaid:
-        reasons.append("mineru_flowchart_missing_mermaid")
-    if qwen_mermaid and candidate_mermaid and _normalize_text(qwen_mermaid) != _normalize_text(candidate_mermaid):
-        reasons.append("qwen_candidate_mermaid_conflict")
+    current_mermaid = _extract_flowchart_mermaid(mineru_document.blocks, mineru_label)
+    reference_mermaid = _extract_flowchart_mermaid(qwen_document.blocks, qwen_label)
+    current_graph = _extract_flowchart_graph(mineru_document.blocks, mineru_label, current_mermaid)
+    reference_graph = _extract_flowchart_graph(qwen_document.blocks, qwen_label, reference_mermaid)
 
     qwen_block_payload = qwen_flowchart_block.model_dump() if qwen_flowchart_block is not None else None
     mineru_block_payload = target_block.model_dump() if target_block is not None else None
@@ -133,18 +106,71 @@ def detect_flowchart_issues(
         if target_block is not None
         else (qwen_flowchart_block.page_idx if qwen_flowchart_block is not None else 0)
     )
-    return [
-        Issue(
-            issue_id=f"flowchart-review-{issue_id_target}",
-            issue_type="flowchart_candidate_review",
-            page_idx=page_idx,
-            target_block_id=target_block.block_id if target_block is not None else None,
-            mineru_block=mineru_block_payload,
-            qwen_block=qwen_block_payload,
-            candidate_payload=candidate_payload,
-            reasons=_deduplicate_texts(reasons),
+
+    shared_payload = {
+        "current_mermaid": current_mermaid,
+        "current_graph": current_graph,
+        "current_patch": build_flowchart_patch_from_mermaid(current_mermaid),
+        "reference_mermaid": reference_mermaid,
+        "reference_graph": reference_graph,
+        "reference_patch": build_flowchart_patch_from_mermaid(reference_mermaid),
+    }
+
+    issues: list[Issue] = []
+    if _has_flowchart_block_or_label(mineru_document.blocks, mineru_label) and current_graph is None:
+        issues.append(
+            Issue(
+                issue_id=f"flowchart-diff-{issue_id_target}-current-missing",
+                issue_type="flowchart_graph_conflict",
+                page_idx=page_idx,
+                target_block_id=target_block.block_id if target_block is not None else None,
+                mineru_block=mineru_block_payload,
+                qwen_block=qwen_block_payload,
+                candidate_payload={
+                    **shared_payload,
+                    "graph_diff": {"diff_kind": "current_graph_missing"},
+                },
+                reasons=["mineru_flowchart_missing_valid_mermaid_or_graph"],
+            )
         )
-    ]
+    if _has_flowchart_block_or_label(qwen_document.blocks, qwen_label) and reference_graph is None:
+        issues.append(
+            Issue(
+                issue_id=f"flowchart-diff-{issue_id_target}-reference-missing",
+                issue_type="flowchart_graph_conflict",
+                page_idx=page_idx,
+                target_block_id=target_block.block_id if target_block is not None else None,
+                mineru_block=mineru_block_payload,
+                qwen_block=qwen_block_payload,
+                candidate_payload={
+                    **shared_payload,
+                    "graph_diff": {"diff_kind": "reference_graph_missing"},
+                },
+                reasons=["qwen_flowchart_missing_valid_mermaid_or_graph"],
+            )
+        )
+
+    for diff_index, diff in enumerate(diff_flowchart_graphs(current_graph, reference_graph), start=1):
+        diff_kind = str(diff.get("diff_kind", "") or "graph_conflict").strip() or "graph_conflict"
+        issues.append(
+            Issue(
+                issue_id=f"flowchart-diff-{issue_id_target}-{diff_kind}-{diff_index}",
+                issue_type="flowchart_graph_conflict",
+                page_idx=page_idx,
+                target_block_id=target_block.block_id if target_block is not None else None,
+                mineru_block=mineru_block_payload,
+                qwen_block=qwen_block_payload,
+                candidate_payload={
+                    **shared_payload,
+                    "graph_diff": diff,
+                },
+                reasons=_deduplicate_texts(
+                    ["flowchart_graph_conflict_detected", diff_kind.replace("_", " ")]
+                ),
+            )
+        )
+
+    return _deduplicate_issues(issues)
 
 
 def _detect_pair_issue(mineru_block: CanonicalBlock, qwen_block: CanonicalBlock | None) -> Issue | None:
@@ -240,7 +266,7 @@ def _is_seal_candidate(block: CanonicalBlock) -> bool:
 
 
 def _is_flowchart_candidate(block: CanonicalBlock) -> bool:
-    if block.type != "chart":
+    if block.type not in {"chart", "image"}:
         return False
     if str(block.sub_type or "").strip().lower() == "flowchart":
         return True
@@ -254,10 +280,7 @@ def _has_flowchart_signal(
     qwen_document: CanonicalDocument,
     mineru_label: ParsedLabel | None,
     qwen_label: ParsedLabel | None,
-    graph_fusion_result: Any | None,
 ) -> bool:
-    if graph_fusion_result is not None and str(getattr(graph_fusion_result, "mermaid", "") or "").strip():
-        return True
     if _has_flowchart_block_or_label(mineru_document.blocks, mineru_label):
         return True
     return _has_flowchart_block_or_label(qwen_document.blocks, qwen_label)
@@ -291,14 +314,50 @@ def _extract_flowchart_mermaid(
     label: ParsedLabel | None,
 ) -> str:
     for block in blocks:
-        content = str(block.content.get("content", "") or "").strip()
-        if _is_flowchart_candidate(block) and looks_like_mermaid(content):
-            return content
+        if not _is_flowchart_candidate(block):
+            continue
+        for candidate in _flowchart_text_candidates(block):
+            normalized_candidate = normalize_mermaid_text(candidate)
+            if looks_like_mermaid(normalized_candidate):
+                return normalized_candidate
     if label is not None and label.image_type == "flowchart":
-        candidate = str(label.structured_label.content or "").strip()
+        candidate = normalize_mermaid_text(str(label.structured_label.content or "").strip())
         if looks_like_mermaid(candidate):
             return candidate
     return ""
+
+
+def _extract_flowchart_graph(
+    blocks: list[CanonicalBlock],
+    label: ParsedLabel | None,
+    mermaid: str,
+) -> dict[str, Any] | None:
+    for block in blocks:
+        if _is_flowchart_candidate(block) and isinstance(block.flowchart_graph, dict):
+            return block.flowchart_graph
+    if mermaid:
+        derived = flowchart_graph_from_mermaid(mermaid)
+        if derived is not None:
+            return derived
+    if label is not None and isinstance(label.flowchart_graph, dict):
+        return label.flowchart_graph
+    return None
+
+
+def _flowchart_text_candidates(block: CanonicalBlock) -> list[str]:
+    values: list[str] = []
+    content_value = str(block.content.get("content", "") or "").strip()
+    if content_value:
+        values.append(content_value)
+    if isinstance(block.content.get("chart_caption"), list):
+        values.extend(str(item).strip() for item in block.content.get("chart_caption", []) if str(item).strip())
+    if isinstance(block.content.get("image_caption"), list):
+        values.extend(str(item).strip() for item in block.content.get("image_caption", []) if str(item).strip())
+    if str(block.text or "").strip():
+        values.append(str(block.text or "").strip())
+    if block.structured_label.kind == "mermaid" and block.structured_label.content.strip():
+        values.append(block.structured_label.content.strip())
+    return _deduplicate_texts(values)
 
 
 def _seal_texts(block: CanonicalBlock) -> list[str]:
