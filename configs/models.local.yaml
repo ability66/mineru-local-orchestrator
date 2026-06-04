@@ -1,6 +1,7 @@
 models:
   - name: minerupro-2.5-local
     provider: minerupro_local
+    role: mineru
     enabled: true
     base_url: http://127.0.0.1:18080
     endpoint: /analyze
@@ -11,8 +12,36 @@ models:
     extra_fields:
       output_format: json
 
-  - name: qwen-122b-local
+  - name: paddle-local
+    provider: paddle_local
+    role: paddle
+    enabled: false
+    base_url: http://127.0.0.1:18083
+    endpoint: /analyze
+    request_mode: multipart_file
+    file_field: file
+    timeout: 180
+    send_prompt: false
+    extra_fields:
+      output_format: json
+
+  - name: glm-4v-local
+    provider: glm_openai_compatible
+    role: glm
+    enabled: false
+    base_url: http://127.0.0.1:18082/v1
+    endpoint: /chat/completions
+    model: glm-4v
+    input_mode: vision_openai_chat
+    api_key_env: GLM_LOCAL_API_KEY
+    default_api_key: EMPTY
+    timeout: 180
+    max_tokens: 8192
+    temperature: 0
+
+  - name: qwen-judge-local
     provider: qwen_openai_compatible
+    role: judge
     enabled: true
     base_url: http://127.0.0.1:18081/v1
     endpoint: /chat/completions

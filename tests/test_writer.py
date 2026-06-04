@@ -298,3 +298,85 @@ def test_writer_uses_selected_qwen_metadata_for_final_payload(tmp_path) -> None:
     assert final_payload["model_name"] == "glm-4v-local"
     assert final_payload["vendor"] == "glm"
     assert final_payload["source_type"] == "local_service"
+
+
+def test_writer_persists_extra_stage1_outputs_for_glm_and_paddle(tmp_path) -> None:
+    image_task = ImageTask(
+        image_id="img-extra-stage1",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    base_document = CanonicalDocument(
+        document_id="img-extra-stage1",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[],
+    )
+    artifact = AdjudicationArtifact(
+        image_id="img-extra-stage1",
+        final_document=base_document,
+    )
+    glm_document = CanonicalDocument(
+        document_id="img-extra-stage1",
+        source="glm",
+        backend="glm",
+        page_count=1,
+        blocks=[],
+    )
+    paddle_document = CanonicalDocument(
+        document_id="img-extra-stage1",
+        source="paddle",
+        backend="paddle",
+        page_count=1,
+        blocks=[],
+    )
+
+    write_image_result(
+        output_dir=tmp_path,
+        image_task=image_task,
+        mineru_output=ModelOutput(
+            image_id="img-extra-stage1",
+            model_name="mineru",
+            success=True,
+            raw_text="",
+            parsed={},
+        ),
+        qwen_output=None,
+        mineru_document=base_document,
+        qwen_document=base_document,
+        mineru_label=None,
+        qwen_label=None,
+        artifact=artifact,
+        stage2_records=None,
+        extra_stage1_results={
+            "glm": {
+                "output": ModelOutput(
+                    image_id="img-extra-stage1",
+                    model_name="glm",
+                    success=True,
+                    raw_text='{"ok":true}',
+                    parsed={"ok": True},
+                ),
+                "document": glm_document,
+                "label": None,
+            },
+            "paddle": {
+                "output": ModelOutput(
+                    image_id="img-extra-stage1",
+                    model_name="paddle",
+                    success=True,
+                    raw_text='{"ok":true}',
+                    parsed={"ok": True},
+                ),
+                "document": paddle_document,
+                "label": None,
+            },
+        },
+    )
+
+    assert (tmp_path / "raw" / "glm" / "img-extra-stage1.json").exists()
+    assert (tmp_path / "raw" / "paddle" / "img-extra-stage1.json").exists()
+    assert (tmp_path / "normalized" / "glm" / "img-extra-stage1.json").exists()
+    assert (tmp_path / "normalized" / "paddle" / "img-extra-stage1.json").exists()

@@ -27,6 +27,7 @@ from src.pipeline.issues import (
     detect_flowchart_issues,
 )
 from src.pipeline.llm_adjudicator import (
+    adjudicate_issues_with_llm,
     build_issue_prompt_payload,
 )
 from src.pipeline.normalizers import (
@@ -45,6 +46,7 @@ from src.schema import (
     ImageTask,
     ModelOutput,
     PatchDecision,
+    ParsedLabel,
 )
 from src.writer import (
     append_summary_record,
@@ -117,14 +119,33 @@ def pick_client(
     return None
 
 
-def pick_primary_clients(clients: list[BaseLocalClient]) -> list[BaseLocalClient]:
-    primary_clients: list[BaseLocalClient] = []
+def _client_role(client: BaseLocalClient | None) -> str:
+    if client is None:
+        return ""
+    configured = str(client.config.get("role", "") or "").strip().lower()
+    if configured:
+        return configured
+    provider = str(client.config.get("provider", "") or "").strip().lower()
+    if provider.startswith("minerupro"):
+        return "mineru"
+    if provider.startswith("paddle"):
+        return "paddle"
+    if provider.startswith("glm"):
+        return "glm"
+    if provider.startswith("qwen"):
+        return "judge"
+    return provider
+
+
+def pick_role_client(
+    clients: list[BaseLocalClient],
+    role: str,
+) -> BaseLocalClient | None:
+    normalized_role = str(role or "").strip().lower()
     for client in clients:
-        provider = str(client.config.get("provider", "")).strip().lower()
-        if provider.startswith("qwen"):
-            continue
-        primary_clients.append(client)
-    return primary_clients
+        if _client_role(client) == normalized_role:
+            return client
+    return None
 
 
 def call_with_retry(
@@ -237,8 +258,16 @@ def _normalize_primary_output(
         )
 
     provider = str(client.config.get("provider", "")).strip().lower()
-    if provider.startswith("minerupro"):
+    role = _client_role(client)
+    if role in {"mineru", "paddle"} or provider.startswith(("minerupro", "paddle")):
         normalized_output, document, label = normalize_mineru_payload(
+            image_task=image_task,
+            model_output=output,
+        )
+        return normalized_output, document, label
+
+    if role in {"glm", "judge", "qwen"} or provider.startswith(("glm", "qwen")):
+        normalized_output, document, label = normalize_qwen_payload(
             image_task=image_task,
             model_output=output,
         )
@@ -252,6 +281,33 @@ def _normalize_primary_output(
         ),
         None,
     )
+
+
+def _run_first_pass_model(
+    image_task: ImageTask,
+    client: BaseLocalClient | None,
+    prompt: str,
+    retry: int,
+) -> dict[str, Any]:
+    role = _client_role(client) or "unconfigured"
+    output = call_with_retry(
+        client=client,
+        image_task=image_task,
+        prompt=prompt,
+        retry=retry,
+    )
+    normalized_output, document, label = _normalize_primary_output(
+        image_task=image_task,
+        client=client,
+        output=output,
+    )
+    return {
+        "role": role,
+        "client": client,
+        "output": normalized_output,
+        "document": document,
+        "label": label,
+    }
 
 
 def _is_flowchart_candidate_block(block: CanonicalBlock) -> bool:
@@ -301,7 +357,7 @@ def _extract_flowchart_mermaid(
     return ""
 
 
-def _is_complete_qwen_flowchart_result(
+def _is_complete_flowchart_result(
     output: ModelOutput | None,
     document: CanonicalDocument,
     label: Any | None,
@@ -320,6 +376,60 @@ def _is_complete_qwen_flowchart_result(
     }:
         return False
     return True
+
+
+def _flowchart_graph_size(document: CanonicalDocument, label: Any | None) -> int:
+    mermaid = _extract_flowchart_mermaid(document=document, label=label)
+    if not mermaid:
+        return 0
+    return max(0, len([line for line in mermaid.splitlines() if line.strip()]) - 1)
+
+
+def _pick_flowchart_reference_bundle(
+    image_task: ImageTask,
+    mineru_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    auxiliary_bundles: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[Any]]:
+    candidates: list[tuple[int, int, dict[str, Any], list[Any]]] = []
+    role_priority = {"glm": 2, "paddle": 1}
+    for bundle in auxiliary_bundles:
+        output = bundle.get("output")
+        document = bundle.get("document")
+        label = bundle.get("label")
+        if not isinstance(document, CanonicalDocument):
+            continue
+        if not _is_complete_flowchart_result(output=output, document=document, label=label):
+            continue
+        issues = detect_flowchart_issues(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            qwen_document=document,
+            mineru_label=mineru_label,
+            qwen_label=label,
+        )
+        if not issues:
+            continue
+        reference_role = str(bundle.get("role", "") or "").strip().lower()
+        for issue in issues:
+            if isinstance(issue.candidate_payload, dict):
+                issue.candidate_payload["reference_model_role"] = reference_role
+                issue.candidate_payload["reference_model_name"] = (
+                    output.model_name if isinstance(output, ModelOutput) else reference_role
+                )
+        candidates.append(
+            (
+                _flowchart_graph_size(document=document, label=label),
+                role_priority.get(reference_role, 0),
+                bundle,
+                issues,
+            )
+        )
+    if not candidates:
+        return None, []
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    _score, _priority, bundle, issues = candidates[0]
+    return bundle, issues
 
 
 def _build_flowchart_first_pass_decisions(
@@ -349,74 +459,70 @@ def _build_flowchart_first_pass_decisions(
 def process_image_task(
     image_task: ImageTask,
     args: argparse.Namespace,
-    primary_client: BaseLocalClient | None,
+    mineru_client: BaseLocalClient | None,
+    paddle_client: BaseLocalClient | None,
+    glm_client: BaseLocalClient | None,
     qwen_client: BaseLocalClient | None,
     recognition_prompt: str,
     seal_adjudication_prompt: str,
     flowchart_adjudication_prompt: str,
     output_dir: Path,
 ) -> dict[str, Any]:
-    mineru_output = call_with_retry(
-        client=primary_client,
+    mineru_bundle = _run_first_pass_model(
         image_task=image_task,
+        client=mineru_client,
         prompt=recognition_prompt,
         retry=args.retry,
     )
-    (
-        mineru_output,
-        mineru_document,
-        mineru_label,
-    ) = _normalize_primary_output(
+    paddle_bundle = _run_first_pass_model(
         image_task=image_task,
-        client=primary_client,
-        output=mineru_output,
+        client=paddle_client,
+        prompt=recognition_prompt,
+        retry=args.retry,
+    )
+    glm_bundle = _run_first_pass_model(
+        image_task=image_task,
+        client=glm_client,
+        prompt=recognition_prompt,
+        retry=args.retry,
     )
 
+    mineru_output = mineru_bundle["output"]
+    mineru_document = mineru_bundle["document"]
+    mineru_label = mineru_bundle["label"]
+
     qwen_output: ModelOutput | None = None
-    qwen_document = empty_document(
-        image_task=image_task, source="qwen_first_pass_not_triggered"
-    )
+    qwen_document = empty_document(image_task=image_task, source="qwen_judge_not_triggered")
     qwen_label = None
 
     seal_issues: list[Any] = []
     seal_patch_decisions: list[Any] = []
     seal_patch_outputs: list[ModelOutput] = []
 
+    auxiliary_bundles = [bundle for bundle in (glm_bundle, paddle_bundle) if bundle.get("client") is not None]
+    reference_bundle: dict[str, Any] | None = None
+    flowchart_issues: list[Any] = []
+    flowchart_patch_decisions: list[PatchDecision] = []
     flowchart_patch_outputs: list[ModelOutput] = []
-    if _has_flowchart_signal(mineru_document, mineru_label):
-        qwen_output = call_with_retry(
-            client=qwen_client,
-            image_task=image_task,
-            prompt=recognition_prompt,
-            retry=args.retry,
-        )
-        if qwen_output is not None:
-            qwen_output, qwen_document, qwen_label = normalize_qwen_payload(
-                image_task=image_task,
-                model_output=qwen_output,
-            )
-        else:
-            qwen_document = empty_document(
-                image_task=image_task, source="qwen_first_pass_failed"
-            )
-            qwen_label = None
 
-    flowchart_issues = detect_flowchart_issues(
-        image_task=image_task,
-        mineru_document=mineru_document,
-        qwen_document=qwen_document,
-        mineru_label=mineru_label,
-        qwen_label=qwen_label,
-    )
-    qwen_complete = _is_complete_qwen_flowchart_result(
-        output=qwen_output,
-        document=qwen_document,
-        label=qwen_label,
-    )
-    flowchart_patch_decisions = _build_flowchart_first_pass_decisions(
-        issues=flowchart_issues,
-        qwen_complete=qwen_complete,
-    )
+    if _has_flowchart_signal(mineru_document, mineru_label):
+        reference_bundle, flowchart_issues = _pick_flowchart_reference_bundle(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            mineru_label=mineru_label,
+            auxiliary_bundles=auxiliary_bundles,
+        )
+        if flowchart_issues and qwen_client is not None:
+            flowchart_patch_decisions, flowchart_patch_outputs = adjudicate_issues_with_llm(
+                client=qwen_client,
+                image_task=image_task,
+                prompt=flowchart_adjudication_prompt,
+                issues=flowchart_issues,
+                mode="flowchart_adjudication",
+                retry=args.retry,
+            )
+            if flowchart_patch_outputs:
+                qwen_output = flowchart_patch_outputs[-1]
 
     stage2_records = build_stage2_records(
         issues=seal_issues,
@@ -424,25 +530,40 @@ def process_image_task(
         patch_decisions=seal_patch_decisions,
         prompt=seal_adjudication_prompt,
         mode="seal_adjudication",
+    ) + build_stage2_records(
+        issues=flowchart_issues,
+        outputs=flowchart_patch_outputs,
+        patch_decisions=flowchart_patch_decisions,
+        prompt=flowchart_adjudication_prompt,
+        mode="flowchart_adjudication",
     )
     if not stage2_records:
         stage2_records = None
 
     all_issues = seal_issues + flowchart_issues
     patch_decisions = seal_patch_decisions + flowchart_patch_decisions
+    final_mineru_document = mineru_document
+    final_mineru_label = mineru_label
     if seal_patch_decisions:
-        mineru_document = apply_patch_decisions(
-            mineru_document=mineru_document,
+        final_mineru_document = apply_patch_decisions(
+            mineru_document=final_mineru_document,
             issues=seal_issues,
             patch_decisions=seal_patch_decisions,
         )
-        mineru_label = derive_label_from_document(mineru_document)
+        final_mineru_label = derive_label_from_document(final_mineru_document)
+    if flowchart_patch_decisions:
+        final_mineru_document = apply_patch_decisions(
+            mineru_document=final_mineru_document,
+            issues=flowchart_issues,
+            patch_decisions=flowchart_patch_decisions,
+        )
+        final_mineru_label = derive_label_from_document(final_mineru_document)
 
     artifact = adjudicate_documents(
         image_task=image_task,
-        mineru_document=mineru_document,
+        mineru_document=final_mineru_document,
         qwen_document=qwen_document,
-        mineru_label=mineru_label,
+        mineru_label=final_mineru_label,
         qwen_label=qwen_label,
         mineru_output=mineru_output,
         qwen_output=qwen_output,
@@ -460,6 +581,18 @@ def process_image_task(
         qwen_label=qwen_label,
         artifact=artifact,
         stage2_records=stage2_records,
+        extra_stage1_results={
+            "paddle": {
+                "output": paddle_bundle["output"],
+                "document": paddle_bundle["document"],
+                "label": paddle_bundle["label"],
+            },
+            "glm": {
+                "output": glm_bundle["output"],
+                "document": glm_bundle["document"],
+                "label": glm_bundle["label"],
+            },
+        },
     )
     if args.manual_compare_mode:
         try:
@@ -485,9 +618,10 @@ def main() -> None:
     clients = build_clients(
         model_configs=model_configs, request_timeout=args.request_timeout
     )
-    primary_clients = pick_primary_clients(clients)
-    mineru_client = pick_client(primary_clients, "minerupro")
-    qwen_client = pick_client(clients, "qwen")
+    mineru_client = pick_role_client(clients, "mineru") or pick_client(clients, "minerupro")
+    paddle_client = pick_role_client(clients, "paddle")
+    glm_client = pick_role_client(clients, "glm")
+    qwen_client = pick_role_client(clients, "judge") or pick_client(clients, "qwen")
     recognition_prompt = load_prompt(args.prompts_config, "qwen_recognition_prompt")
     seal_adjudication_prompt = load_prompt(
         args.prompts_config, "qwen_adjudication_prompt"
@@ -506,10 +640,12 @@ def main() -> None:
     worker_count = max(1, int(args.workers or 1))
     if worker_count == 1:
         for image_task in tqdm(image_tasks, desc="Processing images"):
-            process_image_task(
+            summary_record = process_image_task(
                 image_task=image_task,
                 args=args,
-                primary_client=mineru_client,
+                mineru_client=mineru_client,
+                paddle_client=paddle_client,
+                glm_client=glm_client,
                 qwen_client=qwen_client,
                 recognition_prompt=recognition_prompt,
                 seal_adjudication_prompt=seal_adjudication_prompt,
@@ -525,6 +661,8 @@ def main() -> None:
                     image_task,
                     args,
                     mineru_client,
+                    paddle_client,
+                    glm_client,
                     qwen_client,
                     recognition_prompt,
                     seal_adjudication_prompt,

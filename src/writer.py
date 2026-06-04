@@ -19,8 +19,12 @@ def ensure_output_dirs(output_dir: Path) -> dict[str, Path]:
     directories = {
         "root": output_dir,
         "raw_mineru": output_dir / "raw" / "mineru",
+        "raw_paddle": output_dir / "raw" / "paddle",
+        "raw_glm": output_dir / "raw" / "glm",
         "raw_qwen": output_dir / "raw" / "qwen",
         "normalized_mineru": output_dir / "normalized" / "mineru",
+        "normalized_paddle": output_dir / "normalized" / "paddle",
+        "normalized_glm": output_dir / "normalized" / "glm",
         "normalized_qwen": output_dir / "normalized" / "qwen",
         "final": output_dir / "final",
         "judge_stage2": output_dir / "judge_stage2",
@@ -60,6 +64,7 @@ def write_image_result(
     qwen_label: ParsedLabel | None,
     artifact: AdjudicationArtifact,
     stage2_records: list[dict[str, Any]] | None = None,
+    extra_stage1_results: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     directories = ensure_output_dirs(output_dir)
 
@@ -89,6 +94,16 @@ def write_image_result(
             else None,
         },
     )
+    for role, payload in (extra_stage1_results or {}).items():
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role not in {"paddle", "glm"}:
+            continue
+        _write_extra_stage1_result(
+            directories=directories,
+            image_id=image_task.image_id,
+            role=normalized_role,
+            payload=payload,
+        )
 
     final_document = artifact.final_document
     final_output = build_final_output(
@@ -330,6 +345,32 @@ def _output_record(output: ModelOutput | None) -> dict[str, Any]:
     if output is None:
         return {"success": False, "error": "client_not_configured"}
     return output.model_dump()
+
+
+def _write_extra_stage1_result(
+    directories: dict[str, Path],
+    image_id: str,
+    role: str,
+    payload: dict[str, Any],
+) -> None:
+    output = payload.get("output")
+    document = payload.get("document")
+    label = payload.get("label")
+    _write_json(
+        directories[f"raw_{role}"] / f"{image_id}.json",
+        _output_record(output if isinstance(output, ModelOutput) else None),
+    )
+    _write_json(
+        directories[f"normalized_{role}"] / f"{image_id}.json",
+        {
+            "document": document.model_dump()
+            if isinstance(document, CanonicalDocument)
+            else None,
+            "derived_label": label.model_dump()
+            if isinstance(label, ParsedLabel)
+            else None,
+        },
+    )
 
 
 def _canonical_block_to_v2_item(block: CanonicalBlock) -> dict[str, Any]:
