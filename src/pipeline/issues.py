@@ -27,7 +27,9 @@ def detect_seal_issues(
     issues: list[Issue] = []
     for mineru_index, mineru_block in enumerate(mineru_document.blocks):
         match = match_lookup.get(mineru_index)
-        qwen_block = qwen_document.blocks[match.candidate_index] if match is not None else None
+        qwen_block = (
+            qwen_document.blocks[match.candidate_index] if match is not None else None
+        )
         issue = _detect_pair_issue(mineru_block=mineru_block, qwen_block=qwen_block)
         if issue is not None:
             issues.append(issue)
@@ -41,8 +43,12 @@ def detect_seal_issues(
                 issue_id=f"seal-unmatched-{qwen_block.block_id}",
                 issue_type="seal_unmatched_qwen_candidate",
                 page_idx=qwen_block.page_idx,
-                target_block_id=target_block.block_id if target_block is not None else None,
-                mineru_block=target_block.model_dump() if target_block is not None else None,
+                target_block_id=target_block.block_id
+                if target_block is not None
+                else None,
+                mineru_block=target_block.model_dump()
+                if target_block is not None
+                else None,
                 qwen_block=qwen_block.model_dump(),
                 reasons=["qwen_detects_unmatched_seal_block"],
             )
@@ -87,19 +93,37 @@ def detect_flowchart_issues(
         if qwen_index is not None and qwen_index in match_lookup:
             target_block = mineru_document.blocks[match_lookup[qwen_index].base_index]
         if target_block is None:
-            target_block = _find_best_flowchart_target_block(mineru_document.blocks, qwen_flowchart_block)
+            target_block = _find_best_flowchart_target_block(
+                mineru_document.blocks, qwen_flowchart_block
+            )
     if target_block is None:
-        target_block = mineru_flowchart_block or _pick_visual_block(mineru_document.blocks)
+        target_block = mineru_flowchart_block or _pick_visual_block(
+            mineru_document.blocks
+        )
 
     current_mermaid = _extract_flowchart_mermaid(mineru_document.blocks, mineru_label)
     reference_mermaid = _extract_flowchart_mermaid(qwen_document.blocks, qwen_label)
-    current_graph = _extract_flowchart_graph(mineru_document.blocks, mineru_label, current_mermaid)
-    reference_graph = _extract_flowchart_graph(qwen_document.blocks, qwen_label, reference_mermaid)
+    current_graph = _extract_flowchart_graph(
+        mineru_document.blocks, mineru_label, current_mermaid
+    )
+    reference_graph = _extract_flowchart_graph(
+        qwen_document.blocks, qwen_label, reference_mermaid
+    )
 
-    qwen_block_payload = qwen_flowchart_block.model_dump() if qwen_flowchart_block is not None else None
-    mineru_block_payload = target_block.model_dump() if target_block is not None else None
-    issue_id_target = target_block.block_id if target_block is not None else (
-        qwen_flowchart_block.block_id if qwen_flowchart_block is not None else "flowchart"
+    qwen_block_payload = (
+        qwen_flowchart_block.model_dump() if qwen_flowchart_block is not None else None
+    )
+    mineru_block_payload = (
+        target_block.model_dump() if target_block is not None else None
+    )
+    issue_id_target = (
+        target_block.block_id
+        if target_block is not None
+        else (
+            qwen_flowchart_block.block_id
+            if qwen_flowchart_block is not None
+            else "flowchart"
+        )
     )
     page_idx = (
         target_block.page_idx
@@ -109,21 +133,23 @@ def detect_flowchart_issues(
 
     shared_payload = {
         "current_mermaid": current_mermaid,
-        "current_graph": current_graph,
-        "current_patch": build_flowchart_patch_from_mermaid(current_mermaid),
         "reference_mermaid": reference_mermaid,
-        "reference_graph": reference_graph,
         "reference_patch": build_flowchart_patch_from_mermaid(reference_mermaid),
     }
 
     issues: list[Issue] = []
-    if _has_flowchart_block_or_label(mineru_document.blocks, mineru_label) and current_graph is None:
+    if (
+        _has_flowchart_block_or_label(mineru_document.blocks, mineru_label)
+        and current_graph is None
+    ):
         issues.append(
             Issue(
                 issue_id=f"flowchart-diff-{issue_id_target}-current-missing",
                 issue_type="flowchart_graph_conflict",
                 page_idx=page_idx,
-                target_block_id=target_block.block_id if target_block is not None else None,
+                target_block_id=target_block.block_id
+                if target_block is not None
+                else None,
                 mineru_block=mineru_block_payload,
                 qwen_block=qwen_block_payload,
                 candidate_payload={
@@ -133,13 +159,18 @@ def detect_flowchart_issues(
                 reasons=["mineru_flowchart_missing_valid_mermaid_or_graph"],
             )
         )
-    if _has_flowchart_block_or_label(qwen_document.blocks, qwen_label) and reference_graph is None:
+    if (
+        _has_flowchart_block_or_label(qwen_document.blocks, qwen_label)
+        and reference_graph is None
+    ):
         issues.append(
             Issue(
                 issue_id=f"flowchart-diff-{issue_id_target}-reference-missing",
                 issue_type="flowchart_graph_conflict",
                 page_idx=page_idx,
-                target_block_id=target_block.block_id if target_block is not None else None,
+                target_block_id=target_block.block_id
+                if target_block is not None
+                else None,
                 mineru_block=mineru_block_payload,
                 qwen_block=qwen_block_payload,
                 candidate_payload={
@@ -150,14 +181,21 @@ def detect_flowchart_issues(
             )
         )
 
-    for diff_index, diff in enumerate(diff_flowchart_graphs(current_graph, reference_graph), start=1):
-        diff_kind = str(diff.get("diff_kind", "") or "graph_conflict").strip() or "graph_conflict"
+    for diff_index, diff in enumerate(
+        diff_flowchart_graphs(current_graph, reference_graph), start=1
+    ):
+        diff_kind = (
+            str(diff.get("diff_kind", "") or "graph_conflict").strip()
+            or "graph_conflict"
+        )
         issues.append(
             Issue(
                 issue_id=f"flowchart-diff-{issue_id_target}-{diff_kind}-{diff_index}",
                 issue_type="flowchart_graph_conflict",
                 page_idx=page_idx,
-                target_block_id=target_block.block_id if target_block is not None else None,
+                target_block_id=target_block.block_id
+                if target_block is not None
+                else None,
                 mineru_block=mineru_block_payload,
                 qwen_block=qwen_block_payload,
                 candidate_payload={
@@ -173,7 +211,9 @@ def detect_flowchart_issues(
     return _deduplicate_issues(issues)
 
 
-def _detect_pair_issue(mineru_block: CanonicalBlock, qwen_block: CanonicalBlock | None) -> Issue | None:
+def _detect_pair_issue(
+    mineru_block: CanonicalBlock, qwen_block: CanonicalBlock | None
+) -> Issue | None:
     if qwen_block is None:
         return None
 
@@ -219,11 +259,14 @@ def _detect_pair_issue(mineru_block: CanonicalBlock, qwen_block: CanonicalBlock 
     return None
 
 
-def _find_best_target_block(mineru_blocks: list[CanonicalBlock], qwen_block: CanonicalBlock) -> CanonicalBlock | None:
+def _find_best_target_block(
+    mineru_blocks: list[CanonicalBlock], qwen_block: CanonicalBlock
+) -> CanonicalBlock | None:
     same_page_visuals = [
         block
         for block in mineru_blocks
-        if block.page_idx == qwen_block.page_idx and block.type in {"image", "chart", "table"}
+        if block.page_idx == qwen_block.page_idx
+        and block.type in {"image", "chart", "table"}
     ]
     if not same_page_visuals:
         return None
@@ -243,7 +286,8 @@ def _find_best_flowchart_target_block(
     same_page_visuals = [
         block
         for block in mineru_blocks
-        if block.page_idx == qwen_block.page_idx and block.type in {"chart", "image", "table"}
+        if block.page_idx == qwen_block.page_idx
+        and block.type in {"chart", "image", "table"}
     ]
     if not same_page_visuals:
         return None
@@ -262,7 +306,9 @@ def _is_seal_candidate(block: CanonicalBlock) -> bool:
         return False
     if str(block.sub_type or "").strip().lower() == "seal":
         return True
-    return any(str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions)
+    return any(
+        str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions
+    )
 
 
 def _is_flowchart_candidate(block: CanonicalBlock) -> bool:
@@ -321,7 +367,9 @@ def _extract_flowchart_mermaid(
             if looks_like_mermaid(normalized_candidate):
                 return normalized_candidate
     if label is not None and label.image_type == "flowchart":
-        candidate = normalize_mermaid_text(str(label.structured_label.content or "").strip())
+        candidate = normalize_mermaid_text(
+            str(label.structured_label.content or "").strip()
+        )
         if looks_like_mermaid(candidate):
             return candidate
     return ""
@@ -350,12 +398,23 @@ def _flowchart_text_candidates(block: CanonicalBlock) -> list[str]:
     if content_value:
         values.append(content_value)
     if isinstance(block.content.get("chart_caption"), list):
-        values.extend(str(item).strip() for item in block.content.get("chart_caption", []) if str(item).strip())
+        values.extend(
+            str(item).strip()
+            for item in block.content.get("chart_caption", [])
+            if str(item).strip()
+        )
     if isinstance(block.content.get("image_caption"), list):
-        values.extend(str(item).strip() for item in block.content.get("image_caption", []) if str(item).strip())
+        values.extend(
+            str(item).strip()
+            for item in block.content.get("image_caption", [])
+            if str(item).strip()
+        )
     if str(block.text or "").strip():
         values.append(str(block.text or "").strip())
-    if block.structured_label.kind == "mermaid" and block.structured_label.content.strip():
+    if (
+        block.structured_label.kind == "mermaid"
+        and block.structured_label.content.strip()
+    ):
         values.append(block.structured_label.content.strip())
     return _deduplicate_texts(values)
 
@@ -365,7 +424,8 @@ def _seal_texts(block: CanonicalBlock) -> list[str]:
     texts.extend(
         str(region.text or "").strip()
         for region in block.ocr_regions
-        if str(region.role or "").strip().lower() == "seal" and str(region.text or "").strip()
+        if str(region.role or "").strip().lower() == "seal"
+        and str(region.text or "").strip()
     )
     image_captions = block.content.get("image_caption")
     if isinstance(image_captions, list):

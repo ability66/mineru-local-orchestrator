@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
-from src.schema import CanonicalBlock, CanonicalDocument, CaptionStructured, ImageTask, OcrRegion, ParsedLabel, StructuredLabel
+from src.pipeline.llm_adjudicator import build_issue_prompt_payload
+from src.schema import (
+    CanonicalBlock,
+    CanonicalDocument,
+    CaptionStructured,
+    ImageTask,
+    OcrRegion,
+    ParsedLabel,
+    StructuredLabel,
+)
 
 
 def test_detect_seal_issue_when_qwen_supplies_missing_ocr() -> None:
@@ -41,15 +50,24 @@ def test_detect_seal_issue_when_qwen_supplies_missing_ocr() -> None:
                 sub_type="seal",
                 bbox=[100, 100, 300, 300],
                 text="某某公司印章",
-                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="qwen",
                 caption_structured=CaptionStructured(brief="某某公司印章"),
-                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                ocr_regions=[
+                    OcrRegion(role="seal", text="某某公司", confidence="high")
+                ],
             )
         ],
     )
 
-    issues = detect_seal_issues(image_task=image_task, mineru_document=mineru_document, qwen_document=qwen_document)
+    issues = detect_seal_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+    )
 
     assert len(issues) == 1
     assert issues[0].issue_type == "seal_missing_ocr"
@@ -92,20 +110,29 @@ def test_detect_seal_issue_when_qwen_marks_plain_image_as_seal() -> None:
                 sub_type="seal",
                 bbox=[100, 100, 300, 300],
                 text="某某公司印章",
-                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="qwen",
                 caption_structured=CaptionStructured(brief="某某公司印章"),
             )
         ],
     )
 
-    issues = detect_seal_issues(image_task=image_task, mineru_document=mineru_document, qwen_document=qwen_document)
+    issues = detect_seal_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+    )
 
     assert len(issues) == 1
     assert issues[0].issue_type == "seal_type_disagreement"
 
 
-def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference() -> None:
+def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference() -> (
+    None
+):
     image_task = ImageTask(
         image_id="img-flow-1",
         image_path="data/demo.png",
@@ -148,7 +175,10 @@ def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference()
                 sub_type="flowchart",
                 bbox=[0, 0, 1000, 1000],
                 text="流程图",
-                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B\nB-->C"},
+                content={
+                    "img_path": "data/demo.png",
+                    "content": "flowchart TD\nA-->B\nB-->C",
+                },
                 source="qwen",
                 structured_label=StructuredLabel(
                     kind="mermaid",
@@ -183,8 +213,31 @@ def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference()
     assert issues
     assert all(issue.issue_type == "flowchart_graph_conflict" for issue in issues)
     assert all(issue.target_block_id == "m1" for issue in issues)
-    assert any(issue.candidate_payload and issue.candidate_payload["reference_mermaid"] == "flowchart TD\nA-->B\nB-->C" for issue in issues)
     assert any(
-        issue.candidate_payload and issue.candidate_payload["graph_diff"]["diff_kind"] in {"missing_node", "missing_edge"}
+        issue.candidate_payload
+        and issue.candidate_payload["reference_mermaid"] == "flowchart TD\nA-->B\nB-->C"
         for issue in issues
     )
+    assert any(
+        issue.candidate_payload
+        and issue.candidate_payload["graph_diff"]["diff_kind"]
+        in {"missing_node", "missing_edge"}
+        for issue in issues
+    )
+    assert all(
+        "current_graph" not in (issue.candidate_payload or {}) for issue in issues
+    )
+    assert all(
+        "reference_graph" not in (issue.candidate_payload or {}) for issue in issues
+    )
+    assert all(
+        "current_patch" not in (issue.candidate_payload or {}) for issue in issues
+    )
+
+    prompt_payload = build_issue_prompt_payload(issues[0], "flowchart_adjudication")
+    assert "current_block" in prompt_payload
+    assert "reference_block" in prompt_payload
+    assert "current_excerpt" in prompt_payload
+    assert "reference_excerpt" in prompt_payload
+    assert "current_mermaid" not in prompt_payload
+    assert "reference_mermaid" not in prompt_payload

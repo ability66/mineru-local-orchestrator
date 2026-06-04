@@ -23,12 +23,18 @@ _MIME_TYPES = {
 class QwenLocalClient(BaseLocalClient):
     def __init__(self, model_name: str, config: dict[str, Any] | None = None) -> None:
         super().__init__(model_name=model_name, config=config)
-        self.base_url = self._read_text_config("base_url", fallback="http://127.0.0.1:18081/v1")
+        self.base_url = self._read_text_config(
+            "base_url", fallback="http://127.0.0.1:18081/v1"
+        )
         self.endpoint = self._read_text_config("endpoint", fallback="/chat/completions")
         self.model = self._read_text_config("model", fallback=model_name) or model_name
-        self.input_mode = self._read_text_config("input_mode", fallback="vision_openai_chat")
+        self.input_mode = self._read_text_config(
+            "input_mode", fallback="vision_openai_chat"
+        )
         self.api_key_env = self._read_text_config("api_key_env")
-        self.default_api_key = self._read_text_config("default_api_key", fallback="EMPTY")
+        self.default_api_key = self._read_text_config(
+            "default_api_key", fallback="EMPTY"
+        )
         self.timeout = self._read_int_config("timeout", default=180)
         self.max_tokens = self._read_int_config("max_tokens", default=4096)
         self.temperature = self._read_float_config("temperature", default=0.0)
@@ -39,7 +45,9 @@ class QwenLocalClient(BaseLocalClient):
         prompt: str,
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        payload = self._build_payload(image_task=image_task, prompt=prompt, context=context)
+        payload = self._build_payload(
+            image_task=image_task, prompt=prompt, context=context
+        )
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._resolve_api_key()}",
@@ -139,7 +147,7 @@ class QwenLocalClient(BaseLocalClient):
             issue_payload = context.get("issue_payload")
             serialized = json.dumps(issue_payload, ensure_ascii=False, indent=2)
             return (
-                "以下是一个需要局部仲裁的流程图 issue，其中包含图融合候选 Mermaid，请判断是否保留候选或修正它。"
+                "以下是一个需要局部仲裁的流程图 issue，请重点检查冲突项并输出 patch 决策 JSON。"
                 "请只输出 patch 决策 JSON，不要输出解释性正文：\n"
                 f"{serialized}"
             )
@@ -182,19 +190,39 @@ class QwenLocalClient(BaseLocalClient):
     def _extract_message_text(self, response_json: dict[str, Any]) -> str:
         choices = response_json.get("choices")
         if not isinstance(choices, list) or not choices:
-            return json.dumps(response_json, ensure_ascii=False)
+            return self._extract_text_payload(response_json.get("output_text"))
 
-        message = choices[0].get("message", {})
-        content = message.get("content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            return ""
+
+        message = first_choice.get("message")
+        if isinstance(message, dict):
+            for key in ("content", "text", "output_text"):
+                extracted = self._extract_text_payload(message.get(key))
+                if extracted:
+                    return extracted
+
+        for key in ("text", "output_text"):
+            extracted = self._extract_text_payload(first_choice.get(key))
+            if extracted:
+                return extracted
+        return self._extract_text_payload(response_json.get("output_text"))
+
+    def _extract_text_payload(self, payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload.strip()
+        if isinstance(payload, dict):
+            for key in ("text", "content", "value", "output_text"):
+                extracted = self._extract_text_payload(payload.get(key))
+                if extracted:
+                    return extracted
+            return ""
+        if isinstance(payload, list):
             fragments: list[str] = []
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    fragments.append(text)
-            return "\n".join(fragments)
-        return str(content)
+            for item in payload:
+                extracted = self._extract_text_payload(item)
+                if extracted:
+                    fragments.append(extracted)
+            return "\n".join(fragment for fragment in fragments if fragment)
+        return ""

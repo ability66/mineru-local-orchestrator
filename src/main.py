@@ -23,7 +23,10 @@ from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import adjudicate_documents
 from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
-from src.pipeline.llm_adjudicator import adjudicate_issues_with_llm
+from src.pipeline.llm_adjudicator import (
+    adjudicate_issues_with_llm,
+    build_issue_prompt_payload,
+)
 from src.pipeline.normalizers import (
     derive_label_from_document,
     normalize_mineru_payload,
@@ -158,7 +161,7 @@ def build_stage2_records(
                 "issue_type": issue.issue_type,
                 "target_block_id": issue.target_block_id,
                 "prompt": prompt,
-                "issue_payload": issue.model_dump(),
+                "issue_payload": build_issue_prompt_payload(issue=issue, mode=mode),
                 "success": bool(output.success) if output is not None else False,
                 "error": output.error
                 if output is not None
@@ -166,6 +169,7 @@ def build_stage2_records(
                 "latency_ms": output.latency_ms if output is not None else None,
                 "raw_text": output.raw_text if output is not None else "",
                 "usage": usage,
+                "finish_reason": _extract_finish_reason(parsed_payload),
                 "patch_decision": decision.model_dump()
                 if decision is not None
                 else None,
@@ -185,6 +189,19 @@ def _extract_usage(parsed_payload: Any) -> dict[str, Any] | None:
         "completion_tokens": usage.get("completion_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
+
+
+def _extract_finish_reason(parsed_payload: Any) -> str | None:
+    if not isinstance(parsed_payload, dict):
+        return None
+    choices = parsed_payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return None
+    value = str(first_choice.get("finish_reason", "") or "").strip()
+    return value or None
 
 
 def main() -> None:
