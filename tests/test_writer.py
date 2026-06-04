@@ -48,10 +48,15 @@ def test_writer_preserves_flowchart_and_seal_blocks() -> None:
                 sub_type="seal",
                 bbox=[100, 100, 200, 200],
                 text="某某公司",
-                content={"img_path": "/tmp/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "/tmp/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="adjudicated",
                 caption_structured=CaptionStructured(brief="某某公司印章"),
-                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                ocr_regions=[
+                    OcrRegion(role="seal", text="某某公司", confidence="high")
+                ],
             ),
         ],
     )
@@ -71,7 +76,9 @@ def test_writer_preserves_flowchart_and_seal_blocks() -> None:
     assert content_list[1]["sub_type"] == "seal"
 
 
-def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(tmp_path) -> None:
+def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(
+    tmp_path,
+) -> None:
     image_task = ImageTask(
         image_id="img-1",
         image_path="data/demo.png",
@@ -101,7 +108,7 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(tmp_pat
                     source="fused_graph",
                 ),
                 caption_structured=CaptionStructured(brief="流程图"),
-                provenance={"source_block_type": "chart", "source_angle": 15},
+                provenance={"source_block_type": "image", "source_angle": 15},
             ),
             CanonicalBlock(
                 block_id="b2",
@@ -111,7 +118,10 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(tmp_pat
                 sub_type="seal",
                 bbox=[100, 100, 200, 200],
                 text="某某公司",
-                content={"img_path": "/tmp/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "/tmp/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="adjudicated",
                 caption_structured=CaptionStructured(brief="某某公司印章"),
             ),
@@ -155,6 +165,23 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(tmp_pat
         mineru_label=None,
         qwen_label=None,
         artifact=artifact,
+        stage2_records=[
+            {
+                "mode": "flowchart_adjudication",
+                "issue_id": "flow-1",
+                "issue_type": "flowchart_graph_conflict",
+                "prompt": "prompt body",
+                "issue_payload": {"issue_id": "flow-1"},
+                "success": True,
+                "raw_text": '{"decision":"merge"}',
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 80,
+                    "total_tokens": 200,
+                },
+                "patch_decision": {"decision": "merge"},
+            }
+        ],
     )
 
     final_payload = json.loads((final_dir / "img-1.json").read_text(encoding="utf-8"))
@@ -180,4 +207,9 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(tmp_pat
     assert not (final_dir / "img-1_content_list_v2.json").exists()
     assert not (final_dir / "img-1_content_list.json").exists()
     assert (final_dir / "img-1_artifact.json").exists()
+    stage2_payload = json.loads(
+        (tmp_path / "judge_stage2" / "img-1.json").read_text(encoding="utf-8")
+    )
+    assert stage2_payload["record_count"] == 1
+    assert stage2_payload["totals"]["total_tokens"] == 200
     assert summary["final_block_count"] == 2

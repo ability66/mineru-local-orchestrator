@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import json
+
+from src.render_compare_dashboard import generate_compare_dashboard
+
+
+def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "demo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "chart",
+                    "sub_type": "flowchart",
+                    "content": {
+                        "content": "flowchart TD\nA-->B",
+                        "img_path": str(data_dir / "demo.png"),
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "flowchart",
+            "caption": "flowchart TD\nA-->B",
+            "structured_label": {
+                "kind": "mermaid",
+                "content": "flowchart TD\nA-->B",
+                "format": "mermaid",
+                "source": "model",
+            },
+        },
+    }
+    artifact_payload = {
+        "final_document": normalized_payload["document"],
+        "final_label": normalized_payload["derived_label"],
+        "issues": [],
+        "patch_decisions": [],
+    }
+
+    (output_dir / "normalized" / "mineru" / "demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "demo_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert 'select id="image-select"' in html
+    assert ">demo<" in html
+    assert "Original" in html
+    assert "MinerU" in html
+    assert "Qwen" in html
+    assert "Final" in html

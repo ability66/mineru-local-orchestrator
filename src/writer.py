@@ -5,7 +5,14 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from src.schema import AdjudicationArtifact, CanonicalBlock, CanonicalDocument, ImageTask, ModelOutput, ParsedLabel
+from src.schema import (
+    AdjudicationArtifact,
+    CanonicalBlock,
+    CanonicalDocument,
+    ImageTask,
+    ModelOutput,
+    ParsedLabel,
+)
 
 
 def ensure_output_dirs(output_dir: Path) -> dict[str, Path]:
@@ -16,6 +23,7 @@ def ensure_output_dirs(output_dir: Path) -> dict[str, Path]:
         "normalized_mineru": output_dir / "normalized" / "mineru",
         "normalized_qwen": output_dir / "normalized" / "qwen",
         "final": output_dir / "final",
+        "judge_stage2": output_dir / "judge_stage2",
     }
     for directory in directories.values():
         directory.mkdir(parents=True, exist_ok=True)
@@ -51,6 +59,7 @@ def write_image_result(
     mineru_label: ParsedLabel | None,
     qwen_label: ParsedLabel | None,
     artifact: AdjudicationArtifact,
+    stage2_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     directories = ensure_output_dirs(output_dir)
 
@@ -66,14 +75,18 @@ def write_image_result(
         directories["normalized_mineru"] / f"{image_task.image_id}.json",
         {
             "document": mineru_document.model_dump(),
-            "derived_label": mineru_label.model_dump() if mineru_label is not None else None,
+            "derived_label": mineru_label.model_dump()
+            if mineru_label is not None
+            else None,
         },
     )
     _write_json(
         directories["normalized_qwen"] / f"{image_task.image_id}.json",
         {
             "document": qwen_document.model_dump(),
-            "derived_label": qwen_label.model_dump() if qwen_label is not None else None,
+            "derived_label": qwen_label.model_dump()
+            if qwen_label is not None
+            else None,
         },
     )
 
@@ -87,7 +100,18 @@ def write_image_result(
     content_list_v2 = build_content_list_v2(final_document)
     _remove_legacy_final_files(directories["final"], image_task.image_id)
     _write_json(directories["final"] / f"{image_task.image_id}.json", final_output)
-    _write_json(directories["final"] / f"{image_task.image_id}_artifact.json", artifact.model_dump())
+    _write_json(
+        directories["final"] / f"{image_task.image_id}_artifact.json",
+        artifact.model_dump(),
+    )
+    if stage2_records is not None:
+        _write_json(
+            directories["judge_stage2"] / f"{image_task.image_id}.json",
+            build_stage2_judge_payload(
+                image_task=image_task,
+                records=stage2_records,
+            ),
+        )
 
     return build_summary_record(
         image_task=image_task,
@@ -104,7 +128,9 @@ def build_final_output(
     qwen_output: ModelOutput | None,
     artifact: AdjudicationArtifact,
 ) -> dict[str, Any]:
-    parsed = build_final_parsed_payload(image_task=image_task, document=artifact.final_document)
+    parsed = build_final_parsed_payload(
+        image_task=image_task, document=artifact.final_document
+    )
     success = bool(artifact.final_document.blocks)
     errors = [
         str(value).strip()
@@ -140,13 +166,16 @@ def build_final_output(
         ),
         "source_type": (
             mineru_output.source_type
-            if mineru_output is not None and str(mineru_output.source_type or "").strip()
+            if mineru_output is not None
+            and str(mineru_output.source_type or "").strip()
             else "final"
         ),
     }
 
 
-def build_final_parsed_payload(image_task: ImageTask, document: CanonicalDocument) -> dict[str, Any]:
+def build_final_parsed_payload(
+    image_task: ImageTask, document: CanonicalDocument
+) -> dict[str, Any]:
     pages = build_extraction_results(document=document, file_name=image_task.file_name)
     return {
         "filename": image_task.file_name,
@@ -155,8 +184,14 @@ def build_final_parsed_payload(image_task: ImageTask, document: CanonicalDocumen
     }
 
 
-def build_extraction_results(document: CanonicalDocument, file_name: str) -> list[dict[str, Any]]:
-    page_count = max(document.page_count, max((block.page_idx for block in document.blocks), default=-1) + 1, 1)
+def build_extraction_results(
+    document: CanonicalDocument, file_name: str
+) -> list[dict[str, Any]]:
+    page_count = max(
+        document.page_count,
+        max((block.page_idx for block in document.blocks), default=-1) + 1,
+        1,
+    )
     pages: list[dict[str, Any]] = []
     for page_idx in range(page_count):
         page_blocks = [
@@ -179,16 +214,26 @@ def build_extraction_results(document: CanonicalDocument, file_name: str) -> lis
 
 
 def build_content_list_v2(document: CanonicalDocument) -> list[list[dict[str, Any]]]:
-    page_count = max(document.page_count, max((block.page_idx for block in document.blocks), default=-1) + 1, 1)
+    page_count = max(
+        document.page_count,
+        max((block.page_idx for block in document.blocks), default=-1) + 1,
+        1,
+    )
     pages: list[list[dict[str, Any]]] = [[] for _ in range(page_count)]
-    for block in sorted(document.blocks, key=lambda item: (item.page_idx, item.order_index, item.block_id)):
+    for block in sorted(
+        document.blocks,
+        key=lambda item: (item.page_idx, item.order_index, item.block_id),
+    ):
         pages[block.page_idx].append(_canonical_block_to_v2_item(block))
     return pages
 
 
 def build_content_list(document: CanonicalDocument) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for block in sorted(document.blocks, key=lambda item: (item.page_idx, item.order_index, item.block_id)):
+    for block in sorted(
+        document.blocks,
+        key=lambda item: (item.page_idx, item.order_index, item.block_id),
+    ):
         items.append(_canonical_block_to_flat_item(block))
     return items
 
@@ -212,10 +257,42 @@ def build_summary_record(
         "final_types": final_types,
         "review_required": artifact.review_required,
         "reasons": artifact.reasons,
-        "graph_fusion_status": (artifact.graph_fusion or {}).get("fusion_status", "none"),
+        "graph_fusion_status": (artifact.graph_fusion or {}).get(
+            "fusion_status", "none"
+        ),
         "graph_confidence": (artifact.graph_fusion or {}).get("graph_confidence", 0.0),
-        "mineru_success": bool(mineru_output.success) if mineru_output is not None else False,
+        "mineru_success": bool(mineru_output.success)
+        if mineru_output is not None
+        else False,
         "qwen_success": bool(qwen_output.success) if qwen_output is not None else False,
+    }
+
+
+def build_stage2_judge_payload(
+    image_task: ImageTask,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    for record in records:
+        usage = record.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        prompt_tokens += _coerce_int(usage.get("prompt_tokens"))
+        completion_tokens += _coerce_int(usage.get("completion_tokens"))
+        total_tokens += _coerce_int(usage.get("total_tokens"))
+
+    return {
+        "image_id": image_task.image_id,
+        "file_name": image_task.file_name,
+        "record_count": len(records),
+        "totals": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        },
+        "records": records,
     }
 
 
@@ -288,22 +365,48 @@ def _content_for_v2(block: CanonicalBlock) -> dict[str, Any]:
     else:
         content = {}
 
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        content.setdefault("content", _preferred_flowchart_content(block))
+        content.setdefault(
+            "chart_caption",
+            _single_text_list(block.caption_structured.brief or block.text),
+        )
+        content.setdefault("chart_footnote", [])
+        content.setdefault("img_path", content.get("img_path", ""))
+        return content
+
     if block.type == "title":
         content.setdefault("title_content", [{"type": "text", "content": block.text}])
         content.setdefault("level", block.text_level or 1)
     elif block.type == "paragraph":
-        content.setdefault("paragraph_content", [{"type": "text", "content": block.text}])
+        content.setdefault(
+            "paragraph_content", [{"type": "text", "content": block.text}]
+        )
     elif block.type == "table":
-        content.setdefault("table_body", block.structured_label.content if block.structured_label.kind == "table" else block.text)
-        content.setdefault("table_caption", _single_text_list(block.caption_structured.brief or block.text))
+        content.setdefault(
+            "table_body",
+            block.structured_label.content
+            if block.structured_label.kind == "table"
+            else block.text,
+        )
+        content.setdefault(
+            "table_caption",
+            _single_text_list(block.caption_structured.brief or block.text),
+        )
         content.setdefault("img_path", "")
     elif block.type == "chart":
         content.setdefault("content", block.structured_label.content or block.text)
-        content.setdefault("chart_caption", _single_text_list(block.caption_structured.brief or block.text))
+        content.setdefault(
+            "chart_caption",
+            _single_text_list(block.caption_structured.brief or block.text),
+        )
         content.setdefault("chart_footnote", [])
         content.setdefault("img_path", "")
     elif block.type == "image":
-        content.setdefault("image_caption", _single_text_list(block.caption_structured.brief or block.text))
+        content.setdefault(
+            "image_caption",
+            _single_text_list(block.caption_structured.brief or block.text),
+        )
         content.setdefault("image_footnote", [])
         content.setdefault("img_path", "")
     elif block.type == "equation_interline":
@@ -350,6 +453,8 @@ def _content_for_flat(block: CanonicalBlock) -> dict[str, Any]:
 
 
 def _type_for_extraction(block: CanonicalBlock) -> str:
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return "chart"
     source_type = str(block.provenance.get("source_block_type", "") or "").strip()
     if source_type:
         return source_type
@@ -368,6 +473,8 @@ def _angle_for_extraction(block: CanonicalBlock) -> int:
 
 def _content_for_extraction(block: CanonicalBlock) -> str:
     content = _content_for_v2(block)
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return _preferred_flowchart_content(block)
     if block.type in {"title", "paragraph"}:
         return block.text
     if block.type == "table":
@@ -390,6 +497,31 @@ def _content_for_extraction(block: CanonicalBlock) -> str:
 def _single_text_list(text: str) -> list[str]:
     normalized = str(text or "").strip()
     return [normalized] if normalized else []
+
+
+def _preferred_flowchart_content(block: CanonicalBlock) -> str:
+    structured_mermaid = str(block.structured_label.content or "").strip()
+    if block.structured_label.kind == "mermaid" and structured_mermaid:
+        return structured_mermaid
+    direct_content = str(block.content.get("content", "") or "").strip()
+    if direct_content:
+        return direct_content
+    if str(block.text or "").strip():
+        return str(block.text or "").strip()
+    image_captions = block.content.get("image_caption")
+    if isinstance(image_captions, list) and image_captions:
+        return str(image_captions[0] or "").strip()
+    chart_captions = block.content.get("chart_caption")
+    if isinstance(chart_captions, list) and chart_captions:
+        return str(chart_captions[0] or "").strip()
+    return ""
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _remove_legacy_final_files(final_dir: Path, image_id: str) -> None:
