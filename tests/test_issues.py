@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
+from src.pipeline.issues import (
+    detect_flowchart_issues,
+    detect_flowchart_second_pass_issues,
+    detect_seal_issues,
+)
 from src.pipeline.llm_adjudicator import build_issue_prompt_payload
 from src.schema import (
     CanonicalBlock,
@@ -241,3 +245,48 @@ def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference()
     assert "reference_excerpt" in prompt_payload
     assert "current_mermaid" not in prompt_payload
     assert "reference_mermaid" not in prompt_payload
+
+
+def test_detect_flowchart_second_pass_issue_without_qwen_reference() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-2",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-2",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="```mermaid\nflowchart TD\nA-->B\n```",
+                content={"img_path": "data/demo.png"},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+
+    issues = detect_flowchart_second_pass_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        mineru_label=None,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].target_block_id == "m1"
+    assert issues[0].candidate_payload is not None
+    assert issues[0].candidate_payload["review_mode"] == "second_pass"
+    assert (
+        issues[0].candidate_payload["graph_diff"]["diff_kind"] == "second_pass_required"
+    )
+
+    prompt_payload = build_issue_prompt_payload(issues[0], "flowchart_adjudication")
+    assert prompt_payload["review_mode"] == "second_pass"
+    assert prompt_payload["reference_excerpt"] == ""

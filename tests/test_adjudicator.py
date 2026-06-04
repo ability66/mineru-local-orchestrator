@@ -54,9 +54,14 @@ def test_adjudicator_injects_seal_from_qwen_label() -> None:
                 sub_type="seal",
                 bbox=[110, 110, 310, 310],
                 text="某某公司印章",
-                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="qwen",
-                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                ocr_regions=[
+                    OcrRegion(role="seal", text="某某公司", confidence="high")
+                ],
             )
         ],
     )
@@ -69,7 +74,9 @@ def test_adjudicator_injects_seal_from_qwen_label() -> None:
             main_subject="某某公司印章",
             confidence="high",
         ),
-        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
         ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
     )
 
@@ -79,8 +86,12 @@ def test_adjudicator_injects_seal_from_qwen_label() -> None:
         qwen_document=qwen_document,
         mineru_label=None,
         qwen_label=qwen_label,
-        mineru_output=ModelOutput(image_id="img-1", model_name="mineru", success=True, raw_text="{}"),
-        qwen_output=ModelOutput(image_id="img-1", model_name="qwen", success=True, raw_text="{}"),
+        mineru_output=ModelOutput(
+            image_id="img-1", model_name="mineru", success=True, raw_text="{}"
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-1", model_name="qwen", success=True, raw_text="{}"
+        ),
     )
 
     block = artifact.final_document.blocks[0]
@@ -110,7 +121,11 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
                 type="table",
                 bbox=[0, 0, 1000, 1000],
                 text="表格标题",
-                content={"table_body": "|a|b|", "table_caption": ["表格标题"], "img_path": "data/demo.png"},
+                content={
+                    "table_body": "|a|b|",
+                    "table_caption": ["表格标题"],
+                    "img_path": "data/demo.png",
+                },
                 source="mineru",
                 structured_label=StructuredLabel(
                     kind="table",
@@ -118,7 +133,9 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
                     format="markdown",
                     source="mineru",
                 ),
-                caption_structured=CaptionStructured(brief="表格标题", visual_type="table"),
+                caption_structured=CaptionStructured(
+                    brief="表格标题", visual_type="table"
+                ),
             )
         ],
     )
@@ -135,9 +152,15 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
                 type="chart",
                 bbox=[0, 0, 1000, 1000],
                 text="图表标题",
-                content={"content": "趋势说明", "chart_caption": ["图表标题"], "img_path": "data/demo.png"},
+                content={
+                    "content": "趋势说明",
+                    "chart_caption": ["图表标题"],
+                    "img_path": "data/demo.png",
+                },
                 source="qwen",
-                caption_structured=CaptionStructured(brief="图表标题", visual_type="chart"),
+                caption_structured=CaptionStructured(
+                    brief="图表标题", visual_type="chart"
+                ),
             )
         ],
     )
@@ -150,7 +173,9 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
             main_subject="表格标题",
             confidence="high",
         ),
-        structured_label=StructuredLabel(kind="table", content="|a|b|", format="markdown", source="mineru"),
+        structured_label=StructuredLabel(
+            kind="table", content="|a|b|", format="markdown", source="mineru"
+        ),
     )
     qwen_label = ParsedLabel(
         image_type="chart",
@@ -161,7 +186,9 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
             main_subject="图表标题",
             confidence="high",
         ),
-        structured_label=StructuredLabel(kind="text", content="趋势说明", format="plain_text", source="model"),
+        structured_label=StructuredLabel(
+            kind="text", content="趋势说明", format="plain_text", source="model"
+        ),
     )
 
     artifact = adjudicate_documents(
@@ -170,8 +197,12 @@ def test_adjudicator_keeps_mineru_primary_structure_when_reviewing_conflict() ->
         qwen_document=qwen_document,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
-        mineru_output=ModelOutput(image_id="img-2", model_name="mineru", success=True, raw_text="{}"),
-        qwen_output=ModelOutput(image_id="img-2", model_name="qwen", success=True, raw_text="{}"),
+        mineru_output=ModelOutput(
+            image_id="img-2", model_name="mineru", success=True, raw_text="{}"
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-2", model_name="qwen", success=True, raw_text="{}"
+        ),
     )
 
     assert artifact.review_required is True
@@ -200,9 +231,14 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
                 sub_type="seal",
                 bbox=[100, 100, 300, 300],
                 text="某某公司印章",
-                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="mineru",
-                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                ocr_regions=[
+                    OcrRegion(role="seal", text="某某公司", confidence="high")
+                ],
                 caption_structured=CaptionStructured(brief="某某公司印章"),
             )
         ],
@@ -221,9 +257,14 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
                 sub_type="seal",
                 bbox=[100, 100, 300, 300],
                 text="某某公司印章",
-                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="qwen",
-                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                ocr_regions=[
+                    OcrRegion(role="seal", text="某某公司", confidence="high")
+                ],
                 caption_structured=CaptionStructured(brief="某某公司印章"),
             )
         ],
@@ -237,7 +278,9 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
             main_subject="某某公司印章",
             confidence="high",
         ),
-        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
         ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
     )
     qwen_label = ParsedLabel(
@@ -249,7 +292,9 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
             main_subject="某某公司印章",
             confidence="high",
         ),
-        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
         ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
     )
 
@@ -259,8 +304,12 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
         qwen_document=qwen_document,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
-        mineru_output=ModelOutput(image_id="img-3", model_name="mineru", success=True, raw_text="{}"),
-        qwen_output=ModelOutput(image_id="img-3", model_name="qwen", success=True, raw_text="{}"),
+        mineru_output=ModelOutput(
+            image_id="img-3", model_name="mineru", success=True, raw_text="{}"
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-3", model_name="qwen", success=True, raw_text="{}"
+        ),
         issues=[],
         patch_decisions=[],
     )
@@ -357,8 +406,12 @@ def test_adjudicator_auto_accepts_flowchart_mode_when_no_graph_issues() -> None:
         qwen_document=qwen_document,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
-        mineru_output=ModelOutput(image_id="img-flow-accept", model_name="mineru", success=True, raw_text="{}"),
-        qwen_output=ModelOutput(image_id="img-flow-accept", model_name="qwen", success=True, raw_text="{}"),
+        mineru_output=ModelOutput(
+            image_id="img-flow-accept", model_name="mineru", success=True, raw_text="{}"
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-flow-accept", model_name="qwen", success=True, raw_text="{}"
+        ),
         issues=[],
         patch_decisions=[],
     )
@@ -431,8 +484,12 @@ def test_adjudicator_reviews_flowchart_mode_when_final_mermaid_missing() -> None
         qwen_document=qwen_document,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
-        mineru_output=ModelOutput(image_id="img-flow-review", model_name="mineru", success=True, raw_text="{}"),
-        qwen_output=ModelOutput(image_id="img-flow-review", model_name="qwen", success=True, raw_text="{}"),
+        mineru_output=ModelOutput(
+            image_id="img-flow-review", model_name="mineru", success=True, raw_text="{}"
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-flow-review", model_name="qwen", success=True, raw_text="{}"
+        ),
         issues=[
             Issue(
                 issue_id="flowchart-review-m1",
@@ -456,6 +513,104 @@ def test_adjudicator_reviews_flowchart_mode_when_final_mermaid_missing() -> None
     assert artifact.consensus is not None
     assert artifact.consensus.decision == "review"
     assert artifact.review_required is True
+
+
+def test_adjudicator_accepts_flowchart_with_stage2_patch_without_first_stage_qwen() -> (
+    None
+):
+    image_task = ImageTask(
+        image_id="img-flow-second-pass",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-second-pass",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={
+                    "img_path": "data/demo.png",
+                    "content": "flowchart TD\nA-->B\nB-->C",
+                },
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B\nB-->C",
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-second-pass",
+        source="qwen_second_pass",
+        backend="qwen",
+        page_count=1,
+        blocks=[],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content="flowchart TD\nA-->B\nB-->C",
+            format="mermaid",
+            source="model",
+        ),
+    )
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=None,
+        mineru_output=ModelOutput(
+            image_id="img-flow-second-pass",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=None,
+        issues=[
+            Issue(
+                issue_id="flowchart-second-pass-m1",
+                issue_type="flowchart_graph_conflict",
+                page_idx=0,
+                target_block_id="m1",
+                reasons=["flowchart_requires_qwen_second_pass"],
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="flowchart-second-pass-m1",
+                target_block_id="m1",
+                decision="merge",
+                patch={
+                    "type": "chart",
+                    "sub_type": "flowchart",
+                    "content": {"content": "flowchart TD\nA-->B\nB-->D"},
+                },
+                reason="llm_patch_applied",
+            )
+        ],
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "accepted"
+    assert artifact.review_required is False
 
 
 def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
@@ -498,16 +653,23 @@ def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
                 sub_type="seal",
                 bbox=[100, 100, 300, 300],
                 text="某某公司印章",
-                content={"img_path": "data/demo.png", "image_caption": ["某某公司印章"]},
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["某某公司印章"],
+                },
                 source="qwen",
-                ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
+                ocr_regions=[
+                    OcrRegion(role="seal", text="某某公司", confidence="high")
+                ],
             )
         ],
     )
     mineru_label = ParsedLabel(
         image_type="document",
         caption="",
-        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
     )
     qwen_label = ParsedLabel(
         image_type="document",
@@ -518,7 +680,9 @@ def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
             main_subject="某某公司印章",
             confidence="high",
         ),
-        structured_label=StructuredLabel(kind="none", content="", format="none", source="none"),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
         ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
     )
 
@@ -528,8 +692,12 @@ def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
         qwen_document=qwen_document,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
-        mineru_output=ModelOutput(image_id="img-4", model_name="mineru", success=True, raw_text="{}"),
-        qwen_output=ModelOutput(image_id="img-4", model_name="qwen", success=True, raw_text="{}"),
+        mineru_output=ModelOutput(
+            image_id="img-4", model_name="mineru", success=True, raw_text="{}"
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-4", model_name="qwen", success=True, raw_text="{}"
+        ),
         issues=[
             Issue(
                 issue_id="seal-missing-ocr-m1",

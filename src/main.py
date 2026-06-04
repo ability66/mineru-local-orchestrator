@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from time import sleep
 from typing import Any
@@ -22,7 +23,9 @@ except ImportError:
 from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import adjudicate_documents
-from src.pipeline.issues import detect_flowchart_issues, detect_seal_issues
+from src.pipeline.issues import (
+    detect_flowchart_second_pass_issues,
+)
 from src.pipeline.llm_adjudicator import (
     adjudicate_issues_with_llm,
     build_issue_prompt_payload,
@@ -30,7 +33,6 @@ from src.pipeline.llm_adjudicator import (
 from src.pipeline.normalizers import (
     derive_label_from_document,
     normalize_mineru_payload,
-    normalize_qwen_payload,
 )
 from src.pipeline.patches import apply_patch_decisions
 from src.prompt_builder import load_prompt
@@ -62,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry", type=int, default=0)
     parser.add_argument("--request-timeout", type=int, default=180)
     parser.add_argument("--manual-compare-mode", action="store_true")
+    parser.add_argument("--workers", type=int, default=1)
     return parser.parse_args()
 
 
@@ -105,6 +108,16 @@ def pick_client(
         if provider.startswith(provider_prefix):
             return client
     return None
+
+
+def pick_primary_clients(clients: list[BaseLocalClient]) -> list[BaseLocalClient]:
+    primary_clients: list[BaseLocalClient] = []
+    for client in clients:
+        provider = str(client.config.get("provider", "")).strip().lower()
+        if provider.startswith("qwen"):
+            continue
+        primary_clients.append(client)
+    return primary_clients
 
 
 def call_with_retry(
@@ -204,6 +217,182 @@ def _extract_finish_reason(parsed_payload: Any) -> str | None:
     return value or None
 
 
+def _normalize_primary_output(
+    image_task: ImageTask,
+    client: BaseLocalClient | None,
+    output: ModelOutput | None,
+) -> tuple[ModelOutput | None, CanonicalDocument, Any | None]:
+    if client is None or output is None:
+        return (
+            None,
+            empty_document(image_task=image_task, source="primary_unconfigured"),
+            None,
+        )
+
+    provider = str(client.config.get("provider", "")).strip().lower()
+    if provider.startswith("minerupro"):
+        normalized_output, document, label = normalize_mineru_payload(
+            image_task=image_task,
+            model_output=output,
+        )
+        return normalized_output, document, label
+
+    return (
+        output,
+        empty_document(
+            image_task=image_task,
+            source=f"{provider or client.model_name}_unsupported_primary",
+        ),
+        None,
+    )
+
+
+def _build_qwen_review_document(
+    base_document: CanonicalDocument,
+    issues: list[Any],
+    patch_decisions: list[Any],
+    image_task: ImageTask,
+) -> tuple[CanonicalDocument, Any | None]:
+    effective_decisions = [
+        decision
+        for decision in patch_decisions
+        if str(decision.decision or "").strip() not in {"keep_mineru", "reject_issue"}
+        and str(decision.reason or "").strip()
+        not in {"llm_patch_unavailable", "llm_patch_invalid_json"}
+    ]
+    if not effective_decisions:
+        return empty_document(
+            image_task=image_task, source="qwen_second_pass_empty"
+        ), None
+
+    qwen_document = apply_patch_decisions(
+        mineru_document=base_document.model_copy(deep=True),
+        issues=issues,
+        patch_decisions=effective_decisions,
+    )
+    qwen_document.source = "qwen_second_pass"
+    return qwen_document, derive_label_from_document(qwen_document)
+
+
+def process_image_task(
+    image_task: ImageTask,
+    args: argparse.Namespace,
+    primary_client: BaseLocalClient | None,
+    qwen_client: BaseLocalClient | None,
+    recognition_prompt: str,
+    seal_adjudication_prompt: str,
+    flowchart_adjudication_prompt: str,
+    output_dir: Path,
+) -> dict[str, Any]:
+    mineru_output = call_with_retry(
+        client=primary_client,
+        image_task=image_task,
+        prompt=recognition_prompt,
+        retry=args.retry,
+    )
+    (
+        mineru_output,
+        mineru_document,
+        mineru_label,
+    ) = _normalize_primary_output(
+        image_task=image_task,
+        client=primary_client,
+        output=mineru_output,
+    )
+
+    qwen_output: ModelOutput | None = None
+    qwen_document = empty_document(
+        image_task=image_task, source="qwen_second_pass_not_triggered"
+    )
+    qwen_label = None
+
+    seal_issues: list[Any] = []
+    seal_patch_decisions: list[Any] = []
+    seal_patch_outputs: list[ModelOutput] = []
+
+    flowchart_issues = detect_flowchart_second_pass_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        mineru_label=mineru_label,
+    )
+    flowchart_patch_decisions, flowchart_patch_outputs = adjudicate_issues_with_llm(
+        client=qwen_client,
+        image_task=image_task,
+        prompt=flowchart_adjudication_prompt,
+        issues=flowchart_issues,
+        mode="flowchart_adjudication",
+        retry=args.retry,
+    )
+    if flowchart_patch_outputs:
+        qwen_output = flowchart_patch_outputs[0]
+    qwen_document, qwen_label = _build_qwen_review_document(
+        base_document=mineru_document,
+        issues=flowchart_issues,
+        patch_decisions=flowchart_patch_decisions,
+        image_task=image_task,
+    )
+
+    stage2_records = build_stage2_records(
+        issues=seal_issues,
+        outputs=seal_patch_outputs,
+        patch_decisions=seal_patch_decisions,
+        prompt=seal_adjudication_prompt,
+        mode="seal_adjudication",
+    ) + build_stage2_records(
+        issues=flowchart_issues,
+        outputs=flowchart_patch_outputs,
+        patch_decisions=flowchart_patch_decisions,
+        prompt=flowchart_adjudication_prompt,
+        mode="flowchart_adjudication",
+    )
+
+    all_issues = seal_issues + flowchart_issues
+    patch_decisions = seal_patch_decisions + flowchart_patch_decisions
+    if patch_decisions:
+        mineru_document = apply_patch_decisions(
+            mineru_document=mineru_document,
+            issues=all_issues,
+            patch_decisions=patch_decisions,
+        )
+        mineru_label = derive_label_from_document(mineru_document)
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        issues=all_issues,
+        patch_decisions=patch_decisions,
+    )
+    summary_record = write_image_result(
+        output_dir=output_dir,
+        image_task=image_task,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        artifact=artifact,
+        stage2_records=stage2_records,
+    )
+    if args.manual_compare_mode:
+        try:
+            generate_compare_page(
+                image_id=image_task.image_id,
+                output_dir=output_dir,
+                compare_dir=output_dir / "compare_mermaid",
+            )
+        except Exception as exc:
+            print(
+                f"[manual-compare] failed for {image_task.image_id}: {type(exc).__name__}: {exc}"
+            )
+    return summary_record
+
+
 def main() -> None:
     args = parse_args()
     if args.overwrite:
@@ -214,7 +403,8 @@ def main() -> None:
     clients = build_clients(
         model_configs=model_configs, request_timeout=args.request_timeout
     )
-    mineru_client = pick_client(clients, "minerupro")
+    primary_clients = pick_primary_clients(clients)
+    mineru_client = pick_client(primary_clients, "minerupro")
     qwen_client = pick_client(clients, "qwen")
     recognition_prompt = load_prompt(args.prompts_config, "qwen_recognition_prompt")
     seal_adjudication_prompt = load_prompt(
@@ -231,129 +421,42 @@ def main() -> None:
         print("No images found in data directory")
         return
 
-    for image_task in tqdm(image_tasks, desc="Processing images"):
-        mineru_output = call_with_retry(
-            client=mineru_client,
-            image_task=image_task,
-            prompt=recognition_prompt,
-            retry=args.retry,
-        )
-        if mineru_output is not None:
-            mineru_output, mineru_document, mineru_label = normalize_mineru_payload(
+    worker_count = max(1, int(args.workers or 1))
+    if worker_count == 1:
+        for image_task in tqdm(image_tasks, desc="Processing images"):
+            process_image_task(
                 image_task=image_task,
-                model_output=mineru_output,
+                args=args,
+                primary_client=mineru_client,
+                qwen_client=qwen_client,
+                recognition_prompt=recognition_prompt,
+                seal_adjudication_prompt=seal_adjudication_prompt,
+                flowchart_adjudication_prompt=flowchart_adjudication_prompt,
+                output_dir=args.output_dir,
             )
-        else:
-            mineru_document = empty_document(
-                image_task=image_task, source="mineru_unconfigured"
-            )
-            mineru_label = None
-
-        qwen_output = call_with_retry(
-            client=qwen_client,
-            image_task=image_task,
-            prompt=recognition_prompt,
-            retry=args.retry,
-        )
-        if qwen_output is not None:
-            qwen_output, qwen_document, qwen_label = normalize_qwen_payload(
-                image_task=image_task,
-                model_output=qwen_output,
-            )
-        else:
-            qwen_document = empty_document(
-                image_task=image_task, source="qwen_unconfigured"
-            )
-            qwen_label = None
-
-        seal_issues = detect_seal_issues(
-            image_task=image_task,
-            mineru_document=mineru_document,
-            qwen_document=qwen_document,
-        )
-        flowchart_issues = detect_flowchart_issues(
-            image_task=image_task,
-            mineru_document=mineru_document,
-            qwen_document=qwen_document,
-            mineru_label=mineru_label,
-            qwen_label=qwen_label,
-        )
-        seal_patch_decisions, _seal_patch_outputs = adjudicate_issues_with_llm(
-            client=qwen_client,
-            image_task=image_task,
-            prompt=seal_adjudication_prompt,
-            issues=seal_issues,
-            mode="seal_adjudication",
-            retry=args.retry,
-        )
-        flowchart_patch_decisions, _flowchart_patch_outputs = (
-            adjudicate_issues_with_llm(
-                client=qwen_client,
-                image_task=image_task,
-                prompt=flowchart_adjudication_prompt,
-                issues=flowchart_issues,
-                mode="flowchart_adjudication",
-                retry=args.retry,
-            )
-        )
-        stage2_records = build_stage2_records(
-            issues=seal_issues,
-            outputs=_seal_patch_outputs,
-            patch_decisions=seal_patch_decisions,
-            prompt=seal_adjudication_prompt,
-            mode="seal_adjudication",
-        ) + build_stage2_records(
-            issues=flowchart_issues,
-            outputs=_flowchart_patch_outputs,
-            patch_decisions=flowchart_patch_decisions,
-            prompt=flowchart_adjudication_prompt,
-            mode="flowchart_adjudication",
-        )
-        all_issues = seal_issues + flowchart_issues
-        patch_decisions = seal_patch_decisions + flowchart_patch_decisions
-        if patch_decisions:
-            mineru_document = apply_patch_decisions(
-                mineru_document=mineru_document,
-                issues=all_issues,
-                patch_decisions=patch_decisions,
-            )
-            mineru_label = derive_label_from_document(mineru_document)
-
-        artifact = adjudicate_documents(
-            image_task=image_task,
-            mineru_document=mineru_document,
-            qwen_document=qwen_document,
-            mineru_label=mineru_label,
-            qwen_label=qwen_label,
-            mineru_output=mineru_output,
-            qwen_output=qwen_output,
-            issues=all_issues,
-            patch_decisions=patch_decisions,
-        )
-        summary_record = write_image_result(
-            output_dir=args.output_dir,
-            image_task=image_task,
-            mineru_output=mineru_output,
-            qwen_output=qwen_output,
-            mineru_document=mineru_document,
-            qwen_document=qwen_document,
-            mineru_label=mineru_label,
-            qwen_label=qwen_label,
-            artifact=artifact,
-            stage2_records=stage2_records,
-        )
-        if args.manual_compare_mode:
-            try:
-                generate_compare_page(
-                    image_id=image_task.image_id,
-                    output_dir=args.output_dir,
-                    compare_dir=args.output_dir / "compare_mermaid",
+            append_summary_record(summary_path, summary_record)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(
+                    process_image_task,
+                    image_task,
+                    args,
+                    mineru_client,
+                    qwen_client,
+                    recognition_prompt,
+                    seal_adjudication_prompt,
+                    flowchart_adjudication_prompt,
+                    args.output_dir,
                 )
-            except Exception as exc:
-                print(
-                    f"[manual-compare] failed for {image_task.image_id}: {type(exc).__name__}: {exc}"
-                )
-        append_summary_record(summary_path, summary_record)
+                for image_task in image_tasks
+            ]
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Processing images",
+            ):
+                append_summary_record(summary_path, future.result())
 
     if args.manual_compare_mode:
         try:

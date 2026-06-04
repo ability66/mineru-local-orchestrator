@@ -115,6 +115,9 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
     candidate_payload = (
         issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
     )
+    review_mode = (
+        str(candidate_payload.get("review_mode", "") or "").strip() or "disagreement"
+    )
     graph_diff = candidate_payload.get("graph_diff")
     current_mermaid = normalize_mermaid_text(
         str(candidate_payload.get("current_mermaid", "") or "")
@@ -127,6 +130,7 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
     return {
         "issue_id": issue.issue_id,
         "issue_type": issue.issue_type,
+        "review_mode": review_mode,
         "target_block_id": issue.target_block_id,
         "page_idx": issue.page_idx,
         "reasons": issue.reasons,

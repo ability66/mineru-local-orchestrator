@@ -37,8 +37,14 @@ def adjudicate_documents(
     patch_decisions: list[PatchDecision] | None = None,
     graph_fusion_result_override: Any | None = None,
 ) -> AdjudicationArtifact:
-    base_document = mineru_document if mineru_document.blocks or not qwen_document.blocks else qwen_document
-    candidate_document = qwen_document if base_document is mineru_document else mineru_document
+    base_document = (
+        mineru_document
+        if mineru_document.blocks or not qwen_document.blocks
+        else qwen_document
+    )
+    candidate_document = (
+        qwen_document if base_document is mineru_document else mineru_document
+    )
     matches = align_blocks(base_document.blocks, candidate_document.blocks)
     match_lookup = {match.base_index: match for match in matches}
 
@@ -46,9 +52,15 @@ def adjudicate_documents(
     for base_index, base_block in enumerate(base_document.blocks):
         match = match_lookup.get(base_index)
         candidate_block = (
-            candidate_document.blocks[match.candidate_index] if match is not None else None
+            candidate_document.blocks[match.candidate_index]
+            if match is not None
+            else None
         )
-        merged_blocks.append(_merge_block(base_block=base_block, candidate_block=candidate_block, match=match))
+        merged_blocks.append(
+            _merge_block(
+                base_block=base_block, candidate_block=candidate_block, match=match
+            )
+        )
 
     matched_candidate_indexes = {match.candidate_index for match in matches}
     added_qwen_blocks = 0
@@ -63,7 +75,9 @@ def adjudicate_documents(
             added_block.provenance["added_from_qwen"] = True
             merged_blocks.append(added_block)
 
-    merged_blocks.sort(key=lambda item: (item.page_idx, item.order_index, item.block_id))
+    merged_blocks.sort(
+        key=lambda item: (item.page_idx, item.order_index, item.block_id)
+    )
     final_document = CanonicalDocument(
         document_id=image_task.image_id,
         source="adjudicated",
@@ -121,10 +135,12 @@ def adjudicate_documents(
         graph_fusion_result=graph_fusion_result,
         existing=consensus,
     )
-    preferred_label, allow_type_override, allow_graph_override = _pick_enrichment_policy(
-        mineru_label=mineru_label,
-        qwen_label=qwen_label,
-        consensus=consensus,
+    preferred_label, allow_type_override, allow_graph_override = (
+        _pick_enrichment_policy(
+            mineru_label=mineru_label,
+            qwen_label=qwen_label,
+            consensus=consensus,
+        )
     )
     if _is_issue_driven_flowchart_mode(
         mineru_document=mineru_document,
@@ -158,7 +174,9 @@ def adjudicate_documents(
         final_document=final_document,
         consensus=consensus,
         final_label=final_label,
-        graph_fusion=asdict(graph_fusion_result) if graph_fusion_result is not None else None,
+        graph_fusion=asdict(graph_fusion_result)
+        if graph_fusion_result is not None
+        else None,
         matched_block_count=len(matches),
         added_qwen_block_count=added_qwen_blocks,
         review_required=consensus is None or consensus.decision != "accepted",
@@ -187,8 +205,12 @@ def _merge_block(
     ):
         merged.text = candidate_block.text.strip()
 
-    merged.visible_text = _deduplicate(merged.visible_text + candidate_block.visible_text)
-    merged.ocr_regions = _merge_ocr_regions(merged.ocr_regions, candidate_block.ocr_regions)
+    merged.visible_text = _deduplicate(
+        merged.visible_text + candidate_block.visible_text
+    )
+    merged.ocr_regions = _merge_ocr_regions(
+        merged.ocr_regions, candidate_block.ocr_regions
+    )
     merged.warnings = _deduplicate(merged.warnings + candidate_block.warnings)
     merged.provenance["matched_qwen_block_id"] = candidate_block.block_id
 
@@ -205,7 +227,9 @@ def _merge_block(
     return merged
 
 
-def _merge_table_block(base_block: CanonicalBlock, candidate_block: CanonicalBlock) -> CanonicalBlock:
+def _merge_table_block(
+    base_block: CanonicalBlock, candidate_block: CanonicalBlock
+) -> CanonicalBlock:
     table_body = str(base_block.content.get("table_body", "") or "").strip()
     candidate_body = str(candidate_block.content.get("table_body", "") or "").strip()
     if not table_body and candidate_block.structured_label.kind == "table":
@@ -220,30 +244,35 @@ def _merge_table_block(base_block: CanonicalBlock, candidate_block: CanonicalBlo
         )
 
     captions = _deduplicate(
-        _as_text_list(base_block.content.get("table_caption")) +
-        _as_text_list(candidate_block.content.get("table_caption"))
+        _as_text_list(base_block.content.get("table_caption"))
+        + _as_text_list(candidate_block.content.get("table_caption"))
     )
     if captions:
         base_block.content["table_caption"] = captions
     return base_block
 
 
-def _merge_visual_block(base_block: CanonicalBlock, candidate_block: CanonicalBlock) -> CanonicalBlock:
+def _merge_visual_block(
+    base_block: CanonicalBlock, candidate_block: CanonicalBlock
+) -> CanonicalBlock:
     if candidate_block.caption_structured.brief.strip():
         if base_block.type == "chart":
             captions = _deduplicate(
-                _as_text_list(base_block.content.get("chart_caption")) +
-                [candidate_block.caption_structured.brief.strip()]
+                _as_text_list(base_block.content.get("chart_caption"))
+                + [candidate_block.caption_structured.brief.strip()]
             )
             base_block.content["chart_caption"] = captions
         elif base_block.type == "image":
             captions = _deduplicate(
-                _as_text_list(base_block.content.get("image_caption")) +
-                [candidate_block.caption_structured.brief.strip()]
+                _as_text_list(base_block.content.get("image_caption"))
+                + [candidate_block.caption_structured.brief.strip()]
             )
             base_block.content["image_caption"] = captions
 
-    if candidate_block.structured_label.kind == "table" and not str(base_block.content.get("content", "")).strip():
+    if (
+        candidate_block.structured_label.kind == "table"
+        and not str(base_block.content.get("content", "")).strip()
+    ):
         base_block.content["content"] = candidate_block.structured_label.content
     return base_block
 
@@ -261,14 +290,18 @@ def _inject_label_enrichment(
     if target is None:
         target = final_document.blocks[0]
 
-    if graph_fusion_result is not None and str(graph_fusion_result.mermaid or "").strip():
+    if (
+        graph_fusion_result is not None
+        and str(graph_fusion_result.mermaid or "").strip()
+    ):
         target.type = "chart"
         target.sub_type = "flowchart"
         target.content["img_path"] = target.content.get("img_path") or ""
         target.content["content"] = graph_fusion_result.mermaid
         if preferred_label.caption.strip():
             target.content["chart_caption"] = _deduplicate(
-                _as_text_list(target.content.get("chart_caption")) + [preferred_label.caption.strip()]
+                _as_text_list(target.content.get("chart_caption"))
+                + [preferred_label.caption.strip()]
             )
         target.structured_label = StructuredLabel(
             kind="mermaid",
@@ -288,7 +321,8 @@ def _inject_label_enrichment(
         target.content["table_body"] = preferred_label.structured_label.content
         if preferred_label.caption.strip():
             target.content["table_caption"] = _deduplicate(
-                _as_text_list(target.content.get("table_caption")) + [preferred_label.caption.strip()]
+                _as_text_list(target.content.get("table_caption"))
+                + [preferred_label.caption.strip()]
             )
         target.structured_label = preferred_label.structured_label
         return
@@ -310,18 +344,29 @@ def _inject_label_enrichment(
             target.structured_label = preferred_label.structured_label
         if preferred_label.caption.strip():
             target.content["chart_caption"] = _deduplicate(
-                _as_text_list(target.content.get("chart_caption")) + [preferred_label.caption.strip()]
+                _as_text_list(target.content.get("chart_caption"))
+                + [preferred_label.caption.strip()]
             )
 
-    if any(str(region.role or "").strip() == "seal" for region in preferred_label.ocr_regions):
-        if not allow_type_override and target.type != "image" and str(target.sub_type or "").strip().lower() != "seal":
+    if any(
+        str(region.role or "").strip() == "seal"
+        for region in preferred_label.ocr_regions
+    ):
+        if (
+            not allow_type_override
+            and target.type != "image"
+            and str(target.sub_type or "").strip().lower() != "seal"
+        ):
             return
         target.type = "image"
         target.sub_type = "seal"
-        target.ocr_regions = _merge_ocr_regions(target.ocr_regions, preferred_label.ocr_regions)
+        target.ocr_regions = _merge_ocr_regions(
+            target.ocr_regions, preferred_label.ocr_regions
+        )
         if preferred_label.caption.strip():
             target.content["image_caption"] = _deduplicate(
-                _as_text_list(target.content.get("image_caption")) + [preferred_label.caption.strip()]
+                _as_text_list(target.content.get("image_caption"))
+                + [preferred_label.caption.strip()]
             )
 
 
@@ -373,14 +418,28 @@ def _build_validation_result(
         if mineru_label.structured_label.kind != qwen_label.structured_label.kind:
             structure_conflict = 1.0
 
-    evidence_score = max(0.0, min(1.0, 0.55 + 0.35 * match_ratio - 0.10 * qwen_add_ratio))
+    evidence_score = max(
+        0.0, min(1.0, 0.55 + 0.35 * match_ratio - 0.10 * qwen_add_ratio)
+    )
     validator_score = max(
         0.0,
-        min(1.0, 0.60 + 0.25 * match_ratio - 0.10 * type_conflict - 0.10 * structure_conflict),
+        min(
+            1.0,
+            0.60
+            + 0.25 * match_ratio
+            - 0.10 * type_conflict
+            - 0.10 * structure_conflict,
+        ),
     )
     hallucination_risk = max(
         0.0,
-        min(1.0, 0.10 + 0.35 * (1 - match_ratio) + 0.20 * qwen_add_ratio + 0.15 * structure_conflict),
+        min(
+            1.0,
+            0.10
+            + 0.35 * (1 - match_ratio)
+            + 0.20 * qwen_add_ratio
+            + 0.15 * structure_conflict,
+        ),
     )
 
     warnings: list[str] = []
@@ -430,7 +489,9 @@ def _build_consensus(
 
     model_outputs = [output for output, _ in paired]
     labels = [label for _, label in paired]
-    score_result = score_consensus(image_id=image_id, labels=labels, model_outputs=model_outputs)
+    score_result = score_consensus(
+        image_id=image_id, labels=labels, model_outputs=model_outputs
+    )
     return decide_consensus(
         image_id=image_id,
         labels=labels,
@@ -481,7 +542,9 @@ def _override_stamp_mode_consensus(
         return _build_issue_driven_consensus(
             image_id=image_id,
             decision="review",
-            reasons=["stamp mode requires both models to produce parsable labels before auto-accept"],
+            reasons=[
+                "stamp mode requires both models to produce parsable labels before auto-accept"
+            ],
             escalation_reasons=["stamp_mode_missing_parsed_label"],
             existing=existing,
         )
@@ -494,12 +557,15 @@ def _override_stamp_mode_consensus(
             existing=existing,
         )
 
-    unresolved_issues = _find_unresolved_stamp_issues(issues=issues, patch_decisions=patch_decisions)
+    unresolved_issues = _find_unresolved_stamp_issues(
+        issues=issues, patch_decisions=patch_decisions
+    )
     if unresolved_issues:
         return _build_issue_driven_consensus(
             image_id=image_id,
             decision="review",
-            reasons=["seal issues remain unresolved after second-stage adjudication"] + unresolved_issues,
+            reasons=["seal issues remain unresolved after second-stage adjudication"]
+            + unresolved_issues,
             escalation_reasons=["stamp_issues_unresolved"],
             existing=existing,
         )
@@ -540,32 +606,9 @@ def _override_flowchart_mode_consensus(
     flowchart_issues = [
         issue
         for issue in issues
-        if issue.issue_type in {"flowchart_graph_conflict", "flowchart_candidate_review"}
+        if issue.issue_type
+        in {"flowchart_graph_conflict", "flowchart_candidate_review"}
     ]
-
-    both_succeeded = bool(
-        mineru_output is not None
-        and qwen_output is not None
-        and mineru_output.success
-        and qwen_output.success
-    )
-    both_parsed = mineru_label is not None and qwen_label is not None
-    if not both_succeeded:
-        return _build_issue_driven_consensus(
-            image_id=image_id,
-            decision="review",
-            reasons=["flowchart mode requires both models to succeed before auto-accept"],
-            escalation_reasons=["flowchart_mode_model_failure"],
-            existing=existing,
-        )
-    if not both_parsed:
-        return _build_issue_driven_consensus(
-            image_id=image_id,
-            decision="review",
-            reasons=["flowchart mode requires both models to produce parsable labels before auto-accept"],
-            escalation_reasons=["flowchart_mode_missing_parsed_label"],
-            existing=existing,
-        )
 
     if not flowchart_issues:
         if _has_valid_flowchart_mermaid(mineru_document):
@@ -593,7 +636,10 @@ def _override_flowchart_mode_consensus(
         return _build_issue_driven_consensus(
             image_id=image_id,
             decision="review",
-            reasons=["flowchart issues remain unresolved after second-stage adjudication"] + unresolved_issues,
+            reasons=[
+                "flowchart issues remain unresolved after second-stage adjudication"
+            ]
+            + unresolved_issues,
             escalation_reasons=["flowchart_issues_unresolved"],
             existing=existing,
         )
@@ -601,7 +647,7 @@ def _override_flowchart_mode_consensus(
     return _build_issue_driven_consensus(
         image_id=image_id,
         decision="accepted",
-        reasons=["flowchart graph conflicts resolved by second-stage adjudication"],
+        reasons=["flowchart second-stage adjudication produced a valid final mermaid"],
         escalation_reasons=[],
         existing=existing,
     )
@@ -617,7 +663,10 @@ def _is_issue_driven_stamp_mode(
         return True
     if labels and is_stamp_mode(labels):
         return True
-    return any(_is_seal_like_block(block) for block in mineru_document.blocks + qwen_document.blocks)
+    return any(
+        _is_seal_like_block(block)
+        for block in mineru_document.blocks + qwen_document.blocks
+    )
 
 
 def _is_issue_driven_flowchart_mode(
@@ -626,11 +675,17 @@ def _is_issue_driven_flowchart_mode(
     labels: list[ParsedLabel],
     issues: list[Issue],
 ) -> bool:
-    if any(issue.issue_type in {"flowchart_graph_conflict", "flowchart_candidate_review"} for issue in issues):
+    if any(
+        issue.issue_type in {"flowchart_graph_conflict", "flowchart_candidate_review"}
+        for issue in issues
+    ):
         return True
     if any(label.image_type == "flowchart" for label in labels):
         return True
-    return any(_is_flowchart_like_block(block) for block in mineru_document.blocks + qwen_document.blocks)
+    return any(
+        _is_flowchart_like_block(block)
+        for block in mineru_document.blocks + qwen_document.blocks
+    )
 
 
 def _is_seal_like_block(block: CanonicalBlock) -> bool:
@@ -638,7 +693,9 @@ def _is_seal_like_block(block: CanonicalBlock) -> bool:
         return False
     if str(block.sub_type or "").strip().lower() == "seal":
         return True
-    return any(str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions)
+    return any(
+        str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions
+    )
 
 
 def _is_flowchart_like_block(block: CanonicalBlock) -> bool:
@@ -687,7 +744,9 @@ def _find_unresolved_flowchart_issues(
         if str(decision.reason or "").strip() in failure_reasons:
             unresolved.append(f"patch_decision_unavailable:{issue.issue_id}")
             continue
-        target_block_id = str(decision.target_block_id or issue.target_block_id or "").strip()
+        target_block_id = str(
+            decision.target_block_id or issue.target_block_id or ""
+        ).strip()
         target_block = block_lookup.get(target_block_id) if target_block_id else None
         if target_block is None:
             unresolved.append(f"missing_flowchart_target:{issue.issue_id}")
@@ -723,13 +782,19 @@ def _build_issue_driven_consensus(
     return ConsensusResult(
         image_id=image_id,
         type_agreement=1.0 if accepted else float(metrics.get("type_agreement", 0.0)),
-        caption_agreement=1.0 if accepted else float(metrics.get("caption_agreement", 0.0)),
-        structure_agreement=1.0 if accepted else float(metrics.get("structure_agreement", 0.0)),
+        caption_agreement=1.0
+        if accepted
+        else float(metrics.get("caption_agreement", 0.0)),
+        structure_agreement=1.0
+        if accepted
+        else float(metrics.get("structure_agreement", 0.0)),
         seal_agreement=1.0 if accepted else float(metrics.get("seal_agreement", 1.0)),
         overall_score=1.0 if accepted else float(metrics.get("overall_score", 0.0)),
         evidence_score=1.0 if accepted else float(metrics.get("evidence_score", 0.0)),
         validator_score=1.0 if accepted else float(metrics.get("validator_score", 0.0)),
-        hallucination_risk=0.0 if accepted else float(metrics.get("hallucination_risk", 1.0)),
+        hallucination_risk=0.0
+        if accepted
+        else float(metrics.get("hallucination_risk", 1.0)),
         accept_score=1.0 if accepted else float(metrics.get("accept_score", 0.0)),
         decision=decision,  # type: ignore[arg-type]
         reasons=_deduplicate(reasons),
@@ -785,7 +850,9 @@ def _collect_document_warnings(
     return _deduplicate(mineru_document.warnings + qwen_document.warnings)
 
 
-def _merge_ocr_regions(left: list[OcrRegion], right: list[OcrRegion]) -> list[OcrRegion]:
+def _merge_ocr_regions(
+    left: list[OcrRegion], right: list[OcrRegion]
+) -> list[OcrRegion]:
     merged: list[OcrRegion] = []
     seen: set[tuple[str, str]] = set()
     for region in list(left) + list(right):

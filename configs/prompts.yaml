@@ -157,6 +157,9 @@ qwen_flowchart_adjudication_prompt: |
   - visible_text
 
   仲裁原则：
+  - 如果 `review_mode=second_pass`，表示这是流程图二次识别，不是双方对比
+  - 在 `review_mode=second_pass` 下，如果你能识别出更完整/更准确的流程图，直接使用 `merge` 并给出完整 Mermaid
+  - 在 `review_mode=second_pass` 下，如果当前 Mermaid 已经足够好，使用 `keep_mineru`
   - 只看冲突项，不要重述整张图
   - 默认保留 MinerU 的块位置和页结构
   - 如果当前 Mermaid 基本正确，使用 `keep_mineru`

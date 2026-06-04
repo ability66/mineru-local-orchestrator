@@ -211,6 +211,40 @@ def detect_flowchart_issues(
     return _deduplicate_issues(issues)
 
 
+def detect_flowchart_second_pass_issues(
+    image_task: ImageTask,
+    mineru_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+) -> list[Issue]:
+    del image_task
+    if not _has_flowchart_block_or_label(mineru_document.blocks, mineru_label):
+        return []
+
+    target_block = _pick_flowchart_block(mineru_document.blocks)
+    if target_block is None:
+        return []
+
+    current_mermaid = _extract_flowchart_mermaid(mineru_document.blocks, mineru_label)
+    return [
+        Issue(
+            issue_id=f"flowchart-second-pass-{target_block.block_id}",
+            issue_type="flowchart_graph_conflict",
+            page_idx=target_block.page_idx,
+            target_block_id=target_block.block_id,
+            mineru_block=target_block.model_dump(),
+            qwen_block=None,
+            candidate_payload={
+                "review_mode": "second_pass",
+                "current_mermaid": current_mermaid,
+                "graph_diff": {
+                    "diff_kind": "second_pass_required",
+                },
+            },
+            reasons=["flowchart_requires_qwen_second_pass"],
+        )
+    ]
+
+
 def _detect_pair_issue(
     mineru_block: CanonicalBlock, qwen_block: CanonicalBlock | None
 ) -> Issue | None:
