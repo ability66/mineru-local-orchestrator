@@ -24,21 +24,28 @@ from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import adjudicate_documents
 from src.pipeline.issues import (
-    detect_flowchart_second_pass_issues,
+    detect_flowchart_issues,
 )
 from src.pipeline.llm_adjudicator import (
-    adjudicate_issues_with_llm,
     build_issue_prompt_payload,
 )
 from src.pipeline.normalizers import (
     derive_label_from_document,
     normalize_mineru_payload,
+    normalize_qwen_payload,
 )
 from src.pipeline.patches import apply_patch_decisions
 from src.prompt_builder import load_prompt
 from src.render_compare_dashboard import generate_compare_dashboard
 from src.render_mermaid_compare import generate_compare_page
-from src.schema import CanonicalDocument, ImageTask, ModelOutput
+from src.pipeline.flowchart_utils import looks_like_mermaid, normalize_mermaid_text
+from src.schema import (
+    CanonicalBlock,
+    CanonicalDocument,
+    ImageTask,
+    ModelOutput,
+    PatchDecision,
+)
 from src.writer import (
     append_summary_record,
     clear_previous_outputs,
@@ -247,31 +254,96 @@ def _normalize_primary_output(
     )
 
 
-def _build_qwen_review_document(
-    base_document: CanonicalDocument,
-    issues: list[Any],
-    patch_decisions: list[Any],
-    image_task: ImageTask,
-) -> tuple[CanonicalDocument, Any | None]:
-    effective_decisions = [
-        decision
-        for decision in patch_decisions
-        if str(decision.decision or "").strip() not in {"keep_mineru", "reject_issue"}
-        and str(decision.reason or "").strip()
-        not in {"llm_patch_unavailable", "llm_patch_invalid_json"}
-    ]
-    if not effective_decisions:
-        return empty_document(
-            image_task=image_task, source="qwen_second_pass_empty"
-        ), None
+def _is_flowchart_candidate_block(block: CanonicalBlock) -> bool:
+    if block.type not in {"chart", "image"}:
+        return False
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return True
+    if block.structured_label.kind == "mermaid":
+        return True
+    return bool(block.flowchart_graph)
 
-    qwen_document = apply_patch_decisions(
-        mineru_document=base_document.model_copy(deep=True),
-        issues=issues,
-        patch_decisions=effective_decisions,
+
+def _has_flowchart_signal(
+    document: CanonicalDocument,
+    label: Any | None,
+) -> bool:
+    if label is not None and str(getattr(label, "image_type", "") or "") == "flowchart":
+        return True
+    return any(_is_flowchart_candidate_block(block) for block in document.blocks)
+
+
+def _extract_flowchart_mermaid(
+    document: CanonicalDocument,
+    label: Any | None,
+) -> str:
+    if label is not None:
+        candidate = normalize_mermaid_text(
+            str(getattr(getattr(label, "structured_label", None), "content", "") or "")
+        )
+        if looks_like_mermaid(candidate):
+            return candidate
+    for block in document.blocks:
+        if not _is_flowchart_candidate_block(block):
+            continue
+        candidates = [
+            str(block.content.get("content", "") or ""),
+            str(block.text or ""),
+        ]
+        for key in ("chart_caption", "image_caption"):
+            values = block.content.get(key)
+            if isinstance(values, list):
+                candidates.extend(str(item or "") for item in values)
+        for candidate in candidates:
+            normalized = normalize_mermaid_text(candidate)
+            if looks_like_mermaid(normalized):
+                return normalized
+    return ""
+
+
+def _is_complete_qwen_flowchart_result(
+    output: ModelOutput | None,
+    document: CanonicalDocument,
+    label: Any | None,
+) -> bool:
+    if output is None or not output.success:
+        return False
+    finish_reason = _extract_finish_reason(output.parsed)
+    if finish_reason == "length":
+        return False
+    mermaid = _extract_flowchart_mermaid(document=document, label=label)
+    if not mermaid:
+        return False
+    if label is not None and str(getattr(label, "image_type", "") or "") not in {
+        "",
+        "flowchart",
+    }:
+        return False
+    return True
+
+
+def _build_flowchart_first_pass_decisions(
+    issues: list[Any],
+    qwen_complete: bool,
+) -> list[PatchDecision]:
+    if not issues:
+        return []
+    decision = "use_qwen_fields" if qwen_complete else "keep_mineru"
+    reason = (
+        "qwen_flowchart_preferred_on_conflict"
+        if qwen_complete
+        else "qwen_flowchart_incomplete"
     )
-    qwen_document.source = "qwen_second_pass"
-    return qwen_document, derive_label_from_document(qwen_document)
+    return [
+        PatchDecision(
+            issue_id=str(issue.issue_id),
+            target_block_id=str(issue.target_block_id or "") or None,
+            decision=decision,
+            patch={},
+            reason=reason,
+        )
+        for issue in issues
+    ]
 
 
 def process_image_task(
@@ -302,7 +374,7 @@ def process_image_task(
 
     qwen_output: ModelOutput | None = None
     qwen_document = empty_document(
-        image_task=image_task, source="qwen_second_pass_not_triggered"
+        image_task=image_task, source="qwen_first_pass_not_triggered"
     )
     qwen_label = None
 
@@ -310,26 +382,40 @@ def process_image_task(
     seal_patch_decisions: list[Any] = []
     seal_patch_outputs: list[ModelOutput] = []
 
-    flowchart_issues = detect_flowchart_second_pass_issues(
+    flowchart_patch_outputs: list[ModelOutput] = []
+    if _has_flowchart_signal(mineru_document, mineru_label):
+        qwen_output = call_with_retry(
+            client=qwen_client,
+            image_task=image_task,
+            prompt=recognition_prompt,
+            retry=args.retry,
+        )
+        if qwen_output is not None:
+            qwen_output, qwen_document, qwen_label = normalize_qwen_payload(
+                image_task=image_task,
+                model_output=qwen_output,
+            )
+        else:
+            qwen_document = empty_document(
+                image_task=image_task, source="qwen_first_pass_failed"
+            )
+            qwen_label = None
+
+    flowchart_issues = detect_flowchart_issues(
         image_task=image_task,
         mineru_document=mineru_document,
+        qwen_document=qwen_document,
         mineru_label=mineru_label,
+        qwen_label=qwen_label,
     )
-    flowchart_patch_decisions, flowchart_patch_outputs = adjudicate_issues_with_llm(
-        client=qwen_client,
-        image_task=image_task,
-        prompt=flowchart_adjudication_prompt,
-        issues=flowchart_issues,
-        mode="flowchart_adjudication",
-        retry=args.retry,
+    qwen_complete = _is_complete_qwen_flowchart_result(
+        output=qwen_output,
+        document=qwen_document,
+        label=qwen_label,
     )
-    if flowchart_patch_outputs:
-        qwen_output = flowchart_patch_outputs[0]
-    qwen_document, qwen_label = _build_qwen_review_document(
-        base_document=mineru_document,
+    flowchart_patch_decisions = _build_flowchart_first_pass_decisions(
         issues=flowchart_issues,
-        patch_decisions=flowchart_patch_decisions,
-        image_task=image_task,
+        qwen_complete=qwen_complete,
     )
 
     stage2_records = build_stage2_records(
@@ -345,6 +431,8 @@ def process_image_task(
         prompt=flowchart_adjudication_prompt,
         mode="flowchart_adjudication",
     )
+    if not stage2_records:
+        stage2_records = None
 
     all_issues = seal_issues + flowchart_issues
     patch_decisions = seal_patch_decisions + flowchart_patch_decisions

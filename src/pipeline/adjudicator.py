@@ -255,6 +255,11 @@ def _merge_table_block(
 def _merge_visual_block(
     base_block: CanonicalBlock, candidate_block: CanonicalBlock
 ) -> CanonicalBlock:
+    if _is_flowchart_like_block(base_block) or _is_flowchart_like_block(
+        candidate_block
+    ):
+        return base_block
+
     if candidate_block.caption_structured.brief.strip():
         if base_block.type == "chart":
             captions = _deduplicate(
@@ -610,8 +615,8 @@ def _override_flowchart_mode_consensus(
         in {"flowchart_graph_conflict", "flowchart_candidate_review"}
     ]
 
-    if not flowchart_issues:
-        if _has_valid_flowchart_mermaid(mineru_document):
+    if _has_valid_flowchart_mermaid(mineru_document):
+        if not flowchart_issues:
             return _build_issue_driven_consensus(
                 image_id=image_id,
                 decision="accepted",
@@ -619,36 +624,53 @@ def _override_flowchart_mode_consensus(
                 escalation_reasons=[],
                 existing=existing,
             )
-        return _build_issue_driven_consensus(
-            image_id=image_id,
-            decision="review",
-            reasons=["flowchart detected but final mermaid is still missing"],
-            escalation_reasons=["flowchart_missing_final_mermaid"],
-            existing=existing,
-        )
 
-    unresolved_issues = _find_unresolved_flowchart_issues(
-        mineru_document=mineru_document,
-        issues=flowchart_issues,
-        patch_decisions=patch_decisions,
-    )
-    if unresolved_issues:
+        adopted_qwen = any(
+            str(decision.decision or "").strip() == "use_qwen_fields"
+            and str(decision.reason or "").strip()
+            == "qwen_flowchart_preferred_on_conflict"
+            for decision in patch_decisions
+        )
+        fallback_to_mineru = any(
+            str(decision.decision or "").strip() == "keep_mineru"
+            and str(decision.reason or "").strip() == "qwen_flowchart_incomplete"
+            for decision in patch_decisions
+        )
+        if adopted_qwen:
+            return _build_issue_driven_consensus(
+                image_id=image_id,
+                decision="accepted",
+                reasons=["flowchart conflicts detected and qwen flowchart was adopted"],
+                escalation_reasons=[],
+                existing=existing,
+            )
+        if fallback_to_mineru:
+            return _build_issue_driven_consensus(
+                image_id=image_id,
+                decision="accepted",
+                reasons=[
+                    "flowchart conflicts detected but qwen flowchart was incomplete, fallback to mineru"
+                ],
+                escalation_reasons=[],
+                existing=existing,
+            )
         return _build_issue_driven_consensus(
             image_id=image_id,
-            decision="review",
+            decision="accepted",
             reasons=[
-                "flowchart issues remain unresolved after second-stage adjudication"
-            ]
-            + unresolved_issues,
-            escalation_reasons=["flowchart_issues_unresolved"],
+                "flowchart final mermaid remains valid after heuristic comparison"
+            ],
+            escalation_reasons=[],
             existing=existing,
         )
 
     return _build_issue_driven_consensus(
         image_id=image_id,
-        decision="accepted",
-        reasons=["flowchart second-stage adjudication produced a valid final mermaid"],
-        escalation_reasons=[],
+        decision="review",
+        reasons=[
+            "flowchart detected but final mermaid is still missing after heuristic comparison"
+        ],
+        escalation_reasons=["flowchart_missing_final_mermaid"],
         existing=existing,
     )
 

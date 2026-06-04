@@ -515,6 +515,102 @@ def test_adjudicator_reviews_flowchart_mode_when_final_mermaid_missing() -> None
     assert artifact.review_required is True
 
 
+def test_adjudicator_accepts_flowchart_when_qwen_is_incomplete_and_mineru_remains_valid() -> (
+    None
+):
+    image_task = ImageTask(
+        image_id="img-flow-fallback",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-fallback",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B",
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-fallback",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content="flowchart TD\nA-->B",
+            format="mermaid",
+            source="model",
+        ),
+    )
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=None,
+        mineru_output=ModelOutput(
+            image_id="img-flow-fallback",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-flow-fallback",
+            model_name="qwen",
+            success=True,
+            raw_text="",
+        ),
+        issues=[
+            Issue(
+                issue_id="flowchart-diff-m1-missing-node-1",
+                issue_type="flowchart_graph_conflict",
+                page_idx=0,
+                target_block_id="m1",
+                reasons=["flowchart_graph_conflict_detected"],
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="flowchart-diff-m1-missing-node-1",
+                target_block_id="m1",
+                decision="keep_mineru",
+                patch={},
+                reason="qwen_flowchart_incomplete",
+            )
+        ],
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "accepted"
+    assert artifact.review_required is False
+
+
 def test_adjudicator_accepts_flowchart_with_stage2_patch_without_first_stage_qwen() -> (
     None
 ):
