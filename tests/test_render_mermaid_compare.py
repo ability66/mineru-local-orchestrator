@@ -270,3 +270,54 @@ def test_collect_mermaid_snapshots_supports_image_flowchart_blocks_and_qwen_issu
     assert snapshots[2].render_code == "flowchart TD\nQ-->R"
     assert snapshots[3].status == "valid"
     assert "A-->B" in snapshots[3].render_code
+
+
+def test_collect_mermaid_snapshots_sanitizes_render_code_for_html_rendering(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    (output_dir / "normalized" / "mineru" / "unsafe.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "blocks": [
+                        {
+                            "type": "chart",
+                            "sub_type": "flowchart",
+                            "content": {
+                                "content": (
+                                    "flowchart TD\n"
+                                    "Resectable[无转移，肿瘤可切除或<br/>临界可切除] --> "
+                                    "LiverMRI[肝脏MRI<br/>或PET-CT]\n"
+                                    "ChestAbdCT -->|发现囊性病变<br/>或CT无法确定| CT"
+                                )
+                            },
+                        }
+                    ]
+                },
+                "derived_label": None,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "unsafe.json").write_text(
+        json.dumps({"document": {"blocks": []}, "derived_label": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "unsafe.json").write_text(
+        json.dumps({"parsed": {"extraction_results": []}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "unsafe_artifact.json").write_text(
+        json.dumps({"graph_fusion": {}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    snapshots = collect_mermaid_snapshots(image_id="unsafe", output_dir=output_dir)
+
+    assert snapshots[0].status == "valid"
+    assert 'LiverMRI["肝脏MRI<br/>或PET-CT"]' in snapshots[0].render_code
+    assert "|发现囊性病变 / 或CT无法确定|" in snapshots[0].render_code

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import re
 from html import escape
 from typing import Any
 
+_BR_TAG_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
+_EDGE_LABEL_RE = re.compile(r"\|(?P<label>[^|\n]+)\|")
+
 
 def normalize_mermaid_text(text: str) -> str:
-    value = str(text or "").strip()
-    if value.startswith("```") and value.endswith("```"):
-        lines = value.splitlines()
-        if lines:
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        value = "\n".join(lines).strip()
-    return value
+    value = _strip_mermaid_code_fences(str(text or ""))
+    value = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not value:
+        return ""
+    sanitized_lines = [_sanitize_mermaid_line(line) for line in value.splitlines()]
+    return "\n".join(sanitized_lines).strip()
 
 
 def looks_like_mermaid(content: str) -> bool:
@@ -359,3 +360,116 @@ def _escape_mermaid_text(text: str) -> str:
 
 def _escape_mermaid_label(text: str) -> str:
     return _escape_mermaid_text(text).replace("|", "/")
+
+
+def _strip_mermaid_code_fences(text: str) -> str:
+    value = str(text or "").strip()
+    if not value.startswith("```"):
+        return value
+    lines = value.splitlines()
+    if lines:
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _sanitize_mermaid_line(line: str) -> str:
+    if not line.strip():
+        return ""
+    sanitized = _sanitize_mermaid_edge_labels(line)
+    return _sanitize_mermaid_node_labels(sanitized)
+
+
+def _sanitize_mermaid_edge_labels(line: str) -> str:
+    if "-->" not in line and "==>" not in line and "-.->" not in line:
+        return line
+
+    def _replace_label(match: re.Match[str]) -> str:
+        label = _normalize_mermaid_edge_label(match.group("label"))
+        return f"|{label}|"
+
+    return _EDGE_LABEL_RE.sub(_replace_label, line)
+
+
+def _sanitize_mermaid_node_labels(line: str) -> str:
+    chars: list[str] = []
+    position = 0
+    while position < len(line):
+        char = line[position]
+        if not _is_mermaid_node_id_char(char):
+            chars.append(char)
+            position += 1
+            continue
+        if position > 0 and _is_mermaid_node_id_char(line[position - 1]):
+            chars.append(char)
+            position += 1
+            continue
+
+        node_end = position
+        while node_end < len(line) and _is_mermaid_node_id_char(line[node_end]):
+            node_end += 1
+        node_id = line[position:node_end]
+        open_token, close_token = _detect_mermaid_node_shape(line, node_end)
+        if open_token is None or close_token is None:
+            chars.append(node_id)
+            position = node_end
+            continue
+
+        label_start = node_end + len(open_token)
+        label_end = line.find(close_token, label_start)
+        if label_end < 0:
+            chars.append(node_id)
+            position = node_end
+            continue
+
+        raw_label = line[label_start:label_end]
+        sanitized_label = _sanitize_mermaid_node_label(raw_label)
+        chars.append(node_id)
+        chars.append(open_token)
+        chars.append(sanitized_label)
+        chars.append(close_token)
+        position = label_end + len(close_token)
+    return "".join(chars)
+
+
+def _detect_mermaid_node_shape(
+    line: str,
+    position: int,
+) -> tuple[str | None, str | None]:
+    if line.startswith("((", position):
+        return "((", "))"
+    if line.startswith("[", position):
+        return "[", "]"
+    if line.startswith("{", position):
+        return "{", "}"
+    if line.startswith("(", position):
+        return "(", ")"
+    return None, None
+
+
+def _sanitize_mermaid_node_label(label: str) -> str:
+    text = str(label or "").strip()
+    if not text:
+        return text
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        text = text[1:-1].strip()
+    text = _normalize_mermaid_node_text(text)
+    return f'"{text}"'
+
+
+def _normalize_mermaid_node_text(text: str) -> str:
+    normalized = str(text or "").replace("\n", " ").strip()
+    normalized = _BR_TAG_RE.sub("<br/>", normalized)
+    return normalized.replace('"', '\\"')
+
+
+def _normalize_mermaid_edge_label(label: str) -> str:
+    normalized = str(label or "").replace("\n", " ").strip()
+    normalized = _BR_TAG_RE.sub(" / ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized.replace("|", "/")
+
+
+def _is_mermaid_node_id_char(char: str) -> bool:
+    return char.isalnum() or char in "_:-"

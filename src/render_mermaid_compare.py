@@ -9,7 +9,11 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from src.pipeline.flowchart_utils import looks_like_mermaid, mermaid_from_flowchart_graph
+from src.pipeline.flowchart_utils import (
+    looks_like_mermaid,
+    mermaid_from_flowchart_graph,
+    normalize_mermaid_text,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MERMAID_VENDOR_PATH = REPO_ROOT / "vendor" / "mermaid" / "mermaid.min.js"
@@ -1051,15 +1055,7 @@ def _build_image_data_url(image_path: Path) -> str | None:
 
 
 def _normalize_mermaid_text(text: str) -> str:
-    value = str(text or "").strip()
-    if value.startswith("```") and value.endswith("```"):
-        lines = value.splitlines()
-        if lines:
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        value = "\n".join(lines).strip()
-    return value
+    return normalize_mermaid_text(text)
 
 
 def _load_json(path: Path) -> Any:
