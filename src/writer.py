@@ -131,6 +131,11 @@ def build_final_output(
     parsed = build_final_parsed_payload(
         image_task=image_task, document=artifact.final_document
     )
+    selected_output = _pick_selected_final_output(
+        final_document=artifact.final_document,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+    )
     success = bool(artifact.final_document.blocks)
     errors = [
         str(value).strip()
@@ -150,9 +155,13 @@ def build_final_output(
     return {
         "image_id": image_task.image_id,
         "model_name": (
-            mineru_output.model_name
-            if mineru_output is not None and str(mineru_output.model_name or "").strip()
-            else artifact.final_document.source or "adjudicated"
+            selected_output.model_name
+            if selected_output is not None and str(selected_output.model_name or "").strip()
+            else str(
+                artifact.final_document.raw_metadata.get("selected_model_name", "")
+                or artifact.final_document.source
+                or "adjudicated"
+            ).strip()
         ),
         "success": success,
         "raw_text": json.dumps(parsed, ensure_ascii=False),
@@ -160,17 +169,38 @@ def build_final_output(
         "error": None if success else (errors[0] if errors else "no_final_blocks"),
         "latency_ms": sum(latency_values) if latency_values else None,
         "vendor": (
-            mineru_output.vendor
-            if mineru_output is not None and str(mineru_output.vendor or "").strip()
-            else "adjudicated"
+            selected_output.vendor
+            if selected_output is not None and str(selected_output.vendor or "").strip()
+            else str(
+                artifact.final_document.raw_metadata.get("selected_vendor", "")
+                or "adjudicated"
+            ).strip()
         ),
         "source_type": (
-            mineru_output.source_type
-            if mineru_output is not None
-            and str(mineru_output.source_type or "").strip()
-            else "final"
+            selected_output.source_type
+            if selected_output is not None
+            and str(selected_output.source_type or "").strip()
+            else str(
+                artifact.final_document.raw_metadata.get("selected_source_type", "")
+                or "final"
+            ).strip()
         ),
     }
+
+
+def _pick_selected_final_output(
+    final_document: CanonicalDocument,
+    mineru_output: ModelOutput | None,
+    qwen_output: ModelOutput | None,
+) -> ModelOutput | None:
+    selected_role = str(
+        final_document.raw_metadata.get("selected_output_role", "") or ""
+    ).strip()
+    if selected_role == "qwen":
+        return qwen_output
+    if selected_role == "mineru":
+        return mineru_output
+    return mineru_output or qwen_output
 
 
 def build_final_parsed_payload(

@@ -709,6 +709,134 @@ def test_adjudicator_accepts_flowchart_with_stage2_patch_without_first_stage_qwe
     assert artifact.review_required is False
 
 
+def test_adjudicator_selects_qwen_flowchart_as_final_without_mutating_mineru() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-select-qwen",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-select-qwen",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B",
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="MinerU流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-select-qwen",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B\nB-->C"},
+                source="qwen",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B\nB-->C",
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="Qwen流程图"),
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="MinerU流程图",
+        caption_structured=CaptionStructured(brief="MinerU流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content="flowchart TD\nA-->B",
+            format="mermaid",
+            source="model",
+        ),
+    )
+    qwen_label = ParsedLabel(
+        image_type="flowchart",
+        caption="Qwen流程图",
+        caption_structured=CaptionStructured(brief="Qwen流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content="flowchart TD\nA-->B\nB-->C",
+            format="mermaid",
+            source="model",
+        ),
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=ModelOutput(
+            image_id="img-flow-select-qwen",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-flow-select-qwen",
+            model_name="glm-as-qwen",
+            success=True,
+            raw_text="{}",
+        ),
+        issues=[
+            Issue(
+                issue_id="flowchart-diff-m1-missing-node-1",
+                issue_type="flowchart_graph_conflict",
+                page_idx=0,
+                target_block_id="m1",
+                reasons=["flowchart_graph_conflict_detected"],
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="flowchart-diff-m1-missing-node-1",
+                target_block_id="m1",
+                decision="use_qwen_fields",
+                patch={},
+                reason="qwen_flowchart_preferred_on_conflict",
+            )
+        ],
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "accepted"
+    assert artifact.final_document.source == "qwen"
+    assert artifact.final_document.raw_metadata["selected_output_role"] == "qwen"
+    assert artifact.final_document.blocks[0].content["content"] == "flowchart TD\nA-->B\nB-->C"
+    assert mineru_document.blocks[0].content["content"] == "flowchart TD\nA-->B"
+
+
 def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
     image_task = ImageTask(
         image_id="img-4",

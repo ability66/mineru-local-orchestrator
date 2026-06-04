@@ -424,23 +424,17 @@ def process_image_task(
         patch_decisions=seal_patch_decisions,
         prompt=seal_adjudication_prompt,
         mode="seal_adjudication",
-    ) + build_stage2_records(
-        issues=flowchart_issues,
-        outputs=flowchart_patch_outputs,
-        patch_decisions=flowchart_patch_decisions,
-        prompt=flowchart_adjudication_prompt,
-        mode="flowchart_adjudication",
     )
     if not stage2_records:
         stage2_records = None
 
     all_issues = seal_issues + flowchart_issues
     patch_decisions = seal_patch_decisions + flowchart_patch_decisions
-    if patch_decisions:
+    if seal_patch_decisions:
         mineru_document = apply_patch_decisions(
             mineru_document=mineru_document,
-            issues=all_issues,
-            patch_decisions=patch_decisions,
+            issues=seal_issues,
+            patch_decisions=seal_patch_decisions,
         )
         mineru_label = derive_label_from_document(mineru_document)
 

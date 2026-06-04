@@ -213,3 +213,88 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(
     assert stage2_payload["record_count"] == 1
     assert stage2_payload["totals"]["total_tokens"] == 200
     assert summary["final_block_count"] == 2
+
+
+def test_writer_uses_selected_qwen_metadata_for_final_payload(tmp_path) -> None:
+    image_task = ImageTask(
+        image_id="img-qwen-final",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    final_document = CanonicalDocument(
+        document_id="img-qwen-final",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[10, 10, 900, 900],
+                text="流程图",
+                content={"img_path": "/tmp/demo.png", "content": "flowchart TD\nA-->B\nB-->C"},
+                source="qwen",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content="flowchart TD\nA-->B\nB-->C",
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="Qwen流程图"),
+            )
+        ],
+        raw_metadata={
+            "selected_output_role": "qwen",
+            "selected_model_name": "glm-4v-local",
+            "selected_vendor": "glm",
+            "selected_source_type": "local_service",
+        },
+    )
+    artifact = AdjudicationArtifact(
+        image_id="img-qwen-final",
+        final_document=final_document,
+    )
+    mineru_output = ModelOutput(
+        image_id="img-qwen-final",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={},
+        latency_ms=120,
+        vendor="mineru",
+        source_type="local_api",
+    )
+    qwen_output = ModelOutput(
+        image_id="img-qwen-final",
+        model_name="glm-4v-local",
+        success=True,
+        raw_text="",
+        parsed={},
+        latency_ms=80,
+        vendor="glm",
+        source_type="local_service",
+    )
+
+    write_image_result(
+        output_dir=tmp_path,
+        image_task=image_task,
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+        mineru_document=final_document,
+        qwen_document=final_document,
+        mineru_label=None,
+        qwen_label=None,
+        artifact=artifact,
+        stage2_records=None,
+    )
+
+    final_payload = json.loads(
+        (tmp_path / "final" / "img-qwen-final.json").read_text(encoding="utf-8")
+    )
+    assert final_payload["model_name"] == "glm-4v-local"
+    assert final_payload["vendor"] == "glm"
+    assert final_payload["source_type"] == "local_service"

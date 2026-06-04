@@ -135,6 +135,17 @@ def adjudicate_documents(
         graph_fusion_result=graph_fusion_result,
         existing=consensus,
     )
+    selected_flowchart_document = _select_issue_driven_flowchart_document(
+        image_id=image_task.image_id,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        issues=issues or [],
+        patch_decisions=patch_decisions or [],
+        mineru_output=mineru_output,
+        qwen_output=qwen_output,
+    )
+    if selected_flowchart_document is not None:
+        final_document = selected_flowchart_document
     preferred_label, allow_type_override, allow_graph_override = (
         _pick_enrichment_policy(
             mineru_label=mineru_label,
@@ -148,7 +159,14 @@ def adjudicate_documents(
         labels=[label for label in (mineru_label, qwen_label) if label is not None],
         issues=issues or [],
     ):
-        preferred_label = mineru_label or qwen_label
+        selected_role = str(
+            final_document.raw_metadata.get("selected_output_role", "") or ""
+        ).strip()
+        preferred_label = (
+            qwen_label or mineru_label
+            if selected_role == "qwen"
+            else mineru_label or qwen_label
+        )
         allow_type_override = False
         allow_graph_override = False
     _inject_label_enrichment(
@@ -615,32 +633,42 @@ def _override_flowchart_mode_consensus(
         in {"flowchart_graph_conflict", "flowchart_candidate_review"}
     ]
 
+    adopted_qwen = any(
+        str(decision.decision or "").strip() == "use_qwen_fields"
+        and str(decision.reason or "").strip() == "qwen_flowchart_preferred_on_conflict"
+        for decision in patch_decisions
+    )
+    fallback_to_mineru = any(
+        str(decision.decision or "").strip() == "keep_mineru"
+        and str(decision.reason or "").strip() == "qwen_flowchart_incomplete"
+        for decision in patch_decisions
+    )
+
+    if adopted_qwen:
+        if _has_valid_flowchart_mermaid(qwen_document):
+            return _build_issue_driven_consensus(
+                image_id=image_id,
+                decision="accepted",
+                reasons=["flowchart conflicts detected and qwen flowchart was adopted"],
+                escalation_reasons=[],
+                existing=existing,
+            )
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=[
+                "flowchart conflicts detected and qwen was selected, but qwen final mermaid is missing"
+            ],
+            escalation_reasons=["qwen_selected_flowchart_missing_final_mermaid"],
+            existing=existing,
+        )
+
     if _has_valid_flowchart_mermaid(mineru_document):
         if not flowchart_issues:
             return _build_issue_driven_consensus(
                 image_id=image_id,
                 decision="accepted",
                 reasons=["no flowchart graph conflicts detected"],
-                escalation_reasons=[],
-                existing=existing,
-            )
-
-        adopted_qwen = any(
-            str(decision.decision or "").strip() == "use_qwen_fields"
-            and str(decision.reason or "").strip()
-            == "qwen_flowchart_preferred_on_conflict"
-            for decision in patch_decisions
-        )
-        fallback_to_mineru = any(
-            str(decision.decision or "").strip() == "keep_mineru"
-            and str(decision.reason or "").strip() == "qwen_flowchart_incomplete"
-            for decision in patch_decisions
-        )
-        if adopted_qwen:
-            return _build_issue_driven_consensus(
-                image_id=image_id,
-                decision="accepted",
-                reasons=["flowchart conflicts detected and qwen flowchart was adopted"],
                 escalation_reasons=[],
                 existing=existing,
             )
@@ -708,6 +736,59 @@ def _is_issue_driven_flowchart_mode(
         _is_flowchart_like_block(block)
         for block in mineru_document.blocks + qwen_document.blocks
     )
+
+
+def _select_issue_driven_flowchart_document(
+    image_id: str,
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    issues: list[Issue],
+    patch_decisions: list[PatchDecision],
+    mineru_output: ModelOutput | None,
+    qwen_output: ModelOutput | None,
+) -> CanonicalDocument | None:
+    if not _is_issue_driven_flowchart_mode(
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        labels=[],
+        issues=issues,
+    ):
+        return None
+
+    adopted_qwen = any(
+        str(decision.decision or "").strip() == "use_qwen_fields"
+        and str(decision.reason or "").strip() == "qwen_flowchart_preferred_on_conflict"
+        for decision in patch_decisions
+    )
+    selected_role = "qwen" if adopted_qwen else "mineru"
+    selected_output = qwen_output if adopted_qwen else mineru_output
+    source_document = qwen_document if adopted_qwen else mineru_document
+
+    selected_document = source_document.model_copy(deep=True)
+    selected_document.raw_metadata = dict(selected_document.raw_metadata or {})
+    selected_document.raw_metadata["selected_output_role"] = selected_role
+    selected_document.raw_metadata["selected_model_name"] = (
+        selected_output.model_name
+        if selected_output is not None and str(selected_output.model_name or "").strip()
+        else source_document.source
+    )
+    selected_document.raw_metadata["selected_vendor"] = (
+        selected_output.vendor
+        if selected_output is not None and str(selected_output.vendor or "").strip()
+        else source_document.source
+    )
+    selected_document.raw_metadata["selected_source_type"] = (
+        selected_output.source_type
+        if selected_output is not None and str(selected_output.source_type or "").strip()
+        else "final"
+    )
+    selected_document.raw_metadata["selected_by"] = "flowchart_issue_resolution"
+    selected_document.raw_metadata["selected_image_id"] = image_id
+    selected_document.warnings = _deduplicate(
+        selected_document.warnings
+        + _collect_document_warnings(mineru_document, qwen_document)
+    )
+    return selected_document
 
 
 def _is_seal_like_block(block: CanonicalBlock) -> bool:
