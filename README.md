@@ -71,6 +71,48 @@ uv sync --extra dev
 uv run python -m src.main --help
 ```
 
+服务器更新环境：
+
+```bash
+git pull --rebase
+uv sync
+```
+
+预处理整页图片并裁出视觉块：
+
+离线读取已存在的 layout json：
+
+```bash
+uv run python -m src.preprocess.main \
+  --data-dir data/pages \
+  --layout-source json \
+  --layout-dir data/layouts \
+  --output-dir data/preprocess \
+  --workers 8 \
+  --overwrite
+```
+
+在线调用 `mineru_vl_utils` 的 layout client：
+
+```bash
+uv run python -m src.preprocess.main \
+  --data-dir data/pages \
+  --layout-source mineru_vl \
+  --server-url http://80.11.138.9:30000 \
+  --output-dir data/preprocess \
+  --workers 8 \
+  --overwrite
+```
+
+输出目录结构示例：
+
+```text
+data/preprocess/<page_stem>/
+  layout.json
+  <page_stem>_001_chart_bar_line.png
+  manifest.json
+```
+
 生成可视化对比页：
 
 ```bash
@@ -101,6 +143,16 @@ http://<server-ip>:18743/compare_mermaid/figure1.html
 ```bash
 uv run python -m src.main \
   --data-dir data \
+  --output-dir outputs \
+  --models-config configs/models.local.yaml \
+  --prompts-config configs/prompts.yaml
+```
+
+如果前面已经做了 preprocess，后续主流程可以直接吃裁好的图：
+
+```bash
+uv run python -m src.main \
+  --data-dir data/preprocess \
   --output-dir outputs \
   --models-config configs/models.local.yaml \
   --prompts-config configs/prompts.yaml
