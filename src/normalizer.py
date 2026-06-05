@@ -12,6 +12,7 @@ VALID_IMAGE_TYPES = {
     "chart",
     "table",
     "flowchart",
+    "seal",
     "document",
     "screenshot",
     "diagram",
@@ -28,6 +29,8 @@ VISUAL_TYPE_SYNONYMS = {
     "流程图": "flowchart",
     "图表": "chart",
     "表格": "table",
+    "印章": "seal",
+    "公章": "seal",
     "文档": "document",
     "截图": "screenshot",
     "示意图": "diagram",
@@ -496,6 +499,8 @@ def _normalize_visual_type(raw_visual_type: str, image_type: str) -> str:
         return "chart"
     if "table" in lowered or "表格" in normalized:
         return "table"
+    if "seal" in lowered or "stamp" in lowered or "印章" in normalized or "公章" in normalized:
+        return "seal"
     if "screen" in lowered or "screenshot" in lowered or "截图" in normalized:
         return "screenshot"
     if "document" in lowered or "doc" in lowered or "文档" in normalized:
@@ -764,6 +769,7 @@ def _default_structure_summary(image_type: str, visible_text: list[str]) -> str:
         "chart": "可见图表结构与数据标注。",
         "table": "可见表格结构与单元格内容。",
         "flowchart": "可见流程节点、连线与分支关系。",
+        "seal": "可见印章区域与印章文字内容。",
         "document": "可见文档版面与文字块结构。",
         "screenshot": "可见界面区域与控件布局。",
         "diagram": "可见示意结构与关系标注。",

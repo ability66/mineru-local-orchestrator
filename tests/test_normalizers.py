@@ -46,7 +46,10 @@ def test_normalize_mineru_payload_unwraps_nested_data_container() -> None:
     assert document.blocks[0].type == "image"
     assert document.blocks[0].sub_type == "seal"
     assert document.blocks[0].text == "某某公司印章"
+    assert document.blocks[0].caption_structured.visual_type == "seal"
     assert label is not None
+    assert label.image_type == "seal"
+    assert label.caption_structured.visual_type == "seal"
     assert any(region.role == "seal" for region in label.ocr_regions)
 
 
@@ -86,6 +89,8 @@ def test_normalize_mineru_payload_normalizes_ocr_role_and_confidence() -> None:
     assert region.role == "seal"
     assert region.confidence == "high"
     assert label is not None
+    assert label.image_type == "seal"
+    assert label.caption_structured.visual_type == "seal"
     assert label.ocr_regions[0].role == "seal"
 
 
@@ -409,6 +414,45 @@ def test_normalize_qwen_payload_accepts_flat_string_content_blocks() -> None:
     assert document.blocks[1].structured_label.kind == "mermaid"
     assert label is not None
     assert label.image_type == "flowchart"
+
+
+def test_normalize_qwen_payload_preserves_seal_as_formal_image_type() -> None:
+    image_task = ImageTask(
+        image_id="img-qwen-seal",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    payload = {
+        "image_type": "seal",
+        "caption": "某某公司印章",
+        "caption_structured": {
+            "brief": "某某公司印章",
+            "visual_type": "印章",
+            "main_subject": "某某公司印章",
+        },
+        "ocr_regions": [
+            {"role": "stamp", "text": "某某公司", "confidence": "high"}
+        ],
+    }
+    model_output = ModelOutput(
+        image_id="img-qwen-seal",
+        model_name="qwen",
+        success=True,
+        raw_text=json.dumps(payload, ensure_ascii=False),
+    )
+
+    _, document, label = normalize_qwen_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert document.blocks[0].type == "image"
+    assert document.blocks[0].sub_type == "seal"
+    assert document.blocks[0].caption_structured.visual_type == "seal"
+    assert label is not None
+    assert label.image_type == "seal"
+    assert label.caption_structured.visual_type == "seal"
 
 
 def test_normalize_qwen_payload_does_not_treat_plain_text_flowchart_content_as_mermaid() -> None:

@@ -70,6 +70,7 @@ ImageType = Literal[
     "chart",
     "table",
     "flowchart",
+    "seal",
     "document",
     "screenshot",
     "diagram",

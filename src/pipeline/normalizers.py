@@ -100,7 +100,7 @@ def derive_label_from_document(document: CanonicalDocument) -> ParsedLabel | Non
     elif any(block.type == "chart" for block in blocks):
         image_type = "chart"
     elif any(_is_seal_block(block) for block in blocks):
-        image_type = "document"
+        image_type = "seal"
 
     caption = _pick_caption(blocks)
     visible_text = _deduplicate_texts(
@@ -308,12 +308,14 @@ def _block_from_v2_payload(
     raw_content = block.get("content")
     payload_format = "content_list_v2" if isinstance(raw_content, dict) else "json_res_flat"
 
+    block_sub_type = _optional_text(block.get("sub_type"))
+
     return CanonicalBlock(
         block_id=block_id,
         page_idx=page_idx,
         order_index=order_index,
         type=block_type,
-        sub_type=_optional_text(block.get("sub_type")),
+        sub_type=block_sub_type,
         bbox=_normalize_bbox(block.get("bbox")),
         text=text,
         text_level=_coerce_non_negative_int(block.get("text_level")),
@@ -323,6 +325,7 @@ def _block_from_v2_payload(
         structured_label=structured_label,
         caption_structured=_caption_structured_from_block(
             block_type=block_type,
+            block_sub_type=block_sub_type,
             text=text,
             content=normalized_content,
             visible_text=visible_text,
@@ -430,7 +433,9 @@ def _document_from_parsed_label(
             content["content"] = parsed_label.structured_label.content
         elif looks_like_mermaid(parsed_label.structured_label.content):
             content["content"] = parsed_label.structured_label.content
-    elif any(region.role == "seal" for region in parsed_label.ocr_regions):
+    elif parsed_label.image_type == "seal" or any(
+        region.role == "seal" for region in parsed_label.ocr_regions
+    ):
         block_type = "image"
         sub_type = "seal"
         if parsed_label.caption:
@@ -503,7 +508,10 @@ def _apply_label_patch_to_document(
         _append_caption(target.content, "chart_caption", parsed_label.caption)
         return patched_document
 
-    if any(region.role == "seal" for region in parsed_label.ocr_regions) and target.type == "image":
+    if (
+        parsed_label.image_type == "seal"
+        or any(region.role == "seal" for region in parsed_label.ocr_regions)
+    ) and target.type == "image":
         target.sub_type = target.sub_type or "seal"
         target.ocr_regions = _merge_ocr_region_items(target.ocr_regions, parsed_label.ocr_regions)
         _append_caption(target.content, "image_caption", parsed_label.caption)
@@ -555,6 +563,8 @@ def _build_structure_summary(blocks: list[CanonicalBlock], image_type: str) -> s
         return "表格结构，优先保留表体和表格说明。"
     if image_type == "chart":
         return "图表结构，优先保留图表标题、说明和可见关键文字。"
+    if image_type == "seal":
+        return "图像中包含印章区域，已保留印章 OCR 候选。"
     if any(_is_seal_block(block) for block in blocks):
         return "图像中包含印章区域，已保留印章 OCR 候选。"
     return "基于 MinerU 风格内容块构建的单页结构。"
@@ -871,6 +881,7 @@ def _structured_label_from_block_payload(
 
 def _caption_structured_from_block(
     block_type: str,
+    block_sub_type: str | None,
     text: str,
     content: dict[str, Any],
     visible_text: list[str],
@@ -892,7 +903,11 @@ def _caption_structured_from_block(
     elif block_type == "chart":
         visual_type = "chart"
     elif block_type == "image":
-        visual_type = "natural_image"
+        visual_type = (
+            "seal"
+            if str(block_sub_type or "").strip().lower() == "seal"
+            else "natural_image"
+        )
     return CaptionStructured(
         brief=brief,
         visual_type=visual_type,
@@ -930,7 +945,10 @@ def _pick_patch_target(
         for block in blocks:
             if block.type == "chart":
                 return block
-    elif any(region.role == "seal" for region in parsed_label.ocr_regions):
+    elif parsed_label.image_type == "seal" or any(
+        str(region.role or "").strip().lower() == "seal"
+        for region in parsed_label.ocr_regions
+    ):
         for block in blocks:
             if block.type == "image":
                 return block

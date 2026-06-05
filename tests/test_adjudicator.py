@@ -66,11 +66,11 @@ def test_adjudicator_injects_seal_from_qwen_label() -> None:
         ],
     )
     qwen_label = ParsedLabel(
-        image_type="document",
+        image_type="seal",
         caption="某某公司印章",
         caption_structured=CaptionStructured(
             brief="某某公司印章",
-            visual_type="document",
+            visual_type="seal",
             main_subject="某某公司印章",
             confidence="high",
         ),
@@ -270,11 +270,11 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
         ],
     )
     mineru_label = ParsedLabel(
-        image_type="document",
+        image_type="seal",
         caption="某某公司印章",
         caption_structured=CaptionStructured(
             brief="某某公司印章",
-            visual_type="document",
+            visual_type="seal",
             main_subject="某某公司印章",
             confidence="high",
         ),
@@ -284,11 +284,11 @@ def test_adjudicator_auto_accepts_stamp_mode_when_no_seal_issues() -> None:
         ocr_regions=[OcrRegion(role="seal", text="某某公司", confidence="high")],
     )
     qwen_label = ParsedLabel(
-        image_type="document",
+        image_type="seal",
         caption="某某公司印章",
         caption_structured=CaptionStructured(
             brief="某某公司印章",
-            visual_type="document",
+            visual_type="seal",
             main_subject="某某公司印章",
             confidence="high",
         ),
@@ -896,11 +896,11 @@ def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
         ),
     )
     qwen_label = ParsedLabel(
-        image_type="document",
+        image_type="seal",
         caption="某某公司印章",
         caption_structured=CaptionStructured(
             brief="某某公司印章",
-            visual_type="document",
+            visual_type="seal",
             main_subject="某某公司印章",
             confidence="high",
         ),
