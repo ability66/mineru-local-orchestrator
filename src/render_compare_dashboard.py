@@ -125,6 +125,7 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
         "image_id": image_id,
         "record_type": _infer_record_type(
             artifact_payload=artifact_payload,
+            final_payload=final_payload,
             qwen_payload=qwen_payload,
             mineru_payload=mineru_payload,
         ),
@@ -436,13 +437,13 @@ def build_dashboard_html(
           return;
         }}
         if (event.key === "ArrowUp") {{
-          if (moveSelection(typeSelect, -1)) {{
+          if (moveSelection(select, -1)) {{
             event.preventDefault();
           }}
           return;
         }}
         if (event.key === "ArrowDown") {{
-          if (moveSelection(typeSelect, 1)) {{
+          if (moveSelection(select, 1)) {{
             event.preventDefault();
           }}
           return;
@@ -648,17 +649,7 @@ def _build_panel_from_final_payload(
 
     blocks: list[dict[str, Any]] = []
     if isinstance(final_payload, dict):
-        parsed = final_payload.get("parsed")
-        extraction_results = (
-            parsed.get("extraction_results") if isinstance(parsed, dict) else None
-        )
-        if isinstance(extraction_results, list):
-            for page in extraction_results:
-                if not isinstance(page, dict):
-                    continue
-                json_res = page.get("json_res")
-                if isinstance(json_res, list):
-                    blocks.extend(item for item in json_res if isinstance(item, dict))
+        blocks = _extract_blocks_from_final_payload(final_payload)
 
     return _build_panel(
         title=title,
@@ -736,36 +727,38 @@ def _safe_blocks_from_document(document_payload: Any) -> list[dict[str, Any]]:
 
 
 def _infer_image_type(label_payload: Any, blocks: list[dict[str, Any]]) -> str:
+    inferred_from_blocks = _infer_record_type_from_blocks(blocks)
+    if inferred_from_blocks != "unknown":
+        return inferred_from_blocks
     if isinstance(label_payload, dict):
         image_type = str(label_payload.get("image_type", "") or "").strip()
         if image_type:
             return image_type
-    for block in blocks:
-        sub_type = str(block.get("sub_type", "") or "").strip().lower()
-        block_type = str(block.get("type", "") or "").strip().lower()
-        if sub_type == "flowchart":
-            return "flowchart"
-        if block_type == "table":
-            return "table"
-        if block_type == "chart":
-            return "chart"
-        if block_type == "image":
-            return "natural_image"
     return "unknown"
 
 
 def _infer_record_type(
     artifact_payload: Any,
+    final_payload: Any,
     qwen_payload: Any,
     mineru_payload: Any,
 ) -> str:
-    candidate_documents = []
+    candidate_blocks: list[list[dict[str, Any]]] = []
     if isinstance(artifact_payload, dict):
-        candidate_documents.append(artifact_payload.get("final_document"))
+        candidate_blocks.append(_safe_blocks_from_document(artifact_payload.get("final_document")))
+    if isinstance(final_payload, dict):
+        candidate_blocks.append(_extract_blocks_from_final_payload(final_payload))
+
+    candidate_documents = []
     if isinstance(qwen_payload, dict):
         candidate_documents.append(qwen_payload.get("document"))
     if isinstance(mineru_payload, dict):
         candidate_documents.append(mineru_payload.get("document"))
+
+    for blocks in candidate_blocks:
+        inferred = _infer_record_type_from_blocks(blocks)
+        if inferred != "unknown":
+            return inferred
 
     for document_payload in candidate_documents:
         blocks = _safe_blocks_from_document(document_payload)
@@ -786,6 +779,25 @@ def _infer_record_type_from_blocks(blocks: list[dict[str, Any]]) -> str:
         if block_type:
             return block_type
     return "unknown"
+
+
+def _extract_blocks_from_final_payload(final_payload: Any) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    if not isinstance(final_payload, dict):
+        return blocks
+    parsed = final_payload.get("parsed")
+    extraction_results = (
+        parsed.get("extraction_results") if isinstance(parsed, dict) else None
+    )
+    if not isinstance(extraction_results, list):
+        return blocks
+    for page in extraction_results:
+        if not isinstance(page, dict):
+            continue
+        json_res = page.get("json_res")
+        if isinstance(json_res, list):
+            blocks.extend(item for item in json_res if isinstance(item, dict))
+    return blocks
 
 
 def _infer_caption(label_payload: Any, blocks: list[dict[str, Any]]) -> str:

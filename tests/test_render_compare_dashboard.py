@@ -75,7 +75,50 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
     assert 'event.key === "ArrowDown"' in html
     assert 'event.key === "ArrowLeft"' in html
     assert 'event.key === "ArrowRight"' in html
+    assert 'moveSelection(typeSelect' not in html
+    assert 'moveSelection(select, -1)' in html
+    assert 'moveSelection(select, 1)' in html
     assert "Original" in html
     assert "MinerU" in html
     assert "Qwen" in html
     assert "Final" in html
+
+
+def test_generate_compare_dashboard_uses_final_payload_subtype_for_seal_records(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    final_payload = {
+        "parsed": {
+            "filename": "seal-demo.png",
+            "extraction_results": [
+                {
+                    "page": 0,
+                    "json_res": [
+                        {
+                            "type": "image",
+                            "sub_type": "seal",
+                            "content": "上海木田电器电机有限公司",
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+
+    (output_dir / "final" / "seal-demo.json").write_text(
+        json.dumps(final_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">印章<" in html
+    assert 'data-record-type="seal"' in html
