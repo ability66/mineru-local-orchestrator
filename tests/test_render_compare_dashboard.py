@@ -8,6 +8,8 @@ from src.render_compare_dashboard import generate_compare_dashboard
 def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
     output_dir = tmp_path / "outputs"
     (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "paddle").mkdir(parents=True)
+    (output_dir / "normalized" / "glm").mkdir(parents=True)
     (output_dir / "normalized" / "qwen").mkdir(parents=True)
     (output_dir / "final").mkdir(parents=True)
     data_dir = tmp_path / "data"
@@ -49,6 +51,14 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
         json.dumps(normalized_payload, ensure_ascii=False),
         encoding="utf-8",
     )
+    (output_dir / "normalized" / "paddle" / "demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "glm" / "demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
     (output_dir / "normalized" / "qwen" / "demo.json").write_text(
         json.dumps(normalized_payload, ensure_ascii=False),
         encoding="utf-8",
@@ -80,8 +90,12 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
     assert 'moveSelection(select, 1)' in html
     assert "Original" in html
     assert "MinerU" in html
+    assert "Paddle" in html
+    assert "GLM" in html
     assert "Qwen" in html
     assert "Final" in html
+    assert "normalized/paddle/demo.json" in html
+    assert "normalized/glm/demo.json" in html
 
 
 def test_generate_compare_dashboard_uses_final_payload_subtype_for_seal_records(tmp_path) -> None:

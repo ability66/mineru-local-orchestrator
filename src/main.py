@@ -25,6 +25,7 @@ from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import adjudicate_documents
 from src.pipeline.issues import (
     detect_flowchart_issues,
+    detect_seal_issues,
 )
 from src.pipeline.llm_adjudicator import (
     adjudicate_issues_with_llm,
@@ -329,6 +330,52 @@ def _has_flowchart_signal(
     return any(_is_flowchart_candidate_block(block) for block in document.blocks)
 
 
+def _is_seal_candidate_block(block: CanonicalBlock) -> bool:
+    if block.type != "image":
+        return False
+    if str(block.sub_type or "").strip().lower() == "seal":
+        return True
+    return any(
+        str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions
+    )
+
+
+def _seal_signal_score(
+    document: CanonicalDocument,
+    label: ParsedLabel | None,
+) -> tuple[int, int, int, int]:
+    seal_blocks = [block for block in document.blocks if _is_seal_candidate_block(block)]
+    unique_texts: set[str] = set()
+    seal_region_count = 0
+    for block in seal_blocks:
+        text = str(block.text or "").strip()
+        if text:
+            unique_texts.add(text)
+        content_value = str(block.content.get("content", "") or "").strip()
+        if content_value:
+            unique_texts.add(content_value)
+        captions = block.content.get("image_caption")
+        if isinstance(captions, list):
+            for item in captions:
+                text = str(item or "").strip()
+                if text:
+                    unique_texts.add(text)
+        for region in block.ocr_regions:
+            if str(region.role or "").strip().lower() != "seal":
+                continue
+            seal_region_count += 1
+            text = str(region.text or "").strip()
+            if text:
+                unique_texts.add(text)
+    label_bonus = 1 if label is not None and label.image_type == "seal" else 0
+    return (
+        len(seal_blocks),
+        seal_region_count,
+        len(unique_texts),
+        label_bonus,
+    )
+
+
 def _extract_flowchart_mermaid(
     document: CanonicalDocument,
     label: Any | None,
@@ -432,6 +479,59 @@ def _pick_flowchart_reference_bundle(
     return bundle, issues
 
 
+def _pick_seal_reference_bundle(
+    image_task: ImageTask,
+    mineru_document: CanonicalDocument,
+    auxiliary_bundles: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[Any]]:
+    candidates: list[tuple[int, tuple[int, int, int, int], int, dict[str, Any], list[Any]]] = []
+    role_priority = {"glm": 2, "paddle": 1}
+    for bundle in auxiliary_bundles:
+        output = bundle.get("output")
+        document = bundle.get("document")
+        label = bundle.get("label")
+        if not isinstance(document, CanonicalDocument):
+            continue
+        if not isinstance(output, ModelOutput) or not output.success:
+            continue
+        if not any(_is_seal_candidate_block(block) for block in document.blocks):
+            continue
+        issues = detect_seal_issues(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            qwen_document=document,
+        )
+        reference_role = str(bundle.get("role", "") or "").strip().lower()
+        reference_name = (
+            output.model_name
+            if isinstance(output, ModelOutput) and str(output.model_name or "").strip()
+            else reference_role
+        )
+        for issue in issues:
+            candidate_payload = (
+                dict(issue.candidate_payload)
+                if isinstance(issue.candidate_payload, dict)
+                else {}
+            )
+            candidate_payload["reference_model_role"] = reference_role
+            candidate_payload["reference_model_name"] = reference_name
+            issue.candidate_payload = candidate_payload
+        candidates.append(
+            (
+                1 if issues else 0,
+                _seal_signal_score(document=document, label=label),
+                role_priority.get(reference_role, 0),
+                bundle,
+                issues,
+            )
+        )
+    if not candidates:
+        return None, []
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _has_issues, _score, _priority, bundle, issues = candidates[0]
+    return bundle, issues
+
+
 def _build_flowchart_first_pass_decisions(
     issues: list[Any],
     qwen_complete: bool,
@@ -499,11 +599,32 @@ def process_image_task(
     seal_patch_decisions: list[Any] = []
     seal_patch_outputs: list[ModelOutput] = []
 
-    auxiliary_bundles = [bundle for bundle in (glm_bundle, paddle_bundle) if bundle.get("client") is not None]
+    auxiliary_bundles = [
+        bundle
+        for bundle in (glm_bundle, paddle_bundle)
+        if bundle.get("client") is not None
+    ]
+    seal_reference_bundle, seal_issues = _pick_seal_reference_bundle(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        auxiliary_bundles=auxiliary_bundles,
+    )
     reference_bundle: dict[str, Any] | None = None
     flowchart_issues: list[Any] = []
     flowchart_patch_decisions: list[PatchDecision] = []
     flowchart_patch_outputs: list[ModelOutput] = []
+
+    if seal_issues and qwen_client is not None:
+        seal_patch_decisions, seal_patch_outputs = adjudicate_issues_with_llm(
+            client=qwen_client,
+            image_task=image_task,
+            prompt=seal_adjudication_prompt,
+            issues=seal_issues,
+            mode="seal_adjudication",
+            retry=args.retry,
+        )
+        if seal_patch_outputs:
+            qwen_output = seal_patch_outputs[-1]
 
     if _has_flowchart_signal(mineru_document, mineru_label):
         reference_bundle, flowchart_issues = _pick_flowchart_reference_bundle(
@@ -562,11 +683,26 @@ def process_image_task(
     artifact = adjudicate_documents(
         image_task=image_task,
         mineru_document=final_mineru_document,
-        qwen_document=qwen_document,
+        qwen_document=(
+            seal_reference_bundle["document"]
+            if seal_reference_bundle is not None
+            and isinstance(seal_reference_bundle.get("document"), CanonicalDocument)
+            else qwen_document
+        ),
         mineru_label=final_mineru_label,
-        qwen_label=qwen_label,
+        qwen_label=(
+            seal_reference_bundle["label"]
+            if seal_reference_bundle is not None
+            and isinstance(seal_reference_bundle.get("label"), ParsedLabel)
+            else qwen_label
+        ),
         mineru_output=mineru_output,
-        qwen_output=qwen_output,
+        qwen_output=(
+            seal_reference_bundle["output"]
+            if seal_reference_bundle is not None
+            and isinstance(seal_reference_bundle.get("output"), ModelOutput)
+            else qwen_output
+        ),
         issues=all_issues,
         patch_decisions=patch_decisions,
     )

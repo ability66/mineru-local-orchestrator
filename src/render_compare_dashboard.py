@@ -8,6 +8,11 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from src.pipeline.flowchart_utils import (
+    looks_like_mermaid,
+    mermaid_from_flowchart_graph,
+    normalize_mermaid_text,
+)
 from src.render_mermaid_compare import (
     collect_mermaid_snapshots,
     collect_original_image_snapshot,
@@ -82,7 +87,7 @@ def discover_image_ids(output_dir: Path) -> list[str]:
     normalized_dir = output_dir / "normalized"
     final_dir = output_dir / "final"
 
-    for provider in ("mineru", "qwen"):
+    for provider in ("mineru", "paddle", "glm", "qwen"):
         provider_dir = normalized_dir / provider
         if not provider_dir.exists():
             continue
@@ -107,6 +112,8 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
     final_dir = output_dir / "final"
 
     mineru_payload = _load_json(normalized_dir / "mineru" / f"{image_id}.json")
+    paddle_payload = _load_json(normalized_dir / "paddle" / f"{image_id}.json")
+    glm_payload = _load_json(normalized_dir / "glm" / f"{image_id}.json")
     qwen_payload = _load_json(normalized_dir / "qwen" / f"{image_id}.json")
     final_payload = _load_json(final_dir / f"{image_id}.json")
     artifact_payload = _load_json(final_dir / f"{image_id}_artifact.json")
@@ -128,6 +135,8 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
             final_payload=final_payload,
             qwen_payload=qwen_payload,
             mineru_payload=mineru_payload,
+            paddle_payload=paddle_payload,
+            glm_payload=glm_payload,
         ),
         "original_image": None
         if original_image is None
@@ -144,6 +153,20 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
                 snapshot_lookup=snapshot_lookup,
                 title="MinerU",
                 source_path=f"normalized/mineru/{image_id}.json",
+            ),
+            _build_panel_from_normalized_payload(
+                payload=paddle_payload,
+                artifact_payload=artifact_payload,
+                snapshot_lookup=snapshot_lookup,
+                title="Paddle",
+                source_path=f"normalized/paddle/{image_id}.json",
+            ),
+            _build_panel_from_normalized_payload(
+                payload=glm_payload,
+                artifact_payload=artifact_payload,
+                snapshot_lookup=snapshot_lookup,
+                title="GLM",
+                source_path=f"normalized/glm/{image_id}.json",
             ),
             _build_panel_from_normalized_payload(
                 payload=qwen_payload,
@@ -341,7 +364,7 @@ def build_dashboard_html(
   <div class="page">
     <section class="hero">
       <h1>输出对比总览</h1>
-      <p>原图、MinerU、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格展示 Markdown，其它展示文字。</p>
+      <p>原图、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格展示 Markdown，其它展示文字。</p>
       <div class="controls">
         <label for="type-select">查看类型</label>
         <select id="type-select">{type_options_html}</select>
@@ -611,8 +634,8 @@ def _build_panel_from_normalized_payload(
         (payload or {}).get("derived_label") if isinstance(payload, dict) else None
     )
     note_suffix = ""
-    if not blocks and isinstance(artifact_payload, dict):
-        fallback_key = "mineru_block" if title == "MinerU" else "qwen_block"
+    fallback_key = {"MinerU": "mineru_block", "Qwen": "qwen_block"}.get(title)
+    if not blocks and fallback_key and isinstance(artifact_payload, dict):
         blocks = _extract_issue_fallback_blocks(
             artifact_payload, fallback_key=fallback_key
         )
@@ -670,23 +693,41 @@ def _build_panel(
 ) -> ComparePanel:
     image_type = _infer_image_type(label_payload=label_payload, blocks=blocks)
     caption = _infer_caption(label_payload=label_payload, blocks=blocks)
+    mermaid_text = ""
 
     if mermaid_snapshot is not None and str(
         getattr(mermaid_snapshot, "status", "") or ""
     ) in {"valid", "derived"}:
+        mermaid_text = str(getattr(mermaid_snapshot, "render_code", "") or "")
         return ComparePanel(
             title=title,
             source_path=source_path,
             image_type=image_type or "flowchart",
             caption=caption,
             render_kind="mermaid",
-            render_text=str(getattr(mermaid_snapshot, "render_code", "") or ""),
+            render_text=mermaid_text,
             note="；".join(
                 item
                 for item in [
                     str(getattr(mermaid_snapshot, "note", "") or ""),
                     extra_note,
                 ]
+                if item
+            ),
+        )
+
+    mermaid_text = _extract_mermaid_text(blocks=blocks, label_payload=label_payload)
+    if mermaid_text:
+        return ComparePanel(
+            title=title,
+            source_path=source_path,
+            image_type=image_type or "flowchart",
+            caption=caption,
+            render_kind="mermaid",
+            render_text=mermaid_text,
+            note="；".join(
+                item
+                for item in ["直接从结构化内容提取 Mermaid", extra_note]
                 if item
             ),
         )
@@ -742,6 +783,8 @@ def _infer_record_type(
     final_payload: Any,
     qwen_payload: Any,
     mineru_payload: Any,
+    paddle_payload: Any,
+    glm_payload: Any,
 ) -> str:
     candidate_blocks: list[list[dict[str, Any]]] = []
     if isinstance(artifact_payload, dict):
@@ -750,6 +793,10 @@ def _infer_record_type(
         candidate_blocks.append(_extract_blocks_from_final_payload(final_payload))
 
     candidate_documents = []
+    if isinstance(glm_payload, dict):
+        candidate_documents.append(glm_payload.get("document"))
+    if isinstance(paddle_payload, dict):
+        candidate_documents.append(paddle_payload.get("document"))
     if isinstance(qwen_payload, dict):
         candidate_documents.append(qwen_payload.get("document"))
     if isinstance(mineru_payload, dict):
@@ -835,6 +882,50 @@ def _extract_table_markdown(blocks: list[dict[str, Any]], label_payload: Any) ->
             body = str(content_payload.get("table_body", "") or "").strip()
             if body:
                 return body
+    return ""
+
+
+def _extract_mermaid_text(blocks: list[dict[str, Any]], label_payload: Any) -> str:
+    if isinstance(label_payload, dict):
+        structured = label_payload.get("structured_label")
+        if (
+            isinstance(structured, dict)
+            and str(structured.get("kind", "") or "").strip() == "mermaid"
+        ):
+            content = normalize_mermaid_text(
+                str(structured.get("content", "") or "").strip()
+            )
+            if looks_like_mermaid(content):
+                return content
+    for block in blocks:
+        sub_type = str(block.get("sub_type", "") or "").strip().lower()
+        structured = block.get("structured_label")
+        flowchart_graph = block.get("flowchart_graph")
+        candidates: list[str] = []
+        if isinstance(structured, dict):
+            content = normalize_mermaid_text(
+                str(structured.get("content", "") or "").strip()
+            )
+            if looks_like_mermaid(content):
+                return content
+        content_payload = block.get("content")
+        if isinstance(content_payload, dict):
+            for key in ("content", "text"):
+                value = str(content_payload.get(key, "") or "").strip()
+                if value:
+                    candidates.append(value)
+        text = str(block.get("text", "") or "").strip()
+        if text:
+            candidates.append(text)
+        for candidate in candidates:
+            normalized = normalize_mermaid_text(candidate)
+            if looks_like_mermaid(normalized):
+                return normalized
+        if sub_type == "flowchart" and isinstance(flowchart_graph, dict):
+            derived_mermaid = mermaid_from_flowchart_graph(flowchart_graph)
+            normalized = normalize_mermaid_text(derived_mermaid)
+            if looks_like_mermaid(normalized):
+                return normalized
     return ""
 
 
