@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from src.preprocess.client import JsonLayoutClient
+from src.preprocess.client import (
+    BaseLayoutClient,
+    JsonLayoutClient,
+    MinerUVLLayoutClient,
+    extract_layout_blocks,
+)
 from src.preprocess.cropper import write_page_crops
 from src.preprocess.grouping import build_crop_groups, normalize_layout_blocks
 
@@ -18,7 +24,17 @@ def parse_args() -> argparse.Namespace:
         description="Crop page images into visual blocks with bbox json layouts."
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
-    parser.add_argument("--layout-dir", type=Path, required=True)
+    parser.add_argument(
+        "--layout-source",
+        type=str,
+        choices=("json", "mineru_vl"),
+        default="json",
+    )
+    parser.add_argument("--layout-dir", type=Path, default=None)
+    parser.add_argument("--server-url", type=str, default="")
+    parser.add_argument("--model-name", type=str, default="")
+    parser.add_argument("--image-analysis", action="store_true", default=True)
+    parser.add_argument("--no-image-analysis", dest="image_analysis", action="store_false")
     parser.add_argument("--output-dir", type=Path, default=Path("data/preprocess"))
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=None)
@@ -32,13 +48,13 @@ def main() -> None:
     if args.overwrite and args.output_dir.exists():
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    client = build_layout_client(args)
 
     image_paths = discover_page_images(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         limit=args.limit,
     )
-    client = JsonLayoutClient(layout_dir=args.layout_dir)
 
     results: list[dict[str, Any]] = []
     max_workers = max(1, int(args.workers or 1))
@@ -112,19 +128,41 @@ def discover_page_images(
     return paths
 
 
+def build_layout_client(args: argparse.Namespace) -> BaseLayoutClient:
+    if args.layout_source == "json":
+        if args.layout_dir is None:
+            raise ValueError("--layout-dir is required when --layout-source=json")
+        return JsonLayoutClient(layout_dir=args.layout_dir)
+
+    if not str(args.server_url or "").strip():
+        raise ValueError("--server-url is required when --layout-source=mineru_vl")
+    return MinerUVLLayoutClient(
+        server_url=str(args.server_url or "").strip(),
+        image_analysis=bool(args.image_analysis),
+        model_name=str(args.model_name or "").strip() or None,
+    )
+
+
 def process_page_image(
     image_path: Path,
     data_dir: Path,
     output_dir: Path,
-    client: JsonLayoutClient,
+    client: BaseLayoutClient,
     padding_px: int,
 ) -> dict[str, Any]:
     relative_path = image_path.relative_to(data_dir)
     page_stem = relative_path.stem
-    raw_blocks = client.fetch_blocks(image_path=image_path, relative_path=relative_path)
+    page_output_dir = output_dir / page_stem
+    page_output_dir.mkdir(parents=True, exist_ok=True)
+
+    layout_payload = client.fetch_layout_payload(
+        image_path=image_path,
+        relative_path=relative_path,
+    )
+    _write_json(page_output_dir / "layout.json", layout_payload)
+    raw_blocks = extract_layout_blocks(layout_payload)
     layout_blocks = normalize_layout_blocks(raw_blocks)
     crop_groups = build_crop_groups(page_stem=page_stem, blocks=layout_blocks)
-    page_output_dir = output_dir / page_stem
     manifest = write_page_crops(
         image_path=image_path,
         page_output_dir=page_output_dir,
@@ -137,6 +175,13 @@ def process_page_image(
         "page_output_dir": str(page_output_dir),
         "crop_count": len(manifest.get("crops", [])),
     }
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

@@ -5,9 +5,10 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.preprocess.client import JsonLayoutClient
+from src.preprocess.client import BaseLayoutClient, JsonLayoutClient
 from src.preprocess.cropper import write_page_crops
 from src.preprocess.grouping import build_crop_groups, normalize_layout_blocks
+from src.preprocess.main import process_page_image
 
 
 def test_build_crop_groups_merges_chart_caption_and_footnote() -> None:
@@ -143,3 +144,92 @@ def test_json_layout_client_reads_relative_layout_json(tmp_path) -> None:
 
     assert len(blocks) == 1
     assert blocks[0]["type"] == "chart"
+
+
+def test_json_layout_client_reads_page_folder_layout_json(tmp_path) -> None:
+    image_path = tmp_path / "pages" / "sample.png"
+    image_path.parent.mkdir(parents=True)
+    Image.new("RGB", (100, 100), color="white").save(image_path)
+
+    layout_dir = tmp_path / "layouts"
+    layout_path = layout_dir / "sample" / "layout.json"
+    layout_path.parent.mkdir(parents=True)
+    layout_path.write_text(
+        json.dumps(
+            {
+                "blocks": [
+                    {
+                        "type": "image",
+                        "bbox": [0.1, 0.1, 0.9, 0.9],
+                        "angle": 0,
+                        "content": "seal",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    client = JsonLayoutClient(layout_dir=layout_dir)
+    blocks = client.fetch_blocks(
+        image_path=image_path,
+        relative_path=Path("sample.png"),
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "image"
+
+
+def test_process_page_image_writes_layout_json_into_page_directory(tmp_path) -> None:
+    data_dir = tmp_path / "pages"
+    image_path = data_dir / "changsha_page_48.png"
+    data_dir.mkdir(parents=True)
+    Image.new("RGB", (1000, 1000), color="white").save(image_path)
+
+    class StubLayoutClient(BaseLayoutClient):
+        def fetch_layout_payload(self, image_path: Path, relative_path: Path) -> dict[str, object]:
+            del image_path
+            del relative_path
+            return {
+                "blocks": [
+                    {
+                        "type": "image_caption",
+                        "bbox": [0.279, 0.387, 0.719, 0.404],
+                        "angle": 0,
+                        "content": "chart caption",
+                    },
+                    {
+                        "type": "chart",
+                        "bbox": [0.22, 0.44, 0.825, 0.684],
+                        "angle": 0,
+                        "content": "| a | b |",
+                        "sub_type": "bar_line",
+                    },
+                    {
+                        "type": "image_footnote",
+                        "bbox": [0.146, 0.711, 0.603, 0.729],
+                        "angle": 0,
+                        "content": "footnote",
+                    },
+                ],
+                "layout_scored": {"ok": True},
+            }
+
+    output_dir = tmp_path / "data" / "preprocess"
+    result = process_page_image(
+        image_path=image_path,
+        data_dir=data_dir,
+        output_dir=output_dir,
+        client=StubLayoutClient(),
+        padding_px=0,
+    )
+
+    assert result["success"] is True
+    page_dir = output_dir / "changsha_page_48"
+    assert (page_dir / "layout.json").exists()
+    layout_payload = json.loads((page_dir / "layout.json").read_text(encoding="utf-8"))
+    assert layout_payload["layout_scored"] == {"ok": True}
+    assert len(layout_payload["blocks"]) == 3
+    assert (page_dir / "changsha_page_48_001_chart_bar_line.png").exists()
+    assert (page_dir / "manifest.json").exists()
