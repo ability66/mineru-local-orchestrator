@@ -65,8 +65,12 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
 
     assert html_path is not None
     html = html_path.read_text(encoding="utf-8")
+    assert 'select id="type-select"' in html
     assert 'select id="image-select"' in html
+    assert ">全部类型<" in html
+    assert ">流程图<" in html
     assert ">demo<" in html
+    assert 'data-record-type="flowchart"' in html
     assert "Original" in html
     assert "MinerU" in html
     assert "Qwen" in html

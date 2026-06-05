@@ -71,6 +71,31 @@ uv sync --extra dev
 uv run python -m src.main --help
 ```
 
+生成可视化对比页：
+
+```bash
+uv run python -m src.render_compare_dashboard --output-dir outputs
+```
+
+在服务器上直接查看已生成页面：
+
+```bash
+uv run python -m src.serve_dashboard --root-dir outputs --host 0.0.0.0 --port 18743
+```
+
+访问地址示例：
+
+```text
+http://<server-ip>:18743/compare_dashboard/index.html
+http://<server-ip>:18743/compare_mermaid/figure1.html
+```
+
+说明：
+
+- `--port` 必填，不提供默认端口，避免误占用
+- 默认 `--host 127.0.0.1` 仅本机可访问；部署到服务器对外查看时可显式传 `--host 0.0.0.0`
+- 该服务只负责静态查看 `outputs` 下的已生成 HTML 与资源，不会触发识别流程
+
 基础运行：
 
 ```bash

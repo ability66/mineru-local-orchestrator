@@ -26,6 +26,16 @@ class ComparePanel:
     note: str = ""
 
 
+TYPE_LABELS = {
+    "flowchart": "流程图",
+    "chart": "图表",
+    "table": "表格",
+    "natural_image": "自然图像",
+    "document": "文档",
+    "unknown": "未知类型",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate an offline HTML dashboard to compare original image, labels, and outputs."
@@ -112,6 +122,11 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
 
     return {
         "image_id": image_id,
+        "record_type": _infer_record_type(
+            artifact_payload=artifact_payload,
+            qwen_payload=qwen_payload,
+            mineru_payload=mineru_payload,
+        ),
         "original_image": None
         if original_image is None
         else {
@@ -149,6 +164,11 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
 def build_dashboard_html(
     records: list[dict[str, Any]], mermaid_script_path: str
 ) -> str:
+    type_options = _build_type_options(records)
+    type_options_html = "\n".join(
+        f'<option value="{escape(option["value"])}">{escape(option["label"])}</option>'
+        for option in type_options
+    )
     options_html = "\n".join(
         f'<option value="{escape(record["image_id"])}">{escape(record["image_id"])}</option>'
         for record in records
@@ -321,6 +341,8 @@ def build_dashboard_html(
       <h1>输出对比总览</h1>
       <p>原图、MinerU、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格展示 Markdown，其它展示文字。</p>
       <div class="controls">
+        <label for="type-select">查看类型</label>
+        <select id="type-select">{type_options_html}</select>
         <label for="image-select">切换图片</label>
         <select id="image-select">{options_html}</select>
       </div>
@@ -330,17 +352,60 @@ def build_dashboard_html(
   <script src="{escape(mermaid_script_path)}"></script>
   <script>
     (function () {{
+      const typeSelect = document.getElementById("type-select");
       const select = document.getElementById("image-select");
       const sections = Array.from(document.querySelectorAll(".record"));
+      const allRecords = sections.map((section) => ({{
+        imageId: section.getAttribute("data-image-id") || "",
+        recordType: section.getAttribute("data-record-type") || "unknown"
+      }}));
+
+      function syncImageOptions(recordType) {{
+        if (!select) {{
+          return [];
+        }}
+        const allowedRecords = allRecords.filter((record) => recordType === "all" || record.recordType === recordType);
+        const previousValue = select.value;
+        select.innerHTML = "";
+        for (const record of allowedRecords) {{
+          const option = document.createElement("option");
+          option.value = record.imageId;
+          option.textContent = record.imageId;
+          select.appendChild(option);
+        }}
+        if (!allowedRecords.length) {{
+          return [];
+        }}
+        const nextValue = allowedRecords.some((record) => record.imageId === previousValue)
+          ? previousValue
+          : allowedRecords[0].imageId;
+        select.value = nextValue;
+        return allowedRecords;
+      }}
+
       function showRecord(imageId) {{
         for (const section of sections) {{
           section.classList.toggle("active", section.getAttribute("data-image-id") === imageId);
         }}
       }}
+
+      function syncView() {{
+        const currentType = typeSelect ? typeSelect.value : "all";
+        const allowedRecords = syncImageOptions(currentType);
+        if (allowedRecords.length) {{
+          showRecord(select.value);
+          return;
+        }}
+        showRecord("__no_record__");
+      }}
+
+      if (typeSelect) {{
+        typeSelect.addEventListener("change", syncView);
+      }}
       if (select) {{
-        showRecord(select.value);
         select.addEventListener("change", () => showRecord(select.value));
       }}
+      syncView();
     }})();
 
     (async function () {{
@@ -388,7 +453,7 @@ def _build_record_section(record: dict[str, Any]) -> str:
         _build_panel_card(panel) for panel in record.get("panels", [])
     )
     return f"""
-    <section class="record" data-image-id="{escape(record["image_id"])}">
+    <section class="record" data-image-id="{escape(record["image_id"])}" data-record-type="{escape(str(record.get("record_type", "unknown")))}">
       <div class="grid">
         {original_card}
         {panel_cards}
@@ -635,6 +700,42 @@ def _infer_image_type(label_payload: Any, blocks: list[dict[str, Any]]) -> str:
     return "unknown"
 
 
+def _infer_record_type(
+    artifact_payload: Any,
+    qwen_payload: Any,
+    mineru_payload: Any,
+) -> str:
+    candidate_labels = []
+    if isinstance(artifact_payload, dict):
+        candidate_labels.append(artifact_payload.get("final_label"))
+    if isinstance(qwen_payload, dict):
+        candidate_labels.append(qwen_payload.get("derived_label"))
+    if isinstance(mineru_payload, dict):
+        candidate_labels.append(mineru_payload.get("derived_label"))
+
+    for label_payload in candidate_labels:
+        if not isinstance(label_payload, dict):
+            continue
+        image_type = str(label_payload.get("image_type", "") or "").strip()
+        if image_type:
+            return image_type
+
+    candidate_documents = []
+    if isinstance(artifact_payload, dict):
+        candidate_documents.append(artifact_payload.get("final_document"))
+    if isinstance(qwen_payload, dict):
+        candidate_documents.append(qwen_payload.get("document"))
+    if isinstance(mineru_payload, dict):
+        candidate_documents.append(mineru_payload.get("document"))
+
+    for document_payload in candidate_documents:
+        blocks = _safe_blocks_from_document(document_payload)
+        inferred = _infer_image_type(label_payload=None, blocks=blocks)
+        if inferred != "unknown":
+            return inferred
+    return "unknown"
+
+
 def _infer_caption(label_payload: Any, blocks: list[dict[str, Any]]) -> str:
     if isinstance(label_payload, dict):
         caption = str(label_payload.get("caption", "") or "").strip()
@@ -745,6 +846,27 @@ def _deduplicate_texts(values: list[str]) -> list[str]:
         seen.add(normalized)
         ordered.append(text)
     return ordered
+
+
+def _build_type_options(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    ordered_types: list[str] = []
+    seen_types: set[str] = set()
+    for record in records:
+        record_type = str(record.get("record_type", "unknown") or "unknown").strip()
+        if not record_type or record_type in seen_types:
+            continue
+        seen_types.add(record_type)
+        ordered_types.append(record_type)
+
+    options = [{"value": "all", "label": "全部类型"}]
+    for record_type in ordered_types:
+        options.append(
+            {
+                "value": record_type,
+                "label": TYPE_LABELS.get(record_type, record_type),
+            }
+        )
+    return options
 
 
 def _load_json(path: Path) -> Any:
