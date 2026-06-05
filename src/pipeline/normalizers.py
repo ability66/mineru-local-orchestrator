@@ -43,6 +43,30 @@ def normalize_mineru_payload(
     return updated, document, label
 
 
+def normalize_paddle_payload(
+    image_task: ImageTask,
+    model_output: ModelOutput,
+) -> tuple[ModelOutput, CanonicalDocument, ParsedLabel | None]:
+    raw_payload = _extract_raw_payload(model_output)
+    document, warnings = _canonical_document_from_payload(
+        document_id=image_task.image_id,
+        source=model_output.model_name,
+        payload=raw_payload,
+        default_image_path=image_task.image_path,
+    )
+
+    updated = model_output.model_copy(deep=True)
+    updated.parsed = raw_payload
+    if warnings:
+        message = "; ".join(warnings)
+        updated.error = (
+            _merge_errors(updated.error, message) if not updated.success else updated.error
+        )
+
+    label = derive_label_from_document(document)
+    return updated, document, label
+
+
 def normalize_qwen_payload(
     image_task: ImageTask,
     model_output: ModelOutput,
@@ -625,6 +649,8 @@ def _extract_document_payload(payload: Any) -> Any | None:
             return current["content_list"]
         if "pdf_info" in current:
             return {"pdf_info": current.get("pdf_info")}
+        if "parsing_res_list" in current:
+            return _extract_paddle_parsing_res_list_payload(current)
         if "blocks" in current:
             return current["blocks"]
 
@@ -695,6 +721,133 @@ def _extract_page_result_list_payload(items: list[Any]) -> Any | None:
             pages[page_index] = page_blocks
         return pages
     return fallback_payload
+
+
+def _extract_paddle_parsing_res_list_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    parsing_res_list = payload.get("parsing_res_list")
+    if not isinstance(parsing_res_list, list):
+        return []
+    layout_boxes = _extract_paddle_layout_boxes(payload.get("layout_det_res"))
+    transformed_blocks: list[tuple[int, dict[str, Any]]] = []
+    for index, block in enumerate(parsing_res_list, start=1):
+        if not isinstance(block, dict):
+            continue
+        order_index = _coerce_non_negative_int(block.get("block_order"), default=index)
+        transformed = _paddle_block_to_flat_payload(
+            block=block,
+            layout_boxes=layout_boxes,
+        )
+        if transformed is None:
+            continue
+        transformed_blocks.append((order_index or index, transformed))
+    transformed_blocks.sort(key=lambda item: item[0])
+    return [item[1] for item in transformed_blocks]
+
+
+def _extract_paddle_layout_boxes(layout_det_res: Any) -> list[dict[str, Any]]:
+    if not isinstance(layout_det_res, dict):
+        return []
+    boxes = layout_det_res.get("boxes")
+    if not isinstance(boxes, list):
+        return []
+    return [item for item in boxes if isinstance(item, dict)]
+
+
+def _paddle_block_to_flat_payload(
+    block: dict[str, Any],
+    layout_boxes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    raw_label = str(block.get("block_label", "") or "").strip().lower()
+    block_type, block_sub_type = _map_paddle_block_label(raw_label)
+    text = str(block.get("block_content", "") or "").strip()
+    matching_box = _match_paddle_layout_box(block=block, layout_boxes=layout_boxes)
+    score = block.get("score")
+    if score is None and matching_box is not None:
+        score = matching_box.get("score")
+    block_id = block.get("block_id")
+    if block_id in (None, ""):
+        block_id = block.get("block_order")
+    if block_id in (None, ""):
+        block_id = f"{raw_label or 'block'}_{len(layout_boxes)}"
+    transformed: dict[str, Any] = {
+        "block_id": f"paddle_{block_id}",
+        "type": block_type,
+        "bbox": block.get("block_bbox") or (
+            matching_box.get("coordinate") if matching_box is not None else []
+        ),
+        "score": score,
+    }
+    if block_sub_type is not None:
+        transformed["sub_type"] = block_sub_type
+
+    content: Any = ""
+    if block_type == "title":
+        content = text
+        transformed["text_level"] = 1
+    elif block_type == "paragraph":
+        content = text
+    elif block_type == "table":
+        content = {"table_body": text} if text else {}
+    elif block_type == "chart":
+        if block_sub_type == "flowchart" and looks_like_mermaid(text):
+            content = {"content": text}
+        elif text:
+            content = {"chart_caption": [text]}
+    elif block_type == "image" and text:
+        content = {"image_caption": [text]}
+    transformed["content"] = content
+
+    if block_sub_type == "seal" and text:
+        transformed["ocr_regions"] = [
+            {
+                "role": "seal",
+                "text": text,
+                "confidence": score if score is not None else "medium",
+                "bbox_hint": block.get("block_bbox"),
+            }
+        ]
+    return transformed
+
+
+def _map_paddle_block_label(raw_label: str) -> tuple[str, str | None]:
+    if raw_label == "seal":
+        return "image", "seal"
+    if raw_label in {"flowchart"}:
+        return "chart", "flowchart"
+    if raw_label in {"chart", "graph", "plot"}:
+        return "chart", None
+    if raw_label in {"table"}:
+        return "table", None
+    if raw_label in {"image", "figure", "picture", "photo"}:
+        return "image", None
+    if raw_label in {"title", "doc_title"}:
+        return "title", None
+    return "paragraph", None
+
+
+def _match_paddle_layout_box(
+    block: dict[str, Any],
+    layout_boxes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    block_order = _coerce_non_negative_int(block.get("block_order"))
+    block_bbox = _normalize_bbox(block.get("block_bbox"))
+    block_label = str(block.get("block_label", "") or "").strip().lower()
+
+    for box in layout_boxes:
+        if (
+            block_order is not None
+            and _coerce_non_negative_int(box.get("order")) == block_order
+        ):
+            return box
+
+    for box in layout_boxes:
+        box_label = str(box.get("label", "") or "").strip().lower()
+        box_bbox = _normalize_bbox(box.get("coordinate"))
+        if block_label and box_label and block_label != box_label:
+            continue
+        if block_bbox and box_bbox and block_bbox == box_bbox:
+            return box
+    return None
 
 
 def _normalize_page_indexes(items: list[dict[str, Any]]) -> list[int]:

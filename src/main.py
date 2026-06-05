@@ -34,6 +34,7 @@ from src.pipeline.llm_adjudicator import (
 from src.pipeline.normalizers import (
     derive_label_from_document,
     normalize_mineru_payload,
+    normalize_paddle_payload,
     normalize_qwen_payload,
 )
 from src.pipeline.patches import apply_patch_decisions
@@ -260,8 +261,15 @@ def _normalize_primary_output(
 
     provider = str(client.config.get("provider", "")).strip().lower()
     role = _client_role(client)
-    if role in {"mineru", "paddle"} or provider.startswith(("minerupro", "paddle")):
+    if role == "mineru" or provider.startswith("minerupro"):
         normalized_output, document, label = normalize_mineru_payload(
+            image_task=image_task,
+            model_output=output,
+        )
+        return normalized_output, document, label
+
+    if role == "paddle" or provider.startswith("paddle"):
+        normalized_output, document, label = normalize_paddle_payload(
             image_task=image_task,
             model_output=output,
         )

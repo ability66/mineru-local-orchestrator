@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 
-from src.pipeline.normalizers import normalize_mineru_payload, normalize_qwen_payload
+from src.pipeline.normalizers import (
+    normalize_mineru_payload,
+    normalize_paddle_payload,
+    normalize_qwen_payload,
+)
 from src.schema import ImageTask, ModelOutput
 
 
@@ -269,6 +273,80 @@ def test_normalize_mineru_payload_unwraps_tmp_shape_extraction_results_with_flat
     assert document.blocks[2].provenance["source_angle"] == 90.0
     assert label is not None
     assert label.caption == "第一页标题"
+
+
+def test_normalize_paddle_payload_extracts_seal_blocks_from_parsing_res_list() -> None:
+    image_task = ImageTask(
+        image_id="circle_Aug09866",
+        image_path="data/stamp/circle_Aug09866.png",
+        file_name="circle_Aug09866.png",
+        file_ext=".png",
+    )
+    model_output = ModelOutput(
+        image_id="circle_Aug09866",
+        model_name="paddle-local",
+        success=True,
+        raw_text="",
+        parsed={
+            "filename": "circle_Aug09866.png",
+            "total_pages": 1,
+            "extraction_results": [
+                {
+                    "page": 1,
+                    "filename": "circle_Aug09866.png",
+                    "md_res": "seal",
+                    "json_res": {
+                        "width": 640,
+                        "height": 640,
+                        "parsing_res_list": [
+                            {
+                                "block_label": "seal",
+                                "block_content": "上海木田电器电机有限公司",
+                                "block_bbox": [1, 0, 640, 636],
+                                "block_id": 0,
+                                "block_order": 1,
+                            }
+                        ],
+                        "layout_det_res": {
+                            "boxes": [
+                                {
+                                    "label": "seal",
+                                    "score": 0.9626336097717285,
+                                    "coordinate": [1, 0, 640, 636],
+                                    "order": 1,
+                                }
+                            ]
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    _, document, label = normalize_paddle_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert not document.warnings
+    assert document.page_count == 1
+    assert len(document.blocks) == 1
+    block = document.blocks[0]
+    assert block.page_idx == 0
+    assert block.type == "image"
+    assert block.sub_type == "seal"
+    assert block.text == "上海木田电器电机有限公司"
+    assert block.content["image_caption"] == ["上海木田电器电机有限公司"]
+    assert block.confidence is not None and block.confidence > 0.9
+    assert block.caption_structured.visual_type == "seal"
+    assert block.ocr_regions[0].role == "seal"
+    assert block.ocr_regions[0].text == "上海木田电器电机有限公司"
+    assert block.ocr_regions[0].confidence == "high"
+    assert label is not None
+    assert label.image_type == "seal"
+    assert label.caption == "上海木田电器电机有限公司"
+    assert label.caption_structured.visual_type == "seal"
+    assert label.ocr_regions[0].role == "seal"
 
 
 def test_normalize_qwen_payload_prefers_mineru_style_document_as_source_of_truth() -> None:
