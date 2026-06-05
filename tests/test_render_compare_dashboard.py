@@ -18,7 +18,7 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
         "document": {
             "blocks": [
                 {
-                    "type": "chart",
+                    "type": "image",
                     "sub_type": "flowchart",
                     "content": {
                         "content": "flowchart TD\nA-->B",
@@ -28,7 +28,7 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
             ]
         },
         "derived_label": {
-            "image_type": "flowchart",
+            "image_type": "natural_image",
             "caption": "flowchart TD\nA-->B",
             "structured_label": {
                 "kind": "mermaid",
@@ -71,6 +71,10 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
     assert ">流程图<" in html
     assert ">demo<" in html
     assert 'data-record-type="flowchart"' in html
+    assert 'event.key === "ArrowUp"' in html
+    assert 'event.key === "ArrowDown"' in html
+    assert 'event.key === "ArrowLeft"' in html
+    assert 'event.key === "ArrowRight"' in html
     assert "Original" in html
     assert "MinerU" in html
     assert "Qwen" in html

@@ -30,6 +30,7 @@ TYPE_LABELS = {
     "flowchart": "流程图",
     "chart": "图表",
     "table": "表格",
+    "seal": "印章",
     "natural_image": "自然图像",
     "document": "文档",
     "unknown": "未知类型",
@@ -389,6 +390,31 @@ def build_dashboard_html(
         }}
       }}
 
+      function moveSelection(targetSelect, direction) {{
+        if (!targetSelect || !targetSelect.options.length) {{
+          return false;
+        }}
+        const optionCount = targetSelect.options.length;
+        const currentIndex = targetSelect.selectedIndex >= 0 ? targetSelect.selectedIndex : 0;
+        const nextIndex = (currentIndex + direction + optionCount) % optionCount;
+        if (nextIndex === currentIndex) {{
+          return false;
+        }}
+        targetSelect.selectedIndex = nextIndex;
+        targetSelect.dispatchEvent(new Event("change"));
+        return true;
+      }}
+
+      function shouldIgnoreKeyboardShortcut(target) {{
+        if (!(target instanceof Element)) {{
+          return false;
+        }}
+        if (target instanceof HTMLSelectElement || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {{
+          return true;
+        }}
+        return Boolean(target.closest("[contenteditable='true']")) || target.isContentEditable;
+      }}
+
       function syncView() {{
         const currentType = typeSelect ? typeSelect.value : "all";
         const allowedRecords = syncImageOptions(currentType);
@@ -405,6 +431,34 @@ def build_dashboard_html(
       if (select) {{
         select.addEventListener("change", () => showRecord(select.value));
       }}
+      window.addEventListener("keydown", (event) => {{
+        if (shouldIgnoreKeyboardShortcut(event.target)) {{
+          return;
+        }}
+        if (event.key === "ArrowUp") {{
+          if (moveSelection(typeSelect, -1)) {{
+            event.preventDefault();
+          }}
+          return;
+        }}
+        if (event.key === "ArrowDown") {{
+          if (moveSelection(typeSelect, 1)) {{
+            event.preventDefault();
+          }}
+          return;
+        }}
+        if (event.key === "ArrowLeft") {{
+          if (moveSelection(select, -1)) {{
+            event.preventDefault();
+          }}
+          return;
+        }}
+        if (event.key === "ArrowRight") {{
+          if (moveSelection(select, 1)) {{
+            event.preventDefault();
+          }}
+        }}
+      }});
       syncView();
     }})();
 
@@ -705,21 +759,6 @@ def _infer_record_type(
     qwen_payload: Any,
     mineru_payload: Any,
 ) -> str:
-    candidate_labels = []
-    if isinstance(artifact_payload, dict):
-        candidate_labels.append(artifact_payload.get("final_label"))
-    if isinstance(qwen_payload, dict):
-        candidate_labels.append(qwen_payload.get("derived_label"))
-    if isinstance(mineru_payload, dict):
-        candidate_labels.append(mineru_payload.get("derived_label"))
-
-    for label_payload in candidate_labels:
-        if not isinstance(label_payload, dict):
-            continue
-        image_type = str(label_payload.get("image_type", "") or "").strip()
-        if image_type:
-            return image_type
-
     candidate_documents = []
     if isinstance(artifact_payload, dict):
         candidate_documents.append(artifact_payload.get("final_document"))
@@ -730,9 +769,22 @@ def _infer_record_type(
 
     for document_payload in candidate_documents:
         blocks = _safe_blocks_from_document(document_payload)
-        inferred = _infer_image_type(label_payload=None, blocks=blocks)
+        inferred = _infer_record_type_from_blocks(blocks)
         if inferred != "unknown":
             return inferred
+    return "unknown"
+
+
+def _infer_record_type_from_blocks(blocks: list[dict[str, Any]]) -> str:
+    for block in blocks:
+        sub_type = str(block.get("sub_type", "") or "").strip().lower()
+        if sub_type:
+            return sub_type
+
+    for block in blocks:
+        block_type = str(block.get("type", "") or "").strip().lower()
+        if block_type:
+            return block_type
     return "unknown"
 
 
