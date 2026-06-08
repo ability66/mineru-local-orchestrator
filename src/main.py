@@ -24,6 +24,7 @@ from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import adjudicate_documents
 from src.pipeline.issues import (
+    detect_flowchart_second_pass_issues,
     detect_flowchart_issues,
     detect_seal_issues,
 )
@@ -218,6 +219,8 @@ def build_stage2_records(
                 "raw_text": output.raw_text if output is not None else "",
                 "usage": usage,
                 "finish_reason": _extract_finish_reason(parsed_payload),
+                "thinking_mode": _extract_thinking_mode(parsed_payload),
+                "request_control": _extract_request_control(parsed_payload),
                 "patch_decision": decision.model_dump()
                 if decision is not None
                 else None,
@@ -245,6 +248,8 @@ def build_stage2_selection_record(
         "raw_text": output.raw_text if output is not None else "",
         "usage": usage,
         "finish_reason": _extract_finish_reason(parsed_payload),
+        "thinking_mode": _extract_thinking_mode(parsed_payload),
+        "request_control": _extract_request_control(parsed_payload),
         "selection_decision": selection_decision.model_dump()
         if selection_decision is not None
         else None,
@@ -262,6 +267,23 @@ def _extract_usage(parsed_payload: Any) -> dict[str, Any] | None:
         "completion_tokens": usage.get("completion_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
+
+
+def _extract_request_control(parsed_payload: Any) -> dict[str, Any] | None:
+    if not isinstance(parsed_payload, dict):
+        return None
+    control = parsed_payload.get("_request_control")
+    if not isinstance(control, dict):
+        return None
+    return dict(control)
+
+
+def _extract_thinking_mode(parsed_payload: Any) -> str | None:
+    control = _extract_request_control(parsed_payload)
+    if not isinstance(control, dict):
+        return None
+    value = str(control.get("thinking_mode", "") or "").strip()
+    return value or None
 
 
 def _extract_finish_reason(parsed_payload: Any) -> str | None:
@@ -349,6 +371,35 @@ def _run_first_pass_model(
     }
 
 
+def _build_skipped_first_pass_bundle(
+    image_task: ImageTask,
+    client: BaseLocalClient | None,
+    role: str,
+    reason: str,
+) -> dict[str, Any]:
+    document = empty_document(
+        image_task=image_task,
+        source=f"{role}_{reason}",
+    )
+    document.warnings = [reason]
+    document.raw_metadata["skipped_reason"] = reason
+    output = ModelOutput(
+        image_id=image_task.image_id,
+        model_name=client.model_name if client is not None else role,
+        success=False,
+        raw_text="",
+        error=reason,
+        source_type="skipped",
+    )
+    return {
+        "role": role,
+        "client": client,
+        "output": output,
+        "document": document,
+        "label": None,
+    }
+
+
 def _is_flowchart_candidate_block(block: CanonicalBlock) -> bool:
     if block.type not in {"chart", "image"}:
         return False
@@ -368,6 +419,27 @@ def _has_flowchart_signal(
     return any(_is_flowchart_candidate_block(block) for block in document.blocks)
 
 
+def _has_flowchart_path_hint(image_task: ImageTask) -> bool:
+    haystack = " ".join(
+        [
+            str(image_task.image_id or ""),
+            str(image_task.file_name or ""),
+            str(image_task.image_path or ""),
+        ]
+    ).lower()
+    return any(token in haystack for token in ("flowchart", "流程图"))
+
+
+def _should_use_flowchart_branch(
+    image_task: ImageTask,
+    mineru_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+) -> bool:
+    if _has_flowchart_path_hint(image_task):
+        return True
+    return _has_flowchart_signal(mineru_document, mineru_label)
+
+
 def _is_seal_candidate_block(block: CanonicalBlock) -> bool:
     if block.type != "image":
         return False
@@ -376,6 +448,81 @@ def _is_seal_candidate_block(block: CanonicalBlock) -> bool:
     return any(
         str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions
     )
+
+
+def _normalize_reference_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _ordered_unique_reference_texts(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalize_reference_text(value)
+        if not normalized:
+            continue
+        signature = normalized.lower()
+        if signature in seen:
+            continue
+        seen.add(signature)
+        ordered.append(normalized)
+    return ordered
+
+
+def _extract_flowchart_ocr_reference(
+    bundle: dict[str, Any] | None,
+) -> tuple[list[str], str | None]:
+    if not isinstance(bundle, dict):
+        return [], None
+    document = bundle.get("document")
+    output = bundle.get("output")
+    if not isinstance(document, CanonicalDocument):
+        return [], None
+
+    texts: list[str] = []
+    for block in sorted(
+        document.blocks,
+        key=lambda item: (item.page_idx, item.order_index, item.block_id),
+    ):
+        if str(block.type or "").strip().lower() == "chart" and str(
+            block.sub_type or ""
+        ).strip().lower() == "flowchart":
+            continue
+        if str(block.text or "").strip():
+            texts.append(str(block.text or ""))
+        texts.extend(str(item or "") for item in block.visible_text if str(item or "").strip())
+        texts.extend(
+            str(region.text or "")
+            for region in block.ocr_regions
+            if str(region.text or "").strip()
+        )
+    references = _ordered_unique_reference_texts(texts)
+    model_name = (
+        output.model_name
+        if isinstance(output, ModelOutput) and str(output.model_name or "").strip()
+        else str(bundle.get("role", "") or "").strip().lower() or None
+    )
+    return references[:20], model_name
+
+
+def _attach_flowchart_ocr_reference(
+    issues: list[Any],
+    reference_texts: list[str],
+    reference_model: str | None,
+) -> list[Any]:
+    if not issues or not reference_texts:
+        return issues
+    for issue in issues:
+        payload = (
+            dict(issue.candidate_payload)
+            if isinstance(issue.candidate_payload, dict)
+            else {}
+        )
+        payload["ocr_reference_texts"] = list(reference_texts)
+        if reference_model:
+            payload["ocr_reference_model"] = reference_model
+        issue.candidate_payload = payload
+    return issues
 
 
 def _build_seal_adjudication_candidates(
@@ -714,14 +861,16 @@ def _pick_flowchart_reference_bundle(
     image_task: ImageTask,
     mineru_document: CanonicalDocument,
     mineru_label: ParsedLabel | None,
-    auxiliary_bundles: list[dict[str, Any]],
+    candidate_bundles: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[Any]]:
-    candidates: list[tuple[int, int, dict[str, Any], list[Any]]] = []
-    role_priority = {"glm": 2, "paddle": 1}
-    for bundle in auxiliary_bundles:
+    candidates: list[tuple[int, dict[str, Any], list[Any]]] = []
+    for bundle in candidate_bundles:
         output = bundle.get("output")
         document = bundle.get("document")
         label = bundle.get("label")
+        reference_role = str(bundle.get("role", "") or "").strip().lower()
+        if reference_role not in {"qwen", "judge"}:
+            continue
         if not isinstance(document, CanonicalDocument):
             continue
         if not _is_complete_flowchart_result(output=output, document=document, label=label):
@@ -735,25 +884,26 @@ def _pick_flowchart_reference_bundle(
         )
         if not issues:
             continue
-        reference_role = str(bundle.get("role", "") or "").strip().lower()
+        normalized_reference_role = "qwen" if reference_role == "judge" else reference_role
         for issue in issues:
             if isinstance(issue.candidate_payload, dict):
-                issue.candidate_payload["reference_model_role"] = reference_role
+                issue.candidate_payload["reference_model_role"] = normalized_reference_role
                 issue.candidate_payload["reference_model_name"] = (
-                    output.model_name if isinstance(output, ModelOutput) else reference_role
+                    output.model_name
+                    if isinstance(output, ModelOutput)
+                    else normalized_reference_role
                 )
         candidates.append(
             (
                 _flowchart_graph_size(document=document, label=label),
-                role_priority.get(reference_role, 0),
                 bundle,
                 issues,
             )
         )
     if not candidates:
         return None, []
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    _score, _priority, bundle, issues = candidates[0]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _score, bundle, issues = candidates[0]
     return bundle, issues
 
 
@@ -852,46 +1002,86 @@ def process_image_task(
         prompt=recognition_prompt,
         retry=args.retry,
     )
+
+    mineru_output = mineru_bundle["output"]
+    mineru_document = mineru_bundle["document"]
+    mineru_label = mineru_bundle["label"]
+    use_flowchart_branch = _should_use_flowchart_branch(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        mineru_label=mineru_label,
+    )
+
     paddle_bundle = _run_first_pass_model(
         image_task=image_task,
         client=paddle_client,
         prompt=recognition_prompt,
         retry=args.retry,
     )
-    glm_bundle = _run_first_pass_model(
-        image_task=image_task,
-        client=glm_client,
-        prompt=recognition_prompt,
-        retry=args.retry,
+    glm_bundle = (
+        _build_skipped_first_pass_bundle(
+            image_task=image_task,
+            client=glm_client,
+            role="glm",
+            reason="skipped_for_flowchart_branch",
+        )
+        if use_flowchart_branch
+        else _run_first_pass_model(
+            image_task=image_task,
+            client=glm_client,
+            prompt=recognition_prompt,
+            retry=args.retry,
+        )
     )
-
-    mineru_output = mineru_bundle["output"]
-    mineru_document = mineru_bundle["document"]
-    mineru_label = mineru_bundle["label"]
 
     qwen_output: ModelOutput | None = None
     qwen_document = empty_document(image_task=image_task, source="qwen_judge_not_triggered")
     qwen_label = None
+    qwen_first_pass_bundle: dict[str, Any] | None = None
+
+    if use_flowchart_branch and qwen_client is not None:
+        qwen_first_pass_bundle = _run_first_pass_model(
+            image_task=image_task,
+            client=qwen_client,
+            prompt=recognition_prompt,
+            retry=args.retry,
+        )
+        qwen_first_pass_bundle["role"] = "qwen"
+        qwen_output = qwen_first_pass_bundle["output"]
+        qwen_document = qwen_first_pass_bundle["document"]
+        qwen_label = qwen_first_pass_bundle["label"]
 
     seal_selection_decision: SealSelectionDecision | None = None
     seal_selection_output: ModelOutput | None = None
     seal_stage2_record: dict[str, Any] | None = None
     selected_seal_bundle: dict[str, Any] | None = None
 
-    auxiliary_bundles = [
-        bundle
-        for bundle in (glm_bundle, paddle_bundle)
-        if bundle.get("client") is not None
-    ]
-    seal_candidate_bundles, seal_selection_payload = _build_seal_adjudication_candidates(
-        image_task=image_task,
-        mineru_bundle=mineru_bundle,
-        auxiliary_bundles=auxiliary_bundles,
+    auxiliary_bundles = (
+        [
+            bundle
+            for bundle in (glm_bundle, paddle_bundle)
+            if bundle.get("client") is not None
+        ]
+        if not use_flowchart_branch
+        else []
+    )
+    seal_candidate_bundles: list[dict[str, Any]] = []
+    seal_selection_payload: dict[str, Any] | None = None
+    if not use_flowchart_branch:
+        seal_candidate_bundles, seal_selection_payload = _build_seal_adjudication_candidates(
+            image_task=image_task,
+            mineru_bundle=mineru_bundle,
+            auxiliary_bundles=auxiliary_bundles,
     )
     reference_bundle: dict[str, Any] | None = None
     flowchart_issues: list[Any] = []
     flowchart_patch_decisions: list[PatchDecision] = []
     flowchart_patch_outputs: list[ModelOutput] = []
+    paddle_ocr_reference_texts, paddle_ocr_reference_model = (
+        _extract_flowchart_ocr_reference(paddle_bundle)
+        if use_flowchart_branch
+        else ([], None)
+    )
 
     if seal_selection_payload is not None:
         seal_selection_decision, seal_selection_output = adjudicate_seal_candidates_with_llm(
@@ -915,12 +1105,36 @@ def process_image_task(
         if seal_selection_output is not None:
             qwen_output = seal_selection_output
 
-    if _has_flowchart_signal(mineru_document, mineru_label):
+    if use_flowchart_branch:
         reference_bundle, flowchart_issues = _pick_flowchart_reference_bundle(
             image_task=image_task,
             mineru_document=mineru_document,
             mineru_label=mineru_label,
-            auxiliary_bundles=auxiliary_bundles,
+            candidate_bundles=(
+                [qwen_first_pass_bundle]
+                if qwen_first_pass_bundle is not None
+                else []
+            ),
+        )
+        qwen_complete = _is_complete_flowchart_result(
+            output=qwen_output,
+            document=qwen_document,
+            label=qwen_label,
+        )
+        if (
+            not flowchart_issues
+            and not qwen_complete
+            and _has_flowchart_signal(mineru_document, mineru_label)
+        ):
+            flowchart_issues = detect_flowchart_second_pass_issues(
+                image_task=image_task,
+                mineru_document=mineru_document,
+                mineru_label=mineru_label,
+            )
+        flowchart_issues = _attach_flowchart_ocr_reference(
+            issues=flowchart_issues,
+            reference_texts=paddle_ocr_reference_texts,
+            reference_model=paddle_ocr_reference_model,
         )
         if flowchart_issues and qwen_client is not None:
             flowchart_patch_decisions, flowchart_patch_outputs = adjudicate_issues_with_llm(
@@ -931,8 +1145,6 @@ def process_image_task(
                 mode="flowchart_adjudication",
                 retry=args.retry,
             )
-            if flowchart_patch_outputs:
-                qwen_output = flowchart_patch_outputs[-1]
 
     stage2_records = []
     if seal_stage2_record is not None:

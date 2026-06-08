@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import argparse
+import json
+from typing import Any
+
+from src.clients.base import BaseLocalClient
 from src.main import (
     _build_seal_adjudication_candidates,
+    _pick_flowchart_reference_bundle,
     _pick_seal_reference_bundle,
+    process_image_task,
     build_stage2_selection_record,
 )
 from src.schema import (
@@ -15,6 +22,47 @@ from src.schema import (
     ParsedLabel,
     SealSelectionDecision,
 )
+
+
+class StubClient(BaseLocalClient):
+    def __init__(
+        self,
+        model_name: str,
+        responses: list[dict[str, Any]],
+        config: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(model_name=model_name, config=config)
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def _analyze_impl(
+        self,
+        image_task: ImageTask,
+        prompt: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "image_id": image_task.image_id,
+                "prompt": prompt,
+                "context": context,
+            }
+        )
+        if not self._responses:
+            raise AssertionError(f"No stub response left for {self.model_name}")
+        return self._responses.pop(0)
+
+
+def _build_args() -> argparse.Namespace:
+    return argparse.Namespace(retry=0, manual_compare_mode=False)
+
+
+def _single_page_payload(blocks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    return [blocks]
+
+
+def _qwen_raw_payload(blocks: list[dict[str, Any]]) -> str:
+    return json.dumps({"content_list_v2": [blocks]}, ensure_ascii=False)
 
 
 def test_pick_seal_reference_bundle_prefers_richer_auxiliary_result() -> None:
@@ -318,3 +366,299 @@ def test_build_stage2_selection_record_keeps_selection_payload() -> None:
     assert record["mode"] == "seal_adjudication"
     assert record["selection_payload"]["candidates"][1]["candidate_id"] == "paddle"
     assert record["selection_decision"]["selected_candidate"] == "paddle"
+
+
+def test_pick_flowchart_reference_bundle_ignores_non_qwen_candidates() -> None:
+    image_task = ImageTask(
+        image_id="flow-ref-1",
+        image_path="data/flowchart_crops/figure1.png",
+        file_name="figure1.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="flow-ref-1",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B"},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="flow-ref-1",
+        source="qwen",
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nA-->B\nB-->C"},
+                source="qwen",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    paddle_document = CanonicalDocument(
+        document_id="flow-ref-1",
+        source="paddle",
+        blocks=[
+            CanonicalBlock(
+                block_id="p1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": "flowchart TD\nX-->Y\nY-->Z"},
+                source="paddle",
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+
+    bundle, issues = _pick_flowchart_reference_bundle(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        mineru_label=ParsedLabel(image_type="flowchart", caption="流程图"),
+        candidate_bundles=[
+            {
+                "role": "paddle",
+                "output": ModelOutput(
+                    image_id="flow-ref-1",
+                    model_name="paddle-local",
+                    success=True,
+                    raw_text="{}",
+                ),
+                "document": paddle_document,
+                "label": ParsedLabel(image_type="flowchart", caption="流程图"),
+            },
+            {
+                "role": "qwen",
+                "output": ModelOutput(
+                    image_id="flow-ref-1",
+                    model_name="qwen-local",
+                    success=True,
+                    raw_text="{}",
+                ),
+                "document": qwen_document,
+                "label": ParsedLabel(image_type="flowchart", caption="流程图"),
+            },
+        ],
+    )
+
+    assert bundle is not None
+    assert bundle["role"] == "qwen"
+    assert issues
+    assert issues[0].candidate_payload is not None
+    assert issues[0].candidate_payload["reference_model_role"] == "qwen"
+    assert issues[0].candidate_payload["reference_model_name"] == "qwen-local"
+
+
+def test_process_image_task_runs_qwen_first_pass_for_flowchart_branch(tmp_path) -> None:
+    image_task = ImageTask(
+        image_id="figure1",
+        image_path="data/flowchart_crops/figure1.png",
+        file_name="figure1.png",
+        file_ext=".png",
+    )
+    mineru_block = {
+        "block_id": "m1",
+        "type": "chart",
+        "sub_type": "flowchart",
+        "bbox": [0, 0, 1000, 1000],
+        "text": "流程图",
+        "content": {
+            "img_path": "data/flowchart_crops/figure1.png",
+            "content": "flowchart TD\nA-->B",
+        },
+    }
+    qwen_block = {
+        "block_id": "q1",
+        "type": "chart",
+        "sub_type": "flowchart",
+        "bbox": [0, 0, 1000, 1000],
+        "text": "流程图",
+        "content": {
+            "img_path": "data/flowchart_crops/figure1.png",
+            "content": "flowchart TD\nA-->B\nB-->C",
+        },
+    }
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([mineru_block])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[
+            {
+                "success": True,
+                "parsed": _single_page_payload(
+                    [
+                        {
+                            "block_id": "p1",
+                            "type": "paragraph",
+                            "bbox": [0, 0, 1000, 200],
+                            "text": "审批通过",
+                            "content": "审批通过",
+                        }
+                    ]
+                ),
+            }
+        ],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([mineru_block])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[
+            {"success": True, "raw_text": _qwen_raw_payload([qwen_block])},
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "decision": "use_qwen_fields",
+                        "patch": {},
+                        "reason": "qwen_flowchart_preferred_on_conflict",
+                    },
+                    ensure_ascii=False,
+                ),
+                "parsed": {
+                    "choices": [{"finish_reason": "stop"}],
+                    "_request_control": {
+                        "mode": "flowchart_adjudication",
+                        "thinking_mode": "disabled_requested",
+                        "disable_thinking_requested": True,
+                        "disable_thinking_applied": True,
+                        "disable_thinking_fallback_used": False,
+                    },
+                },
+            },
+        ],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    summary = process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+    )
+
+    raw_qwen = json.loads(
+        (tmp_path / "raw" / "qwen" / "figure1.json").read_text(encoding="utf-8")
+    )
+    raw_glm = json.loads(
+        (tmp_path / "raw" / "glm" / "figure1.json").read_text(encoding="utf-8")
+    )
+    stage2_payload = json.loads(
+        (tmp_path / "judge_stage2" / "figure1.json").read_text(encoding="utf-8")
+    )
+    assert summary["qwen_success"] is True
+    assert raw_qwen["model_name"] == "qwen-local"
+    assert raw_glm["error"] == "skipped_for_flowchart_branch"
+    assert len(qwen_client.calls) == 2
+    assert len(glm_client.calls) == 0
+    assert "审批通过" in qwen_client.calls[1]["context"]["issue_payload"]["ocr_reference_texts"]
+    assert stage2_payload["records"][0]["thinking_mode"] == "disabled_requested"
+
+
+def test_process_image_task_keeps_non_flowchart_branch_without_qwen_first_pass(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="seal-plain",
+        image_path="data/stamp/seal-plain.png",
+        file_name="seal-plain.png",
+        file_ext=".png",
+    )
+    seal_block = {
+        "block_id": "s1",
+        "type": "image",
+        "sub_type": "seal",
+        "bbox": [0, 0, 1000, 1000],
+        "text": "上海日轲电子有限公司",
+        "content": {
+            "img_path": "data/stamp/seal-plain.png",
+            "image_caption": ["上海日轲电子有限公司"],
+        },
+        "ocr_regions": [{"role": "seal", "text": "上海日轲电子有限公司"}],
+    }
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([seal_block])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[{"success": True, "parsed": _single_page_payload([seal_block])}],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([seal_block])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "selected_candidate": "mineru",
+                        "reason": "mineru text is correct",
+                        "confidence": "high",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    summary = process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+    )
+
+    raw_qwen = json.loads(
+        (tmp_path / "raw" / "qwen" / "seal-plain.json").read_text(encoding="utf-8")
+    )
+    assert summary["qwen_success"] is True
+    assert raw_qwen["model_name"] == "qwen-local"
+    assert len(qwen_client.calls) == 1
+    assert qwen_client.calls[0]["context"]["mode"] == "seal_adjudication"
+    assert len(glm_client.calls) == 1

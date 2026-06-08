@@ -213,8 +213,12 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
         str(candidate_payload.get("reference_mermaid", "") or "")
     )
     focus_terms = _collect_flowchart_focus_terms(graph_diff)
+    ocr_reference_texts = _as_text_list(candidate_payload.get("ocr_reference_texts"))
+    ocr_reference_model = str(
+        candidate_payload.get("ocr_reference_model", "") or ""
+    ).strip()
 
-    return {
+    payload = {
         "issue_id": issue.issue_id,
         "issue_type": issue.issue_type,
         "review_mode": review_mode,
@@ -226,7 +230,15 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
         "graph_diff": _compact_graph_diff(graph_diff),
         "current_excerpt": _build_mermaid_excerpt(current_mermaid, focus_terms),
         "reference_excerpt": _build_mermaid_excerpt(reference_mermaid, focus_terms),
+        "thinking_mode": "disabled_requested_for_flowchart_adjudication",
     }
+    if ocr_reference_texts:
+        payload["ocr_reference_model"] = ocr_reference_model or "paddle"
+        payload["ocr_reference_usage"] = (
+            "仅用于节点/连线文字校对，不可用于结构推断、节点增删或边关系改写"
+        )
+        payload["ocr_reference_texts"] = ocr_reference_texts[:20]
+    return payload
 
 
 def _compact_block_summary(payload: object) -> dict[str, object] | None:
@@ -331,6 +343,18 @@ def _build_mermaid_excerpt(mermaid: str, focus_terms: list[str]) -> str:
     selected_lines = [body[index] for index in sorted(selected_indexes)[:16]]
     excerpt_lines = [header] + selected_lines if header else selected_lines
     return "\n".join(line for line in excerpt_lines if str(line).strip())
+
+
+def _as_text_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [
+            str(item or "").strip()
+            for item in value
+            if str(item or "").strip()
+        ]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _extract_raw_text_from_parsed(payload: object) -> str:

@@ -45,8 +45,16 @@ class QwenLocalClient(BaseLocalClient):
         prompt: str,
         context: dict[str, Any],
     ) -> dict[str, Any]:
+        request_control = self._build_request_control(
+            context=context,
+            disable_thinking_applied=self._should_disable_thinking(context),
+            fallback_used=False,
+        )
         payload = self._build_payload(
-            image_task=image_task, prompt=prompt, context=context
+            image_task=image_task,
+            prompt=prompt,
+            context=context,
+            disable_thinking=request_control["disable_thinking_applied"],
         )
         headers = {
             "Content-Type": "application/json",
@@ -65,15 +73,78 @@ class QwenLocalClient(BaseLocalClient):
                 "success": False,
                 "raw_text": "",
                 "error": f"{type(exc).__name__}: {exc}",
+                "parsed": {"_request_control": dict(request_control)},
             }
 
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
+            if self._should_retry_without_disable_thinking(
+                response=response,
+                request_control=request_control,
+            ):
+                fallback_control = self._build_request_control(
+                    context=context,
+                    disable_thinking_applied=False,
+                    fallback_used=True,
+                )
+                fallback_payload = self._build_payload(
+                    image_task=image_task,
+                    prompt=prompt,
+                    context=context,
+                    disable_thinking=False,
+                )
+                try:
+                    fallback_response = requests.post(
+                        self._build_url(),
+                        headers=headers,
+                        json=fallback_payload,
+                        timeout=self.timeout,
+                    )
+                except requests.RequestException as fallback_exc:
+                    return {
+                        "success": False,
+                        "raw_text": "",
+                        "error": f"{type(fallback_exc).__name__}: {fallback_exc}",
+                        "parsed": {"_request_control": dict(fallback_control)},
+                    }
+
+                try:
+                    fallback_response.raise_for_status()
+                except requests.HTTPError as fallback_exc:
+                    return {
+                        "success": False,
+                        "raw_text": fallback_response.text,
+                        "error": f"{type(fallback_exc).__name__}: {fallback_exc}",
+                        "parsed": {"_request_control": dict(fallback_control)},
+                    }
+
+                try:
+                    fallback_json = fallback_response.json()
+                except ValueError as fallback_exc:
+                    return {
+                        "success": False,
+                        "raw_text": fallback_response.text,
+                        "error": f"Invalid JSON response: {fallback_exc}",
+                        "parsed": {"_request_control": dict(fallback_control)},
+                    }
+
+                fallback_json = self._attach_request_control(
+                    payload=fallback_json,
+                    request_control=fallback_control,
+                )
+                raw_text = self._extract_message_text(fallback_json)
+                return {
+                    "success": True,
+                    "raw_text": raw_text,
+                    "parsed": fallback_json,
+                    "error": None,
+                }
             return {
                 "success": False,
                 "raw_text": response.text,
                 "error": f"{type(exc).__name__}: {exc}",
+                "parsed": {"_request_control": dict(request_control)},
             }
 
         try:
@@ -83,8 +154,13 @@ class QwenLocalClient(BaseLocalClient):
                 "success": False,
                 "raw_text": response.text,
                 "error": f"Invalid JSON response: {exc}",
+                "parsed": {"_request_control": dict(request_control)},
             }
 
+        response_json = self._attach_request_control(
+            payload=response_json,
+            request_control=request_control,
+        )
         raw_text = self._extract_message_text(response_json)
         return {
             "success": True,
@@ -98,6 +174,7 @@ class QwenLocalClient(BaseLocalClient):
         image_task: ImageTask,
         prompt: str,
         context: dict[str, Any],
+        disable_thinking: bool = False,
     ) -> dict[str, Any]:
         if self.input_mode == "text_only_chat":
             user_text = self._build_text_only_prompt(prompt=prompt, context=context)
@@ -121,12 +198,15 @@ class QwenLocalClient(BaseLocalClient):
             )
             messages = [{"role": "user", "content": user_content}]
 
-        return {
+        payload = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if disable_thinking:
+            payload["extra_body"] = {"enable_thinking": False}
+        return payload
 
     def _build_text_only_prompt(self, prompt: str, context: dict[str, Any]) -> str:
         base = [prompt]
@@ -157,6 +237,7 @@ class QwenLocalClient(BaseLocalClient):
             serialized = json.dumps(issue_payload, ensure_ascii=False, indent=2)
             return (
                 "以下是一个需要局部仲裁的流程图 issue，请重点检查冲突项并输出 patch 决策 JSON。"
+                "如果提供了 ocr_reference_texts，它们只可用于文字校对，不可用于结构推断。"
                 "请只输出 patch 决策 JSON，不要输出解释性正文：\n"
                 f"{serialized}"
             )
@@ -235,3 +316,54 @@ class QwenLocalClient(BaseLocalClient):
                     fragments.append(extracted)
             return "\n".join(fragment for fragment in fragments if fragment)
         return ""
+
+    def _should_disable_thinking(self, context: dict[str, Any]) -> bool:
+        mode = str(context.get("mode", "") or "").strip().lower()
+        return mode == "flowchart_adjudication"
+
+    def _build_request_control(
+        self,
+        context: dict[str, Any],
+        disable_thinking_applied: bool,
+        fallback_used: bool,
+    ) -> dict[str, Any]:
+        mode = str(context.get("mode", "") or "").strip().lower() or "default"
+        disable_requested = self._should_disable_thinking(context)
+        thinking_mode = "default"
+        if disable_requested and disable_thinking_applied:
+            thinking_mode = "disabled_requested"
+        elif disable_requested and fallback_used:
+            thinking_mode = "disabled_requested_fallback_to_default"
+
+        return {
+            "mode": mode,
+            "thinking_mode": thinking_mode,
+            "disable_thinking_requested": disable_requested,
+            "disable_thinking_applied": disable_thinking_applied,
+            "disable_thinking_fallback_used": fallback_used,
+            "disable_thinking_control": "extra_body.enable_thinking=false"
+            if disable_requested
+            else "",
+        }
+
+    def _attach_request_control(
+        self,
+        payload: Any,
+        request_control: dict[str, Any],
+    ) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            enriched = dict(payload)
+            enriched["_request_control"] = dict(request_control)
+            return enriched
+        return {"response": payload, "_request_control": dict(request_control)}
+
+    def _should_retry_without_disable_thinking(
+        self,
+        response: requests.Response,
+        request_control: dict[str, Any],
+    ) -> bool:
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        return bool(
+            request_control.get("disable_thinking_applied")
+            and status_code in {400, 422}
+        )
