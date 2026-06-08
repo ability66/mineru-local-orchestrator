@@ -215,3 +215,72 @@ def test_generate_compare_dashboard_does_not_render_seal_text_as_mermaid(tmp_pat
     assert ">印章<" in html
     assert "4541982082" in html
     assert 'data-mermaid-b64="' not in html
+
+
+def test_generate_compare_dashboard_shows_full_single_block_text_view(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+
+    data_dir = tmp_path / "data" / "stamp"
+    data_dir.mkdir(parents=True)
+    (data_dir / "circle_Aug09869.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    merged_text = (
+        "上海日轲电子有限公司\n\n4541982082\n\n"
+        "Red hammer and sickle symbol on white background (no text or numbers)"
+    )
+    normalized_payload = {
+        "document": {
+            "document_id": "circle_Aug09869",
+            "source": "mineru",
+            "backend": "mineru",
+            "page_count": 1,
+            "blocks": [
+                {
+                    "block_id": "b1",
+                    "page_idx": 0,
+                    "order_index": 1,
+                    "type": "image",
+                    "sub_type": "seal",
+                    "bbox": [0, 0, 999, 999],
+                    "text": merged_text,
+                    "content": {
+                        "image_caption": [merged_text],
+                        "img_path": str(data_dir / "circle_Aug09869.png"),
+                    },
+                }
+            ],
+            "warnings": [],
+            "raw_metadata": {
+                "normalized_view": "single_block_projection",
+                "source_block_count": 3,
+            },
+        },
+        "derived_label": {
+            "image_type": "seal",
+            "caption": "上海日轲电子有限公司",
+            "structured_label": {
+                "kind": "none",
+                "content": "",
+                "format": "none",
+                "source": "none",
+            },
+        },
+    }
+
+    (output_dir / "normalized" / "mineru" / "circle_Aug09869.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">印章<" in html
+    assert "上海日轲电子有限公司" in html
+    assert "4541982082" in html
+    assert "Red hammer and sickle symbol on white background (no text or numbers)" in html

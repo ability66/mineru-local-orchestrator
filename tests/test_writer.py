@@ -10,6 +10,7 @@ from src.schema import (
     ImageTask,
     ModelOutput,
     OcrRegion,
+    ParsedLabel,
     StructuredLabel,
 )
 from src.writer import build_content_list, build_content_list_v2, write_image_result
@@ -380,3 +381,116 @@ def test_writer_persists_extra_stage1_outputs_for_glm_and_paddle(tmp_path) -> No
     assert (tmp_path / "raw" / "paddle" / "img-extra-stage1.json").exists()
     assert (tmp_path / "normalized" / "glm" / "img-extra-stage1.json").exists()
     assert (tmp_path / "normalized" / "paddle" / "img-extra-stage1.json").exists()
+
+
+def test_writer_projects_single_block_normalized_view_for_non_structured_input(tmp_path) -> None:
+    image_task = ImageTask(
+        image_id="circle_Aug09869",
+        image_path="data/stamp/circle_Aug09869.png",
+        file_name="circle_Aug09869.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="circle_Aug09869",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="b1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={
+                    "img_path": "data/stamp/circle_Aug09869.png",
+                    "image_caption": ["上海日轲电子有限公司"],
+                },
+                source="mineru",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+            ),
+            CanonicalBlock(
+                block_id="b2",
+                page_idx=0,
+                order_index=2,
+                type="paragraph",
+                bbox=[194, 330, 543, 384],
+                text="4541982082",
+                content={
+                    "paragraph_content": [{"type": "text", "content": "4541982082"}]
+                },
+                source="mineru",
+            ),
+            CanonicalBlock(
+                block_id="b3",
+                page_idx=0,
+                order_index=3,
+                type="image",
+                sub_type="natural_image",
+                bbox=[361, 390, 641, 644],
+                text="Red hammer and sickle symbol on white background (no text or numbers)",
+                content={
+                    "img_path": "data/stamp/circle_Aug09869.png",
+                    "image_caption": [
+                        "Red hammer and sickle symbol on white background (no text or numbers)"
+                    ],
+                },
+                source="mineru",
+            ),
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="seal",
+        caption="上海日轲电子有限公司",
+        caption_structured=CaptionStructured(
+            brief="上海日轲电子有限公司",
+            visual_type="seal",
+        ),
+        ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+    )
+    artifact = AdjudicationArtifact(
+        image_id="circle_Aug09869",
+        final_document=mineru_document,
+    )
+
+    write_image_result(
+        output_dir=tmp_path,
+        image_task=image_task,
+        mineru_output=ModelOutput(
+            image_id="circle_Aug09869",
+            model_name="mineru",
+            success=True,
+            raw_text="",
+            parsed={},
+        ),
+        qwen_output=None,
+        mineru_document=mineru_document,
+        qwen_document=mineru_document,
+        mineru_label=mineru_label,
+        qwen_label=mineru_label,
+        artifact=artifact,
+        stage2_records=None,
+    )
+
+    normalized_payload = json.loads(
+        (tmp_path / "normalized" / "mineru" / "circle_Aug09869.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    blocks = normalized_payload["document"]["blocks"]
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "image"
+    assert blocks[0]["sub_type"] == "seal"
+    assert blocks[0]["text"] == (
+        "上海日轲电子有限公司\n\n4541982082\n\n"
+        "Red hammer and sickle symbol on white background (no text or numbers)"
+    )
+    assert blocks[0]["content"]["image_caption"] == [
+        "上海日轲电子有限公司\n\n4541982082\n\n"
+        "Red hammer and sickle symbol on white background (no text or numbers)"
+    ]
+    assert normalized_payload["document"]["raw_metadata"]["normalized_view"] == "single_block_projection"
+    assert normalized_payload["document"]["raw_metadata"]["source_block_count"] == 3
