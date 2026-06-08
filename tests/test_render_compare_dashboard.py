@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from src.render_compare_dashboard import generate_compare_dashboard
+from src.render_compare_dashboard import (
+    _build_panel_from_final_payload,
+    generate_compare_dashboard,
+)
 
 
 def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
@@ -30,7 +33,7 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
             ]
         },
         "derived_label": {
-            "image_type": "natural_image",
+            "image_type": "flowchart",
             "caption": "flowchart TD\nA-->B",
             "structured_label": {
                 "kind": "mermaid",
@@ -284,3 +287,90 @@ def test_generate_compare_dashboard_shows_full_single_block_text_view(tmp_path) 
     assert "上海日轲电子有限公司" in html
     assert "4541982082" in html
     assert "Red hammer and sickle symbol on white background (no text or numbers)" in html
+
+
+def test_final_panel_prefers_final_label_semantics_over_final_document_blocks() -> None:
+    artifact_payload = {
+        "final_document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "flowchart",
+                    "text": "flowchart TD\nA-->B",
+                    "content": {"content": "flowchart TD\nA-->B"},
+                    "structured_label": {
+                        "kind": "mermaid",
+                        "content": "flowchart TD\nA-->B",
+                    },
+                }
+            ]
+        },
+        "final_label": {
+            "image_type": "seal",
+            "caption": "上海日轲电子有限公司",
+            "structured_label": {
+                "kind": "none",
+                "content": "",
+                "format": "none",
+                "source": "none",
+            },
+        },
+    }
+
+    panel = _build_panel_from_final_payload(
+        final_payload=None,
+        artifact_payload=artifact_payload,
+        snapshot_lookup={},
+        title="Final",
+        source_path="outputs/final/demo_artifact.json",
+    )
+
+    assert panel.image_type == "seal"
+    assert panel.caption == "上海日轲电子有限公司"
+    assert panel.render_kind == "text"
+    assert panel.render_text == "flowchart TD\nA-->B"
+
+
+def test_generate_compare_dashboard_prefers_final_label_type_for_record_type(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "final").mkdir(parents=True)
+
+    artifact_payload = {
+        "final_document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "flowchart",
+                    "text": "flowchart TD\nA-->B",
+                    "content": {"content": "flowchart TD\nA-->B"},
+                }
+            ]
+        },
+        "final_label": {
+            "image_type": "seal",
+            "caption": "上海日轲电子有限公司",
+            "structured_label": {
+                "kind": "none",
+                "content": "",
+                "format": "none",
+                "source": "none",
+            },
+        },
+        "issues": [],
+        "patch_decisions": [],
+    }
+
+    (output_dir / "final" / "demo_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">印章<" in html
+    assert 'data-record-type="seal"' in html

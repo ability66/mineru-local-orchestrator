@@ -668,6 +668,7 @@ def _build_panel_from_final_payload(
                 blocks=blocks,
                 label_payload=label_payload,
                 mermaid_snapshot=snapshot_lookup.get(title),
+                prefer_label_semantics=True,
             )
 
     blocks: list[dict[str, Any]] = []
@@ -690,12 +691,22 @@ def _build_panel(
     label_payload: Any,
     mermaid_snapshot: Any,
     extra_note: str = "",
+    prefer_label_semantics: bool = False,
 ) -> ComparePanel:
-    image_type = _infer_image_type(label_payload=label_payload, blocks=blocks)
+    image_type = _infer_image_type(
+        label_payload=label_payload,
+        blocks=blocks,
+        prefer_label_semantics=prefer_label_semantics,
+    )
     caption = _infer_caption(label_payload=label_payload, blocks=blocks)
+    flowchart_signal = _has_flowchart_render_signal(
+        blocks=blocks,
+        label_payload=label_payload,
+        prefer_label_semantics=prefer_label_semantics,
+    )
     mermaid_text = ""
 
-    if mermaid_snapshot is not None and str(
+    if flowchart_signal and mermaid_snapshot is not None and str(
         getattr(mermaid_snapshot, "status", "") or ""
     ) in {"valid", "derived"}:
         mermaid_text = str(getattr(mermaid_snapshot, "render_code", "") or "")
@@ -716,8 +727,12 @@ def _build_panel(
             ),
         )
 
-    if _has_flowchart_render_signal(blocks=blocks, label_payload=label_payload):
-        mermaid_text = _extract_mermaid_text(blocks=blocks, label_payload=label_payload)
+    if flowchart_signal:
+        mermaid_text = _extract_mermaid_text(
+            blocks=blocks,
+            label_payload=label_payload,
+            prefer_label_semantics=prefer_label_semantics,
+        )
         if mermaid_text:
             return ComparePanel(
                 title=title,
@@ -733,7 +748,11 @@ def _build_panel(
                 ),
             )
 
-    table_markdown = _extract_table_markdown(blocks=blocks, label_payload=label_payload)
+    table_markdown = _extract_table_markdown(
+        blocks=blocks,
+        label_payload=label_payload,
+        prefer_label_semantics=prefer_label_semantics,
+    )
     if table_markdown:
         return ComparePanel(
             title=title,
@@ -747,7 +766,11 @@ def _build_panel(
             ),
         )
 
-    text_content = _extract_textual_content(blocks=blocks, label_payload=label_payload)
+    text_content = _extract_textual_content(
+        blocks=blocks,
+        label_payload=label_payload,
+        prefer_label_semantics=prefer_label_semantics,
+    )
     return ComparePanel(
         title=title,
         source_path=source_path,
@@ -768,14 +791,25 @@ def _safe_blocks_from_document(document_payload: Any) -> list[dict[str, Any]]:
     return [item for item in raw_blocks if isinstance(item, dict)]
 
 
-def _infer_image_type(label_payload: Any, blocks: list[dict[str, Any]]) -> str:
+def _label_image_type(label_payload: Any) -> str:
+    if not isinstance(label_payload, dict):
+        return ""
+    return str(label_payload.get("image_type", "") or "").strip()
+
+
+def _infer_image_type(
+    label_payload: Any,
+    blocks: list[dict[str, Any]],
+    prefer_label_semantics: bool = False,
+) -> str:
+    label_image_type = _label_image_type(label_payload)
+    if prefer_label_semantics and label_image_type:
+        return label_image_type
     inferred_from_blocks = _infer_record_type_from_blocks(blocks)
     if inferred_from_blocks != "unknown":
         return inferred_from_blocks
-    if isinstance(label_payload, dict):
-        image_type = str(label_payload.get("image_type", "") or "").strip()
-        if image_type:
-            return image_type
+    if label_image_type:
+        return label_image_type
     return "unknown"
 
 
@@ -787,9 +821,16 @@ def _infer_record_type(
     paddle_payload: Any,
     glm_payload: Any,
 ) -> str:
+    if isinstance(artifact_payload, dict):
+        artifact_label_type = _label_image_type(artifact_payload.get("final_label"))
+        if artifact_label_type:
+            return artifact_label_type
+
     candidate_blocks: list[list[dict[str, Any]]] = []
     if isinstance(artifact_payload, dict):
-        candidate_blocks.append(_safe_blocks_from_document(artifact_payload.get("final_document")))
+        candidate_blocks.append(
+            _safe_blocks_from_document(artifact_payload.get("final_document"))
+        )
     if isinstance(final_payload, dict):
         candidate_blocks.append(_extract_blocks_from_final_payload(final_payload))
 
@@ -860,7 +901,11 @@ def _infer_caption(label_payload: Any, blocks: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _extract_table_markdown(blocks: list[dict[str, Any]], label_payload: Any) -> str:
+def _extract_table_markdown(
+    blocks: list[dict[str, Any]],
+    label_payload: Any,
+    prefer_label_semantics: bool = False,
+) -> str:
     if isinstance(label_payload, dict):
         structured = label_payload.get("structured_label")
         if (
@@ -870,6 +915,8 @@ def _extract_table_markdown(blocks: list[dict[str, Any]], label_payload: Any) ->
             content = str(structured.get("content", "") or "").strip()
             if content:
                 return content
+        if prefer_label_semantics:
+            return ""
     for block in blocks:
         if str(block.get("type", "") or "").strip().lower() != "table":
             continue
@@ -886,7 +933,11 @@ def _extract_table_markdown(blocks: list[dict[str, Any]], label_payload: Any) ->
     return ""
 
 
-def _extract_mermaid_text(blocks: list[dict[str, Any]], label_payload: Any) -> str:
+def _extract_mermaid_text(
+    blocks: list[dict[str, Any]],
+    label_payload: Any,
+    prefer_label_semantics: bool = False,
+) -> str:
     if isinstance(label_payload, dict):
         structured = label_payload.get("structured_label")
         if (
@@ -898,6 +949,8 @@ def _extract_mermaid_text(blocks: list[dict[str, Any]], label_payload: Any) -> s
             )
             if looks_like_mermaid(content):
                 return content
+        if prefer_label_semantics:
+            return ""
     for block in blocks:
         sub_type = str(block.get("sub_type", "") or "").strip().lower()
         structured = block.get("structured_label")
@@ -930,7 +983,11 @@ def _extract_mermaid_text(blocks: list[dict[str, Any]], label_payload: Any) -> s
     return ""
 
 
-def _has_flowchart_render_signal(blocks: list[dict[str, Any]], label_payload: Any) -> bool:
+def _has_flowchart_render_signal(
+    blocks: list[dict[str, Any]],
+    label_payload: Any,
+    prefer_label_semantics: bool = False,
+) -> bool:
     if isinstance(label_payload, dict):
         image_type = str(label_payload.get("image_type", "") or "").strip().lower()
         if image_type == "flowchart":
@@ -943,6 +1000,8 @@ def _has_flowchart_render_signal(blocks: list[dict[str, Any]], label_payload: An
             return True
         if isinstance(label_payload.get("flowchart_graph"), dict):
             return True
+        if prefer_label_semantics:
+            return False
 
     for block in blocks:
         if str(block.get("sub_type", "") or "").strip().lower() == "flowchart":
@@ -958,9 +1017,13 @@ def _has_flowchart_render_signal(blocks: list[dict[str, Any]], label_payload: An
     return False
 
 
-def _extract_textual_content(blocks: list[dict[str, Any]], label_payload: Any) -> str:
+def _extract_textual_content(
+    blocks: list[dict[str, Any]],
+    label_payload: Any,
+    prefer_label_semantics: bool = False,
+) -> str:
     texts: list[str] = []
-    if isinstance(label_payload, dict):
+    if isinstance(label_payload, dict) and not (prefer_label_semantics and blocks):
         caption = str(label_payload.get("caption", "") or "").strip()
         if caption:
             texts.append(caption)
