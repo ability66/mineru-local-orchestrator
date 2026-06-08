@@ -7,6 +7,10 @@ from src.decision import decide_consensus
 from src.pipeline.alignment import BlockMatch, align_blocks
 from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
+from src.projection import (
+    is_single_block_projection_document,
+    project_document_for_single_block_view,
+)
 from src.schema import (
     AdjudicationArtifact,
     CanonicalBlock,
@@ -45,8 +49,8 @@ def adjudicate_documents(
     candidate_document = (
         qwen_document if base_document is mineru_document else mineru_document
     )
-    matches = align_blocks(base_document.blocks, candidate_document.blocks)
-    match_lookup = {match.base_index: match for match in matches}
+    merge_matches = align_blocks(base_document.blocks, candidate_document.blocks)
+    match_lookup = {match.base_index: match for match in merge_matches}
 
     merged_blocks: list[CanonicalBlock] = []
     for base_index, base_block in enumerate(base_document.blocks):
@@ -62,7 +66,7 @@ def adjudicate_documents(
             )
         )
 
-    matched_candidate_indexes = {match.candidate_index for match in matches}
+    matched_candidate_indexes = {match.candidate_index for match in merge_matches}
     added_qwen_blocks = 0
     if candidate_document is qwen_document:
         for candidate_index, candidate_block in enumerate(candidate_document.blocks):
@@ -91,13 +95,32 @@ def adjudicate_documents(
         },
     )
 
+    (
+        comparison_base_document,
+        comparison_candidate_document,
+        comparison_matches,
+        comparison_added_qwen_blocks,
+    ) = _build_comparison_alignment_context(
+        base_document=base_document,
+        candidate_document=candidate_document,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+    )
+    if (
+        is_single_block_projection_document(comparison_base_document)
+        or is_single_block_projection_document(comparison_candidate_document)
+    ):
+        final_document.raw_metadata["comparison_view"] = "single_block_projection"
+
     graph_fusion_result = graph_fusion_result_override
     validation_result = _build_validation_result(
         image_id=image_task.image_id,
-        base_document=base_document,
-        candidate_document=candidate_document,
-        matches=matches,
-        added_qwen_blocks=added_qwen_blocks,
+        base_document=comparison_base_document,
+        candidate_document=comparison_candidate_document,
+        matches=comparison_matches,
+        added_qwen_blocks=comparison_added_qwen_blocks,
         mineru_label=mineru_label,
         qwen_label=qwen_label,
     )
@@ -178,10 +201,10 @@ def adjudicate_documents(
     final_label = derive_label_from_document(final_document)
 
     local_reasons = _build_local_reasons(
-        base_document=base_document,
-        candidate_document=candidate_document,
-        matches=matches,
-        added_qwen_blocks=added_qwen_blocks,
+        base_document=comparison_base_document,
+        candidate_document=comparison_candidate_document,
+        matches=comparison_matches,
+        added_qwen_blocks=comparison_added_qwen_blocks,
     )
     reasons = list(local_reasons)
     if consensus is not None:
@@ -195,8 +218,8 @@ def adjudicate_documents(
         graph_fusion=asdict(graph_fusion_result)
         if graph_fusion_result is not None
         else None,
-        matched_block_count=len(matches),
-        added_qwen_block_count=added_qwen_blocks,
+        matched_block_count=len(comparison_matches),
+        added_qwen_block_count=comparison_added_qwen_blocks,
         review_required=consensus is None or consensus.decision != "accepted",
         reasons=_deduplicate(reasons),
         warnings=_deduplicate(final_document.warnings),
@@ -417,6 +440,68 @@ def build_flowchart_candidate_result(
 ) -> Any | None:
     del mineru_label, qwen_label, mineru_output, qwen_output, fallback_visible_text
     return None
+
+
+def _build_comparison_alignment_context(
+    base_document: CanonicalDocument,
+    candidate_document: CanonicalDocument,
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    qwen_label: ParsedLabel | None,
+) -> tuple[CanonicalDocument, CanonicalDocument, list[BlockMatch], int]:
+    projected_mineru_document = _project_comparison_document(
+        document=mineru_document,
+        label=mineru_label,
+    )
+    projected_qwen_document = _project_comparison_document(
+        document=qwen_document,
+        label=qwen_label,
+    )
+    comparison_base_document = (
+        projected_mineru_document
+        if base_document is mineru_document
+        else projected_qwen_document
+    )
+    comparison_candidate_document = (
+        projected_qwen_document
+        if candidate_document is qwen_document
+        else projected_mineru_document
+    )
+    comparison_matches = align_blocks(
+        comparison_base_document.blocks,
+        comparison_candidate_document.blocks,
+    )
+    comparison_added_qwen_blocks = 0
+    if candidate_document is qwen_document:
+        matched_candidate_indexes = {
+            match.candidate_index for match in comparison_matches
+        }
+        for candidate_index, candidate_block in enumerate(
+            comparison_candidate_document.blocks
+        ):
+            if candidate_index in matched_candidate_indexes:
+                continue
+            if _should_add_unmatched_qwen_block(candidate_block):
+                comparison_added_qwen_blocks += 1
+    return (
+        comparison_base_document,
+        comparison_candidate_document,
+        comparison_matches,
+        comparison_added_qwen_blocks,
+    )
+
+
+def _project_comparison_document(
+    document: CanonicalDocument,
+    label: ParsedLabel | None,
+) -> CanonicalDocument:
+    effective_label = label if label is not None else derive_label_from_document(document)
+    projected_document = project_document_for_single_block_view(
+        document=document,
+        label=effective_label,
+    )
+    return projected_document if isinstance(projected_document, CanonicalDocument) else document
 
 
 def _build_validation_result(

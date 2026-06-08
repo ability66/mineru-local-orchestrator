@@ -944,3 +944,125 @@ def test_adjudicator_keeps_stamp_mode_in_review_when_issue_unresolved() -> None:
     assert artifact.consensus is not None
     assert artifact.consensus.decision == "review"
     assert artifact.review_required is True
+
+
+def test_adjudicator_uses_projected_single_block_view_for_seal_comparison() -> None:
+    image_task = ImageTask(
+        image_id="img-seal-projected-compare",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-seal-projected-compare",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["上海日轲电子有限公司"],
+                },
+                source="mineru",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+            ),
+            CanonicalBlock(
+                block_id="m2",
+                page_idx=0,
+                order_index=2,
+                type="paragraph",
+                bbox=[194, 330, 543, 384],
+                text="4541982082",
+                content={
+                    "paragraph_content": [{"type": "text", "content": "4541982082"}]
+                },
+                source="mineru",
+            ),
+            CanonicalBlock(
+                block_id="m3",
+                page_idx=0,
+                order_index=3,
+                type="image",
+                sub_type="natural_image",
+                bbox=[361, 390, 641, 644],
+                text="Red hammer and sickle symbol on white background (no text or numbers)",
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": [
+                        "Red hammer and sickle symbol on white background (no text or numbers)"
+                    ],
+                },
+                source="mineru",
+            ),
+        ],
+    )
+    qwen_document = mineru_document.model_copy(deep=True)
+    qwen_document.source = "qwen"
+    qwen_document.backend = "qwen"
+    for block in qwen_document.blocks:
+        block.source = "qwen"
+
+    mineru_label = ParsedLabel(
+        image_type="seal",
+        caption="上海日轲电子有限公司",
+        caption_structured=CaptionStructured(
+            brief="上海日轲电子有限公司",
+            visual_type="seal",
+            main_subject="上海日轲电子有限公司",
+            confidence="high",
+        ),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
+        ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+    )
+    qwen_label = ParsedLabel(
+        image_type="seal",
+        caption="上海日轲电子有限公司",
+        caption_structured=CaptionStructured(
+            brief="上海日轲电子有限公司",
+            visual_type="seal",
+            main_subject="上海日轲电子有限公司",
+            confidence="high",
+        ),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
+        ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+        mineru_output=ModelOutput(
+            image_id="img-seal-projected-compare",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-seal-projected-compare",
+            model_name="qwen",
+            success=True,
+            raw_text="{}",
+        ),
+        issues=[],
+        patch_decisions=[],
+    )
+
+    assert artifact.matched_block_count == 1
+    assert artifact.added_qwen_block_count == 0
+    assert artifact.final_document.raw_metadata["comparison_view"] == "single_block_projection"
+    assert len(artifact.final_document.blocks) == 3

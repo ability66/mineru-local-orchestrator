@@ -134,6 +134,97 @@ def test_detect_seal_issue_when_qwen_marks_plain_image_as_seal() -> None:
     assert issues[0].issue_type == "seal_type_disagreement"
 
 
+def test_detect_seal_issue_uses_projected_single_block_full_text() -> None:
+    image_task = ImageTask(
+        image_id="img-seal-merged",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-seal-merged",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["上海日轲电子有限公司"],
+                },
+                source="mineru",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+            ),
+            CanonicalBlock(
+                block_id="m2",
+                page_idx=0,
+                order_index=2,
+                type="paragraph",
+                bbox=[194, 330, 543, 384],
+                text="4541982082",
+                content={
+                    "paragraph_content": [{"type": "text", "content": "4541982082"}]
+                },
+                source="mineru",
+            ),
+            CanonicalBlock(
+                block_id="m3",
+                page_idx=0,
+                order_index=3,
+                type="image",
+                sub_type="natural_image",
+                bbox=[361, 390, 641, 644],
+                text="Red hammer and sickle symbol on white background (no text or numbers)",
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": [
+                        "Red hammer and sickle symbol on white background (no text or numbers)"
+                    ],
+                },
+                source="mineru",
+            ),
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-seal-merged",
+        source="qwen",
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["上海日轲电子有限公司"],
+                },
+                source="qwen",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+            )
+        ],
+    )
+
+    issues = detect_seal_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].issue_type == "seal_ocr_conflict"
+    assert issues[0].target_block_id == "m1"
+
+
 def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference() -> (
     None
 ):

@@ -11,6 +11,11 @@ from src.pipeline.flowchart_utils import (
     mermaid_from_flowchart_graph,
     normalize_mermaid_text,
 )
+from src.pipeline.normalizers import derive_label_from_document
+from src.projection import (
+    is_single_block_projection_block,
+    project_document_for_single_block_view,
+)
 from src.schema import CanonicalBlock, CanonicalDocument, ImageTask, Issue, ParsedLabel
 
 
@@ -20,24 +25,33 @@ def detect_seal_issues(
     qwen_document: CanonicalDocument,
 ) -> list[Issue]:
     del image_task
-    matches = align_blocks(mineru_document.blocks, qwen_document.blocks)
+    comparison_mineru_document = _project_seal_comparison_document(mineru_document)
+    comparison_qwen_document = _project_seal_comparison_document(qwen_document)
+    matches = align_blocks(
+        comparison_mineru_document.blocks,
+        comparison_qwen_document.blocks,
+    )
     match_lookup = {match.base_index: match for match in matches}
     matched_qwen_indexes = {match.candidate_index for match in matches}
 
     issues: list[Issue] = []
-    for mineru_index, mineru_block in enumerate(mineru_document.blocks):
+    for mineru_index, mineru_block in enumerate(comparison_mineru_document.blocks):
         match = match_lookup.get(mineru_index)
         qwen_block = (
-            qwen_document.blocks[match.candidate_index] if match is not None else None
+            comparison_qwen_document.blocks[match.candidate_index]
+            if match is not None
+            else None
         )
         issue = _detect_pair_issue(mineru_block=mineru_block, qwen_block=qwen_block)
         if issue is not None:
             issues.append(issue)
 
-    for qwen_index, qwen_block in enumerate(qwen_document.blocks):
+    for qwen_index, qwen_block in enumerate(comparison_qwen_document.blocks):
         if qwen_index in matched_qwen_indexes or not _is_seal_candidate(qwen_block):
             continue
-        target_block = _find_best_target_block(mineru_document.blocks, qwen_block)
+        target_block = _find_best_target_block(
+            comparison_mineru_document.blocks, qwen_block
+        )
         issues.append(
             Issue(
                 issue_id=f"seal-unmatched-{qwen_block.block_id}",
@@ -280,7 +294,14 @@ def _detect_pair_issue(
             reasons=["mineru_seal_without_text", "qwen_provides_seal_text"],
         )
 
-    if mineru_texts and qwen_texts and _texts_conflict(mineru_texts, qwen_texts):
+    compare_full_projection = is_single_block_projection_block(
+        mineru_block
+    ) or is_single_block_projection_block(qwen_block)
+    if mineru_texts and qwen_texts and _texts_conflict(
+        mineru_texts,
+        qwen_texts,
+        allow_containment=not compare_full_projection,
+    ):
         return Issue(
             issue_id=f"seal-ocr-conflict-{mineru_block.block_id}",
             issue_type="seal_ocr_conflict",
@@ -469,17 +490,30 @@ def _seal_texts(block: CanonicalBlock) -> list[str]:
     return _deduplicate_texts(texts)
 
 
-def _texts_conflict(left: list[str], right: list[str]) -> bool:
+def _project_seal_comparison_document(
+    document: CanonicalDocument,
+) -> CanonicalDocument:
+    label = derive_label_from_document(document)
+    projected = project_document_for_single_block_view(document=document, label=label)
+    return projected if isinstance(projected, CanonicalDocument) else document
+
+
+def _texts_conflict(
+    left: list[str],
+    right: list[str],
+    allow_containment: bool = True,
+) -> bool:
     left_norm = {_normalize_text(item) for item in left if _normalize_text(item)}
     right_norm = {_normalize_text(item) for item in right if _normalize_text(item)}
     if not left_norm or not right_norm:
         return False
     if left_norm == right_norm:
         return False
-    for left_item in left_norm:
-        for right_item in right_norm:
-            if left_item in right_item or right_item in left_item:
-                return False
+    if allow_containment:
+        for left_item in left_norm:
+            for right_item in right_norm:
+                if left_item in right_item or right_item in left_item:
+                    return False
     return True
 
 
