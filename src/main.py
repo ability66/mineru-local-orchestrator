@@ -423,7 +423,7 @@ def _build_seal_adjudication_candidates(
         )
         signature = _seal_candidate_signature(
             label=effective_label,
-            core_seal_text=core_seal_text,
+            full_text=full_text,
             seal_texts=seal_texts,
         )
         if signature in seen_signatures:
@@ -473,17 +473,30 @@ def _build_seal_adjudication_candidates(
 
     disagreement_detected = False
     comparisons: list[dict[str, Any]] = []
-    mineru_payload = mineru_candidate["candidate_payload"]
+    mineru_document = mineru_candidate["document"]
     for candidate_bundle in candidate_bundles:
         if candidate_bundle.get("role") == "mineru":
             continue
-        comparison = _build_seal_selection_comparison(
-            mineru_payload=mineru_payload,
-            candidate_payload=candidate_bundle["candidate_payload"],
+        issues = detect_seal_issues(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            qwen_document=candidate_bundle["document"],
         )
-        if comparison["issue_types"]:
+        if issues or candidate_bundle["signature"] != mineru_candidate["signature"]:
             disagreement_detected = True
-        comparisons.append(comparison)
+        comparisons.append(
+            {
+                "candidate_id": candidate_bundle["role"],
+                "issue_types": [issue.issue_type for issue in issues],
+                "reason_tags": _ordered_unique_texts(
+                    [
+                        reason
+                        for issue in issues
+                        for reason in list(issue.reasons or [])
+                    ]
+                ),
+            }
+        )
 
     if not disagreement_detected:
         return candidate_bundles, None
@@ -563,12 +576,17 @@ def _extract_seal_candidate_texts(
 
 def _seal_candidate_signature(
     label: ParsedLabel,
-    core_seal_text: str,
+    full_text: str,
     seal_texts: list[str],
-) -> tuple[str, str]:
+) -> tuple[str, str, tuple[str, ...]]:
     return (
         str(label.image_type or "").strip().lower(),
-        _normalize_selection_text(core_seal_text),
+        _normalize_selection_text(full_text),
+        tuple(
+            _normalize_selection_text(text)
+            for text in seal_texts
+            if _normalize_selection_text(text)
+        ),
     )
 
 
@@ -582,43 +600,6 @@ def _extract_core_seal_text(
     if seal_texts:
         return str(seal_texts[0] or "").strip()
     return ""
-
-
-def _build_seal_selection_comparison(
-    mineru_payload: dict[str, Any],
-    candidate_payload: dict[str, Any],
-) -> dict[str, Any]:
-    issue_types: list[str] = []
-    reason_tags: list[str] = []
-
-    mineru_type = str(mineru_payload.get("image_type", "") or "").strip().lower()
-    candidate_type = str(candidate_payload.get("image_type", "") or "").strip().lower()
-    if mineru_type != candidate_type:
-        issue_types.append("seal_type_disagreement")
-        reason_tags.append("candidate_image_type_differs")
-
-    mineru_core = _normalize_selection_text(mineru_payload.get("core_seal_text"))
-    candidate_core = _normalize_selection_text(candidate_payload.get("core_seal_text"))
-    if mineru_core != candidate_core:
-        if not mineru_core and candidate_core:
-            issue_types.append("mineru_missing_core_seal_text")
-            reason_tags.append("candidate_has_core_seal_text_but_mineru_missing")
-        elif mineru_core and not candidate_core:
-            issue_types.append("candidate_missing_core_seal_text")
-            reason_tags.append("candidate_missing_core_seal_text")
-        else:
-            issue_types.append("seal_core_text_conflict")
-            reason_tags.append("core_seal_text_conflict")
-
-    return {
-        "candidate_id": candidate_payload.get("candidate_id"),
-        "issue_types": issue_types,
-        "reason_tags": _ordered_unique_texts(reason_tags),
-        "mineru_core_seal_text": str(mineru_payload.get("core_seal_text", "") or ""),
-        "candidate_core_seal_text": str(
-            candidate_payload.get("core_seal_text", "") or ""
-        ),
-    }
 
 
 def _normalize_selection_text(value: Any) -> str:
