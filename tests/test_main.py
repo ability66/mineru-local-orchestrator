@@ -169,11 +169,11 @@ def test_build_seal_adjudication_candidates_returns_full_text_candidates() -> No
                 type="image",
                 sub_type="seal",
                 bbox=[0, 0, 999, 999],
-                text="上海日轲电子有限公司",
-                content={"img_path": "data/demo.png", "image_caption": ["上海日轲电子有限公司"]},
+                text="上海日科电子有限公司",
+                content={"img_path": "data/demo.png", "image_caption": ["上海日科电子有限公司"]},
                 source="paddle",
-                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
-                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+                caption_structured=CaptionStructured(brief="上海日科电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日科电子有限公司")],
             )
         ],
     )
@@ -200,7 +200,7 @@ def test_build_seal_adjudication_candidates_returns_full_text_candidates() -> No
                     raw_text="{}",
                 ),
                 "document": paddle_document,
-                "label": ParsedLabel(image_type="seal", caption="上海日轲电子有限公司"),
+                "label": ParsedLabel(image_type="seal", caption="上海日科电子有限公司"),
             }
         ],
     )
@@ -211,8 +211,97 @@ def test_build_seal_adjudication_candidates_returns_full_text_candidates() -> No
         candidate for candidate in payload["candidates"] if candidate["candidate_id"] == "mineru"
     )
     assert mineru_payload["full_text"] == "上海日轲电子有限公司\n\n4541982082"
+    assert mineru_payload["core_seal_text"] == "上海日轲电子有限公司"
     assert payload["comparisons"][0]["candidate_id"] == "paddle"
-    assert payload["comparisons"][0]["issue_types"] == ["seal_ocr_conflict"]
+    assert payload["comparisons"][0]["issue_types"] == ["seal_core_text_conflict"]
+    assert payload["comparisons"][0]["candidate_core_seal_text"] == "上海日科电子有限公司"
+
+
+def test_build_seal_adjudication_candidates_ignores_noise_text_outside_seal() -> None:
+    image_task = ImageTask(
+        image_id="seal-select-ignored-noise",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="seal-select-ignored-noise",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={"img_path": "data/demo.png", "image_caption": ["上海日轲电子有限公司"]},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+            ),
+            CanonicalBlock(
+                block_id="m2",
+                page_idx=0,
+                order_index=2,
+                type="paragraph",
+                bbox=[194, 330, 543, 384],
+                text="4541982082",
+                content={"paragraph_content": [{"type": "text", "content": "4541982082"}]},
+                source="mineru",
+            ),
+        ],
+    )
+    paddle_document = CanonicalDocument(
+        document_id="seal-select-ignored-noise",
+        source="paddle",
+        blocks=[
+            CanonicalBlock(
+                block_id="p1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={"img_path": "data/demo.png", "image_caption": ["上海日轲电子有限公司"]},
+                source="paddle",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+                ocr_regions=[OcrRegion(role="seal", text="上海日轲电子有限公司")],
+            )
+        ],
+    )
+
+    candidates, payload = _build_seal_adjudication_candidates(
+        image_task=image_task,
+        mineru_bundle={
+            "output": ModelOutput(
+                image_id="seal-select-ignored-noise",
+                model_name="mineru-local",
+                success=True,
+                raw_text="{}",
+            ),
+            "document": mineru_document,
+            "label": ParsedLabel(image_type="seal", caption="上海日轲电子有限公司"),
+        },
+        auxiliary_bundles=[
+            {
+                "role": "paddle",
+                "output": ModelOutput(
+                    image_id="seal-select-ignored-noise",
+                    model_name="paddle-local",
+                    success=True,
+                    raw_text="{}",
+                ),
+                "document": paddle_document,
+                "label": ParsedLabel(image_type="seal", caption="上海日轲电子有限公司"),
+            }
+        ],
+    )
+
+    assert len(candidates) == 1
+    assert payload is None
 
 
 def test_build_stage2_selection_record_keeps_selection_payload() -> None:

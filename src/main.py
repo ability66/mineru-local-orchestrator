@@ -45,6 +45,7 @@ from src.prompt_builder import load_prompt
 from src.render_compare_dashboard import generate_compare_dashboard
 from src.render_mermaid_compare import generate_compare_page
 from src.pipeline.flowchart_utils import looks_like_mermaid, normalize_mermaid_text
+from src.seal_utils import primary_seal_text
 from src.schema import (
     CanonicalBlock,
     CanonicalDocument,
@@ -416,9 +417,13 @@ def _build_seal_adjudication_candidates(
             document=projected_document,
             label=effective_label,
         )
+        core_seal_text = _extract_core_seal_text(
+            label=effective_label,
+            seal_texts=seal_texts,
+        )
         signature = _seal_candidate_signature(
             label=effective_label,
-            full_text=full_text,
+            core_seal_text=core_seal_text,
             seal_texts=seal_texts,
         )
         if signature in seen_signatures:
@@ -438,6 +443,8 @@ def _build_seal_adjudication_candidates(
             ),
             "image_type": effective_label.image_type,
             "caption": effective_label.caption,
+            "core_seal_text": core_seal_text,
+            "selection_focus": "只看印章主体文字，忽略水印、重叠字、背景说明和非印章正文",
             "full_text": full_text,
             "visible_text": effective_label.visible_text[:10],
             "seal_texts": seal_texts,
@@ -466,30 +473,17 @@ def _build_seal_adjudication_candidates(
 
     disagreement_detected = False
     comparisons: list[dict[str, Any]] = []
-    mineru_document = mineru_candidate["document"]
+    mineru_payload = mineru_candidate["candidate_payload"]
     for candidate_bundle in candidate_bundles:
         if candidate_bundle.get("role") == "mineru":
             continue
-        issues = detect_seal_issues(
-            image_task=image_task,
-            mineru_document=mineru_document,
-            qwen_document=candidate_bundle["document"],
+        comparison = _build_seal_selection_comparison(
+            mineru_payload=mineru_payload,
+            candidate_payload=candidate_bundle["candidate_payload"],
         )
-        if issues or candidate_bundle["signature"] != mineru_candidate["signature"]:
+        if comparison["issue_types"]:
             disagreement_detected = True
-        comparisons.append(
-            {
-                "candidate_id": candidate_bundle["role"],
-                "issue_types": [issue.issue_type for issue in issues],
-                "reason_tags": _ordered_unique_texts(
-                    [
-                        reason
-                        for issue in issues
-                        for reason in list(issue.reasons or [])
-                    ]
-                ),
-            }
-        )
+        comparisons.append(comparison)
 
     if not disagreement_detected:
         return candidate_bundles, None
@@ -497,6 +491,7 @@ def _build_seal_adjudication_candidates(
     return candidate_bundles, {
         "image_id": image_task.image_id,
         "task": "seal_candidate_selection",
+        "selection_focus": "只比较印章主体内容，忽略水印、重叠字、背景说明和非印章正文",
         "candidate_count": len(candidate_bundles),
         "candidates": [
             candidate["candidate_payload"] for candidate in candidate_bundles
@@ -568,14 +563,62 @@ def _extract_seal_candidate_texts(
 
 def _seal_candidate_signature(
     label: ParsedLabel,
-    full_text: str,
+    core_seal_text: str,
     seal_texts: list[str],
-) -> tuple[str, str, tuple[str, ...]]:
+) -> tuple[str, str]:
     return (
         str(label.image_type or "").strip().lower(),
-        _normalize_selection_text(full_text),
-        tuple(_normalize_selection_text(text) for text in seal_texts if _normalize_selection_text(text)),
+        _normalize_selection_text(core_seal_text),
     )
+
+
+def _extract_core_seal_text(
+    label: ParsedLabel,
+    seal_texts: list[str],
+) -> str:
+    primary = str(primary_seal_text(label) or "").strip()
+    if primary:
+        return primary
+    if seal_texts:
+        return str(seal_texts[0] or "").strip()
+    return ""
+
+
+def _build_seal_selection_comparison(
+    mineru_payload: dict[str, Any],
+    candidate_payload: dict[str, Any],
+) -> dict[str, Any]:
+    issue_types: list[str] = []
+    reason_tags: list[str] = []
+
+    mineru_type = str(mineru_payload.get("image_type", "") or "").strip().lower()
+    candidate_type = str(candidate_payload.get("image_type", "") or "").strip().lower()
+    if mineru_type != candidate_type:
+        issue_types.append("seal_type_disagreement")
+        reason_tags.append("candidate_image_type_differs")
+
+    mineru_core = _normalize_selection_text(mineru_payload.get("core_seal_text"))
+    candidate_core = _normalize_selection_text(candidate_payload.get("core_seal_text"))
+    if mineru_core != candidate_core:
+        if not mineru_core and candidate_core:
+            issue_types.append("mineru_missing_core_seal_text")
+            reason_tags.append("candidate_has_core_seal_text_but_mineru_missing")
+        elif mineru_core and not candidate_core:
+            issue_types.append("candidate_missing_core_seal_text")
+            reason_tags.append("candidate_missing_core_seal_text")
+        else:
+            issue_types.append("seal_core_text_conflict")
+            reason_tags.append("core_seal_text_conflict")
+
+    return {
+        "candidate_id": candidate_payload.get("candidate_id"),
+        "issue_types": issue_types,
+        "reason_tags": _ordered_unique_texts(reason_tags),
+        "mineru_core_seal_text": str(mineru_payload.get("core_seal_text", "") or ""),
+        "candidate_core_seal_text": str(
+            candidate_payload.get("core_seal_text", "") or ""
+        ),
+    }
 
 
 def _normalize_selection_text(value: Any) -> str:
