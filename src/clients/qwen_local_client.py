@@ -137,6 +137,15 @@ class QwenLocalClient(BaseLocalClient):
     def _format_context_block(self, context: dict[str, Any]) -> str:
         mode = str(context.get("mode", "") or "").strip().lower()
         if mode == "seal_adjudication":
+            selection_payload = context.get("selection_payload")
+            if selection_payload is not None:
+                serialized = json.dumps(selection_payload, ensure_ascii=False, indent=2)
+                return (
+                    "以下是一个需要终裁的印章候选集合，请在候选中选择最可信的一项。"
+                    "如果所有候选都不可信，请输出 review。"
+                    "请只输出终裁 JSON，不要输出解释性正文：\n"
+                    f"{serialized}"
+                )
             issue_payload = context.get("issue_payload")
             serialized = json.dumps(issue_payload, ensure_ascii=False, indent=2)
             return (

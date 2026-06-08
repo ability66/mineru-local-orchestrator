@@ -254,6 +254,12 @@ class PatchDecision(BaseModel):
     reason: str = ""
 
 
+class SealSelectionDecision(BaseModel):
+    selected_candidate: str = "review"
+    reason: str = ""
+    confidence: str = "low"
+
+
 class AdjudicationArtifact(BaseModel):
     image_id: str
     final_document: CanonicalDocument
@@ -267,3 +273,4 @@ class AdjudicationArtifact(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
     patch_decisions: list[PatchDecision] = Field(default_factory=list)
+    seal_selection: SealSelectionDecision | None = None

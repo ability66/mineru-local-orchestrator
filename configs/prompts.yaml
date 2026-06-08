@@ -70,59 +70,33 @@ qwen_recognition_prompt: |
   - 如果输出长度受限，优先保证流程图 Mermaid 自身完整，次要描述可以省略
 
 qwen_adjudication_prompt: |
-  你是第二阶段的局部仲裁模型。当前只处理“印章”相关冲突。
+  你是第二阶段的印章终裁模型。当前只处理“印章/公章”候选选择。
 
   你会收到：
   - 原图
-  - 一个 issue JSON
-  - issue 里会包含 MinerU 块、Qwen 第一阶段块、冲突原因
+  - 一个候选集合 JSON
+  - 每个候选都带有 candidate_id、模型来源、标准化后的完整文本、OCR 线索
 
-  你的任务不是重写整份结果，而是只输出一个 patch 决策 JSON。
+  你的任务不是打 patch，也不是重写整份结果。
+  你的任务是从候选中选出最可信的一项；如果所有候选都不可信，就要求人工复核。
 
-  允许的 decision：
-  - keep_mineru
-  - use_qwen_fields
-  - merge
-  - add_qwen_block
-  - reject_issue
-
-  输出 JSON 结构固定为：
-  - issue_id
-  - target_block_id
-  - decision
-  - patch
+  你只能输出一个 JSON，对象结构固定为：
+  - selected_candidate
   - reason
-
-  `patch` 只允许包含这些字段：
-  - type
-  - sub_type
-  - text
-  - content
-  - ocr_regions
-  - visible_text
+  - confidence
 
   其中：
-  - `type` 只在非常确定是印章时改成 `image`
-  - `sub_type` 只在非常确定是印章时改成 `seal`
-  - `content` 里优先补 `image_caption`
-  - `ocr_regions` 里的 `role` 只允许：
-    - seal
-    - watermark
-    - footer
-    - body
-    - title
-    - other
-  - `ocr_regions` 里的 `confidence` 只允许：
-    - low
-    - medium
+  - `selected_candidate` 必须是候选集合里已有的 candidate_id，或者 `review`
+  - `confidence` 只允许：
     - high
+    - medium
+    - low
 
-  仲裁原则：
-  - 默认保留 MinerU
-  - 只有当 Qwen 第一阶段对印章更明确时，才补字段或修正 `sub_type`
-  - 不要改页结构、不要改块顺序、不要大改 bbox
-  - 如果只是文字补充，优先使用 `merge`
-  - 如果无法确定，使用 `keep_mineru`
+  判断原则：
+  - 优先依据原图中真实可见的印章文字、编号、图形语义作判断
+  - 选择与原图最一致、最完整、最不臆测的候选
+  - 如果多个候选都明显不完整、互相冲突且无法确认，输出 `review`
+  - 不要输出候选集合之外的新 candidate_id
 
   只输出 JSON，不要附加说明文字。
 

@@ -28,8 +28,10 @@ from src.pipeline.issues import (
     detect_seal_issues,
 )
 from src.pipeline.llm_adjudicator import (
+    adjudicate_seal_candidates_with_llm,
     adjudicate_issues_with_llm,
     build_issue_prompt_payload,
+    build_seal_selection_prompt_payload,
 )
 from src.pipeline.normalizers import (
     derive_label_from_document,
@@ -38,6 +40,7 @@ from src.pipeline.normalizers import (
     normalize_qwen_payload,
 )
 from src.pipeline.patches import apply_patch_decisions
+from src.projection import project_document_for_single_block_view
 from src.prompt_builder import load_prompt
 from src.render_compare_dashboard import generate_compare_dashboard
 from src.render_mermaid_compare import generate_compare_page
@@ -49,6 +52,7 @@ from src.schema import (
     ModelOutput,
     PatchDecision,
     ParsedLabel,
+    SealSelectionDecision,
 )
 from src.writer import (
     append_summary_record,
@@ -221,6 +225,31 @@ def build_stage2_records(
     return records
 
 
+def build_stage2_selection_record(
+    selection_payload: dict[str, Any],
+    output: ModelOutput | None,
+    selection_decision: SealSelectionDecision | None,
+    prompt: str,
+    mode: str,
+) -> dict[str, Any]:
+    parsed_payload = output.parsed if output is not None else None
+    usage = _extract_usage(parsed_payload)
+    return {
+        "mode": mode,
+        "prompt": prompt,
+        "selection_payload": build_seal_selection_prompt_payload(selection_payload),
+        "success": bool(output.success) if output is not None else False,
+        "error": output.error if output is not None else "missing_stage2_output",
+        "latency_ms": output.latency_ms if output is not None else None,
+        "raw_text": output.raw_text if output is not None else "",
+        "usage": usage,
+        "finish_reason": _extract_finish_reason(parsed_payload),
+        "selection_decision": selection_decision.model_dump()
+        if selection_decision is not None
+        else None,
+    }
+
+
 def _extract_usage(parsed_payload: Any) -> dict[str, Any] | None:
     if not isinstance(parsed_payload, dict):
         return None
@@ -346,6 +375,223 @@ def _is_seal_candidate_block(block: CanonicalBlock) -> bool:
     return any(
         str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions
     )
+
+
+def _build_seal_adjudication_candidates(
+    image_task: ImageTask,
+    mineru_bundle: dict[str, Any],
+    auxiliary_bundles: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    ordered_bundles = [{"role": "mineru", **mineru_bundle}] + list(auxiliary_bundles)
+    candidate_bundles: list[dict[str, Any]] = []
+    seen_signatures: set[tuple[str, str, tuple[str, ...]]] = set()
+    has_explicit_seal_signal = False
+
+    for bundle in ordered_bundles:
+        document = bundle.get("document")
+        output = bundle.get("output")
+        label = bundle.get("label")
+        role = str(bundle.get("role", "") or "").strip().lower() or "candidate"
+        if not isinstance(document, CanonicalDocument):
+            continue
+        if isinstance(output, ModelOutput) and not output.success:
+            continue
+        effective_label = label if isinstance(label, ParsedLabel) else derive_label_from_document(document)
+        if effective_label is None:
+            continue
+        if effective_label.image_type in {"flowchart", "chart", "table"}:
+            continue
+
+        projected_document = project_document_for_single_block_view(
+            document=document,
+            label=effective_label,
+        )
+        projected_document = (
+            projected_document
+            if isinstance(projected_document, CanonicalDocument)
+            else document
+        )
+        full_text = _projected_document_text(projected_document)
+        seal_texts = _extract_seal_candidate_texts(
+            document=projected_document,
+            label=effective_label,
+        )
+        signature = _seal_candidate_signature(
+            label=effective_label,
+            full_text=full_text,
+            seal_texts=seal_texts,
+        )
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+
+        if _has_explicit_seal_signal(document=document, label=effective_label):
+            has_explicit_seal_signal = True
+
+        candidate_payload = {
+            "candidate_id": role,
+            "model_name": (
+                output.model_name
+                if isinstance(output, ModelOutput)
+                and str(output.model_name or "").strip()
+                else document.source
+            ),
+            "image_type": effective_label.image_type,
+            "caption": effective_label.caption,
+            "full_text": full_text,
+            "visible_text": effective_label.visible_text[:10],
+            "seal_texts": seal_texts,
+            "source_block_count": len(document.blocks),
+        }
+        candidate_bundles.append(
+            {
+                "role": role,
+                "output": output,
+                "document": document,
+                "label": effective_label,
+                "candidate_payload": candidate_payload,
+                "signature": signature,
+            }
+        )
+
+    if len(candidate_bundles) < 2 or not has_explicit_seal_signal:
+        return candidate_bundles, None
+
+    mineru_candidate = next(
+        (candidate for candidate in candidate_bundles if candidate.get("role") == "mineru"),
+        None,
+    )
+    if mineru_candidate is None:
+        return candidate_bundles, None
+
+    disagreement_detected = False
+    comparisons: list[dict[str, Any]] = []
+    mineru_document = mineru_candidate["document"]
+    for candidate_bundle in candidate_bundles:
+        if candidate_bundle.get("role") == "mineru":
+            continue
+        issues = detect_seal_issues(
+            image_task=image_task,
+            mineru_document=mineru_document,
+            qwen_document=candidate_bundle["document"],
+        )
+        if issues or candidate_bundle["signature"] != mineru_candidate["signature"]:
+            disagreement_detected = True
+        comparisons.append(
+            {
+                "candidate_id": candidate_bundle["role"],
+                "issue_types": [issue.issue_type for issue in issues],
+                "reason_tags": _ordered_unique_texts(
+                    [
+                        reason
+                        for issue in issues
+                        for reason in list(issue.reasons or [])
+                    ]
+                ),
+            }
+        )
+
+    if not disagreement_detected:
+        return candidate_bundles, None
+
+    return candidate_bundles, {
+        "image_id": image_task.image_id,
+        "task": "seal_candidate_selection",
+        "candidate_count": len(candidate_bundles),
+        "candidates": [
+            candidate["candidate_payload"] for candidate in candidate_bundles
+        ],
+        "comparisons": comparisons,
+    }
+
+
+def _resolve_selected_seal_bundle(
+    candidate_bundles: list[dict[str, Any]],
+    selection_decision: SealSelectionDecision | None,
+) -> dict[str, Any] | None:
+    if selection_decision is None:
+        return None
+    selected_role = str(selection_decision.selected_candidate or "").strip().lower()
+    if not selected_role or selected_role == "review":
+        return None
+    for candidate_bundle in candidate_bundles:
+        if str(candidate_bundle.get("role", "") or "").strip().lower() == selected_role:
+            return candidate_bundle
+    return None
+
+
+def _has_explicit_seal_signal(
+    document: CanonicalDocument,
+    label: ParsedLabel,
+) -> bool:
+    if label.image_type == "seal":
+        return True
+    if any(str(region.role or "").strip().lower() == "seal" for region in label.ocr_regions):
+        return True
+    return any(_is_seal_candidate_block(block) for block in document.blocks)
+
+
+def _projected_document_text(document: CanonicalDocument) -> str:
+    texts = [
+        str(block.text or "").strip()
+        for block in sorted(
+            document.blocks,
+            key=lambda item: (item.page_idx, item.order_index, item.block_id),
+        )
+        if str(block.text or "").strip()
+    ]
+    return "\n\n".join(texts)
+
+
+def _extract_seal_candidate_texts(
+    document: CanonicalDocument,
+    label: ParsedLabel,
+) -> list[str]:
+    texts: list[str] = []
+    texts.extend(
+        str(region.text or "").strip()
+        for region in label.ocr_regions
+        if str(region.role or "").strip().lower() == "seal"
+        and str(region.text or "").strip()
+    )
+    for block in document.blocks:
+        texts.extend(
+            str(region.text or "").strip()
+            for region in block.ocr_regions
+            if str(region.role or "").strip().lower() == "seal"
+            and str(region.text or "").strip()
+        )
+    if not texts and label.caption.strip():
+        texts.append(label.caption.strip())
+    return _ordered_unique_texts(texts)
+
+
+def _seal_candidate_signature(
+    label: ParsedLabel,
+    full_text: str,
+    seal_texts: list[str],
+) -> tuple[str, str, tuple[str, ...]]:
+    return (
+        str(label.image_type or "").strip().lower(),
+        _normalize_selection_text(full_text),
+        tuple(_normalize_selection_text(text) for text in seal_texts if _normalize_selection_text(text)),
+    )
+
+
+def _normalize_selection_text(value: Any) -> str:
+    return "".join(str(value or "").split()).lower()
+
+
+def _ordered_unique_texts(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalize_selection_text(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(str(value).strip())
+    return ordered
 
 
 def _seal_signal_score(
@@ -603,18 +849,19 @@ def process_image_task(
     qwen_document = empty_document(image_task=image_task, source="qwen_judge_not_triggered")
     qwen_label = None
 
-    seal_issues: list[Any] = []
-    seal_patch_decisions: list[Any] = []
-    seal_patch_outputs: list[ModelOutput] = []
+    seal_selection_decision: SealSelectionDecision | None = None
+    seal_selection_output: ModelOutput | None = None
+    seal_stage2_record: dict[str, Any] | None = None
+    selected_seal_bundle: dict[str, Any] | None = None
 
     auxiliary_bundles = [
         bundle
         for bundle in (glm_bundle, paddle_bundle)
         if bundle.get("client") is not None
     ]
-    seal_reference_bundle, seal_issues = _pick_seal_reference_bundle(
+    seal_candidate_bundles, seal_selection_payload = _build_seal_adjudication_candidates(
         image_task=image_task,
-        mineru_document=mineru_document,
+        mineru_bundle=mineru_bundle,
         auxiliary_bundles=auxiliary_bundles,
     )
     reference_bundle: dict[str, Any] | None = None
@@ -622,17 +869,27 @@ def process_image_task(
     flowchart_patch_decisions: list[PatchDecision] = []
     flowchart_patch_outputs: list[ModelOutput] = []
 
-    if seal_issues and qwen_client is not None:
-        seal_patch_decisions, seal_patch_outputs = adjudicate_issues_with_llm(
+    if seal_selection_payload is not None:
+        seal_selection_decision, seal_selection_output = adjudicate_seal_candidates_with_llm(
             client=qwen_client,
             image_task=image_task,
             prompt=seal_adjudication_prompt,
-            issues=seal_issues,
-            mode="seal_adjudication",
+            selection_payload=seal_selection_payload,
             retry=args.retry,
         )
-        if seal_patch_outputs:
-            qwen_output = seal_patch_outputs[-1]
+        selected_seal_bundle = _resolve_selected_seal_bundle(
+            candidate_bundles=seal_candidate_bundles,
+            selection_decision=seal_selection_decision,
+        )
+        seal_stage2_record = build_stage2_selection_record(
+            selection_payload=seal_selection_payload,
+            output=seal_selection_output,
+            selection_decision=seal_selection_decision,
+            prompt=seal_adjudication_prompt,
+            mode="seal_adjudication",
+        )
+        if seal_selection_output is not None:
+            qwen_output = seal_selection_output
 
     if _has_flowchart_signal(mineru_document, mineru_label):
         reference_bundle, flowchart_issues = _pick_flowchart_reference_bundle(
@@ -653,33 +910,25 @@ def process_image_task(
             if flowchart_patch_outputs:
                 qwen_output = flowchart_patch_outputs[-1]
 
-    stage2_records = build_stage2_records(
-        issues=seal_issues,
-        outputs=seal_patch_outputs,
-        patch_decisions=seal_patch_decisions,
-        prompt=seal_adjudication_prompt,
-        mode="seal_adjudication",
-    ) + build_stage2_records(
-        issues=flowchart_issues,
-        outputs=flowchart_patch_outputs,
-        patch_decisions=flowchart_patch_decisions,
-        prompt=flowchart_adjudication_prompt,
-        mode="flowchart_adjudication",
+    stage2_records = []
+    if seal_stage2_record is not None:
+        stage2_records.append(seal_stage2_record)
+    stage2_records.extend(
+        build_stage2_records(
+            issues=flowchart_issues,
+            outputs=flowchart_patch_outputs,
+            patch_decisions=flowchart_patch_decisions,
+            prompt=flowchart_adjudication_prompt,
+            mode="flowchart_adjudication",
+        )
     )
     if not stage2_records:
         stage2_records = None
 
-    all_issues = seal_issues + flowchart_issues
-    patch_decisions = seal_patch_decisions + flowchart_patch_decisions
+    all_issues = flowchart_issues
+    patch_decisions = flowchart_patch_decisions
     final_mineru_document = mineru_document
     final_mineru_label = mineru_label
-    if seal_patch_decisions:
-        final_mineru_document = apply_patch_decisions(
-            mineru_document=final_mineru_document,
-            issues=seal_issues,
-            patch_decisions=seal_patch_decisions,
-        )
-        final_mineru_label = derive_label_from_document(final_mineru_document)
     if flowchart_patch_decisions:
         final_mineru_document = apply_patch_decisions(
             mineru_document=final_mineru_document,
@@ -692,27 +941,51 @@ def process_image_task(
         image_task=image_task,
         mineru_document=final_mineru_document,
         qwen_document=(
-            seal_reference_bundle["document"]
-            if seal_reference_bundle is not None
-            and isinstance(seal_reference_bundle.get("document"), CanonicalDocument)
+            reference_bundle["document"]
+            if reference_bundle is not None
+            and isinstance(reference_bundle.get("document"), CanonicalDocument)
             else qwen_document
         ),
         mineru_label=final_mineru_label,
         qwen_label=(
-            seal_reference_bundle["label"]
-            if seal_reference_bundle is not None
-            and isinstance(seal_reference_bundle.get("label"), ParsedLabel)
+            reference_bundle["label"]
+            if reference_bundle is not None
+            and isinstance(reference_bundle.get("label"), ParsedLabel)
             else qwen_label
         ),
         mineru_output=mineru_output,
         qwen_output=(
-            seal_reference_bundle["output"]
-            if seal_reference_bundle is not None
-            and isinstance(seal_reference_bundle.get("output"), ModelOutput)
+            reference_bundle["output"]
+            if reference_bundle is not None
+            and isinstance(reference_bundle.get("output"), ModelOutput)
             else qwen_output
         ),
         issues=all_issues,
         patch_decisions=patch_decisions,
+        seal_selection=seal_selection_decision,
+        seal_selected_role=(
+            str(selected_seal_bundle.get("role", "") or "").strip().lower()
+            if selected_seal_bundle is not None
+            else None
+        ),
+        seal_selected_document=(
+            selected_seal_bundle.get("document")
+            if selected_seal_bundle is not None
+            and isinstance(selected_seal_bundle.get("document"), CanonicalDocument)
+            else None
+        ),
+        seal_selected_label=(
+            selected_seal_bundle.get("label")
+            if selected_seal_bundle is not None
+            and isinstance(selected_seal_bundle.get("label"), ParsedLabel)
+            else None
+        ),
+        seal_selected_output=(
+            selected_seal_bundle.get("output")
+            if selected_seal_bundle is not None
+            and isinstance(selected_seal_bundle.get("output"), ModelOutput)
+            else None
+        ),
     )
     summary_record = write_image_result(
         output_dir=output_dir,

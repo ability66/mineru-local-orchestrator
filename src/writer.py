@@ -207,6 +207,8 @@ def _pick_selected_final_output(
         return qwen_output
     if selected_role == "mineru":
         return mineru_output
+    if selected_role:
+        return None
     return mineru_output or qwen_output
 
 

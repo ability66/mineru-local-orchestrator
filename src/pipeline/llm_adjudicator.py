@@ -6,7 +6,13 @@ from time import sleep
 from src.clients import BaseLocalClient
 from src.normalizer import _extract_first_json_object, _strip_code_fences
 from src.pipeline.flowchart_utils import normalize_mermaid_text
-from src.schema import ImageTask, ModelOutput, Issue, PatchDecision
+from src.schema import (
+    ImageTask,
+    Issue,
+    ModelOutput,
+    PatchDecision,
+    SealSelectionDecision,
+)
 
 
 def adjudicate_issues_with_llm(
@@ -38,6 +44,39 @@ def adjudicate_issues_with_llm(
             outputs.append(output)
         decisions.append(_parse_patch_decision(issue=issue, output=output))
     return decisions, outputs
+
+
+def adjudicate_seal_candidates_with_llm(
+    client: BaseLocalClient | None,
+    image_task: ImageTask,
+    prompt: str,
+    selection_payload: dict[str, object],
+    retry: int = 0,
+) -> tuple[SealSelectionDecision, ModelOutput | None]:
+    if client is None:
+        return (
+            SealSelectionDecision(
+                selected_candidate="review",
+                reason="seal_candidate_selection_client_unavailable",
+                confidence="low",
+            ),
+            None,
+        )
+
+    output = _call_with_retry(
+        client=client,
+        image_task=image_task,
+        prompt=prompt,
+        retry=retry,
+        context={
+            "mode": "seal_adjudication",
+            "selection_payload": selection_payload,
+        },
+    )
+    return _parse_seal_selection_decision(
+        selection_payload=selection_payload,
+        output=output,
+    ), output
 
 
 def _call_with_retry(
@@ -94,6 +133,48 @@ def _parse_patch_decision(issue: Issue, output: ModelOutput | None) -> PatchDeci
     )
 
 
+def _parse_seal_selection_decision(
+    selection_payload: dict[str, object],
+    output: ModelOutput | None,
+) -> SealSelectionDecision:
+    valid_candidates = {
+        str(candidate.get("candidate_id", "")).strip()
+        for candidate in selection_payload.get("candidates", [])
+        if isinstance(candidate, dict) and str(candidate.get("candidate_id", "")).strip()
+    }
+    fallback = SealSelectionDecision(
+        selected_candidate="review",
+        reason="llm_selection_unavailable",
+        confidence="low",
+    )
+    if output is None or not output.success:
+        if output is not None and str(output.error or "").strip():
+            fallback.reason = str(output.error or "").strip()
+        return fallback
+
+    payload = _parse_json_object(output.raw_text)
+    if not isinstance(payload, dict):
+        payload = _parse_json_object(_extract_raw_text_from_parsed(output.parsed))
+    if not isinstance(payload, dict):
+        fallback.reason = "llm_selection_invalid_json"
+        return fallback
+
+    selected_candidate = _normalize_selected_candidate(
+        value=payload.get("selected_candidate")
+        or payload.get("selected_role")
+        or payload.get("candidate_id")
+        or payload.get("decision"),
+        valid_candidates=valid_candidates,
+    )
+    reason = str(payload.get("reason", "") or "").strip()
+    confidence = _normalize_selection_confidence(payload.get("confidence"))
+    return SealSelectionDecision(
+        selected_candidate=selected_candidate,
+        reason=reason or "llm_candidate_selected",
+        confidence=confidence,
+    )
+
+
 def _parse_json_object(raw_text: str) -> object:
     cleaned_text = _strip_code_fences(raw_text)
     json_text, _ = _extract_first_json_object(cleaned_text)
@@ -109,6 +190,12 @@ def build_issue_prompt_payload(issue: Issue, mode: str) -> dict[str, object]:
     if str(mode or "").strip().lower() == "flowchart_adjudication":
         return _build_flowchart_prompt_payload(issue)
     return issue.model_dump()
+
+
+def build_seal_selection_prompt_payload(
+    selection_payload: dict[str, object],
+) -> dict[str, object]:
+    return dict(selection_payload)
 
 
 def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
@@ -323,3 +410,37 @@ def _normalize_decision(value: object) -> str:
     }:
         return "use_qwen_fields"
     return "keep_mineru"
+
+
+def _normalize_selected_candidate(
+    value: object,
+    valid_candidates: set[str],
+) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in valid_candidates:
+        return normalized
+    if normalized in {
+        "review",
+        "manual_review",
+        "human_review",
+        "uncertain",
+        "unknown",
+        "none",
+        "all_wrong",
+        "reject_all",
+        "no_candidate",
+    }:
+        return "review"
+    if normalized in {"keep", "keep_mineru", "use_mineru", "adopt_mineru"}:
+        return "mineru" if "mineru" in valid_candidates else "review"
+    if normalized in {"keep_candidate", "use_reference", "reference", "candidate"}:
+        non_mineru = sorted(candidate for candidate in valid_candidates if candidate != "mineru")
+        return non_mineru[0] if len(non_mineru) == 1 else "review"
+    return "review"
+
+
+def _normalize_selection_confidence(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"high", "medium", "low"}:
+        return normalized
+    return "low"

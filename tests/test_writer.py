@@ -301,6 +301,83 @@ def test_writer_uses_selected_qwen_metadata_for_final_payload(tmp_path) -> None:
     assert final_payload["source_type"] == "local_service"
 
 
+def test_writer_uses_selected_auxiliary_metadata_for_final_payload(tmp_path) -> None:
+    image_task = ImageTask(
+        image_id="img-aux-final",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    final_document = CanonicalDocument(
+        document_id="img-aux-final",
+        source="paddle",
+        backend="paddle",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="p1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[10, 10, 900, 900],
+                text="某某公司印章",
+                content={"img_path": "/tmp/demo.png", "image_caption": ["某某公司印章"]},
+                source="paddle",
+                caption_structured=CaptionStructured(brief="某某公司印章"),
+            )
+        ],
+        raw_metadata={
+            "selected_output_role": "paddle",
+            "selected_model_name": "paddle-local",
+            "selected_vendor": "paddleocr",
+            "selected_source_type": "local_service",
+        },
+    )
+    artifact = AdjudicationArtifact(
+        image_id="img-aux-final",
+        final_document=final_document,
+    )
+
+    write_image_result(
+        output_dir=tmp_path,
+        image_task=image_task,
+        mineru_output=ModelOutput(
+            image_id="img-aux-final",
+            model_name="mineru",
+            success=True,
+            raw_text="",
+            parsed={},
+            latency_ms=120,
+            vendor="mineru",
+            source_type="local_api",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-aux-final",
+            model_name="qwen-judge",
+            success=True,
+            raw_text="",
+            parsed={},
+            latency_ms=80,
+            vendor="qwen",
+            source_type="local_service",
+        ),
+        mineru_document=final_document,
+        qwen_document=final_document,
+        mineru_label=None,
+        qwen_label=None,
+        artifact=artifact,
+        stage2_records=None,
+    )
+
+    final_payload = json.loads(
+        (tmp_path / "final" / "img-aux-final.json").read_text(encoding="utf-8")
+    )
+    assert final_payload["model_name"] == "paddle-local"
+    assert final_payload["vendor"] == "paddleocr"
+    assert final_payload["source_type"] == "local_service"
+
+
 def test_writer_persists_extra_stage1_outputs_for_glm_and_paddle(tmp_path) -> None:
     image_task = ImageTask(
         image_id="img-extra-stage1",

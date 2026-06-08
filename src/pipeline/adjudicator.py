@@ -22,6 +22,7 @@ from src.schema import (
     OcrRegion,
     PatchDecision,
     ParsedLabel,
+    SealSelectionDecision,
     StructuredLabel,
 )
 from src.scorer import score_consensus
@@ -40,6 +41,11 @@ def adjudicate_documents(
     issues: list[Issue] | None = None,
     patch_decisions: list[PatchDecision] | None = None,
     graph_fusion_result_override: Any | None = None,
+    seal_selection: SealSelectionDecision | None = None,
+    seal_selected_role: str | None = None,
+    seal_selected_document: CanonicalDocument | None = None,
+    seal_selected_label: ParsedLabel | None = None,
+    seal_selected_output: ModelOutput | None = None,
 ) -> AdjudicationArtifact:
     base_document = (
         mineru_document
@@ -143,6 +149,7 @@ def adjudicate_documents(
         qwen_output=qwen_output,
         issues=issues or [],
         patch_decisions=patch_decisions or [],
+        seal_selection=seal_selection,
         existing=consensus,
     )
     consensus = _override_flowchart_mode_consensus(
@@ -158,6 +165,18 @@ def adjudicate_documents(
         graph_fusion_result=graph_fusion_result,
         existing=consensus,
     )
+    selected_seal_document = _select_issue_driven_seal_document(
+        image_id=image_task.image_id,
+        selection=seal_selection,
+        mineru_document=mineru_document,
+        mineru_output=mineru_output,
+        selected_role=seal_selected_role,
+        selected_document=seal_selected_document,
+        selected_output=seal_selected_output,
+        qwen_document=qwen_document,
+    )
+    if selected_seal_document is not None:
+        final_document = selected_seal_document
     selected_flowchart_document = _select_issue_driven_flowchart_document(
         image_id=image_task.image_id,
         mineru_document=mineru_document,
@@ -176,6 +195,18 @@ def adjudicate_documents(
             consensus=consensus,
         )
     )
+    if selected_seal_document is not None:
+        preferred_label = (
+            seal_selected_label
+            if seal_selected_label is not None
+            else (
+                mineru_label
+                if str(seal_selected_role or "").strip().lower() == "mineru"
+                else preferred_label
+            )
+        )
+        allow_type_override = False
+        allow_graph_override = False
     if _is_issue_driven_flowchart_mode(
         mineru_document=mineru_document,
         qwen_document=qwen_document,
@@ -225,6 +256,7 @@ def adjudicate_documents(
         warnings=_deduplicate(final_document.warnings),
         issues=list(issues or []),
         patch_decisions=list(patch_decisions or []),
+        seal_selection=seal_selection,
     )
 
 
@@ -620,6 +652,7 @@ def _override_stamp_mode_consensus(
     qwen_output: ModelOutput | None,
     issues: list[Issue],
     patch_decisions: list[PatchDecision],
+    seal_selection: SealSelectionDecision | None,
     existing: ConsensusResult | None,
 ) -> ConsensusResult | None:
     labels = [label for label in (mineru_label, qwen_label) if label is not None]
@@ -630,6 +663,32 @@ def _override_stamp_mode_consensus(
         issues=issues,
     ):
         return existing
+
+    if seal_selection is not None:
+        selected_candidate = str(
+            seal_selection.selected_candidate or ""
+        ).strip().lower()
+        if not selected_candidate or selected_candidate == "review":
+            return _build_issue_driven_consensus(
+                image_id=image_id,
+                decision="review",
+                reasons=[
+                    "seal candidate selection requires manual review",
+                    str(seal_selection.reason or "").strip() or "seal_selection_review",
+                ],
+                escalation_reasons=["seal_candidate_selection_review"],
+                existing=existing,
+            )
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="accepted",
+            reasons=[
+                f"seal candidate selected by second-stage adjudication: {selected_candidate}",
+                str(seal_selection.reason or "").strip() or "seal_candidate_selected",
+            ],
+            escalation_reasons=[],
+            existing=existing,
+        )
 
     both_succeeded = bool(
         mineru_output is not None
@@ -685,6 +744,63 @@ def _override_stamp_mode_consensus(
         escalation_reasons=[],
         existing=existing,
     )
+
+
+def _select_issue_driven_seal_document(
+    image_id: str,
+    selection: SealSelectionDecision | None,
+    mineru_document: CanonicalDocument,
+    mineru_output: ModelOutput | None,
+    selected_role: str | None,
+    selected_document: CanonicalDocument | None,
+    selected_output: ModelOutput | None,
+    qwen_document: CanonicalDocument,
+) -> CanonicalDocument | None:
+    if selection is None:
+        return None
+
+    normalized_role = str(selection.selected_candidate or "").strip().lower()
+    if not normalized_role or normalized_role == "review":
+        return None
+
+    if normalized_role == "mineru":
+        source_document = mineru_document
+        source_output = mineru_output
+    else:
+        if selected_document is None or normalized_role != str(selected_role or "").strip().lower():
+            return None
+        source_document = selected_document
+        source_output = selected_output
+
+    selected_document_copy = source_document.model_copy(deep=True)
+    selected_document_copy.raw_metadata = dict(selected_document_copy.raw_metadata or {})
+    selected_document_copy.raw_metadata["selected_output_role"] = normalized_role
+    selected_document_copy.raw_metadata["selected_model_name"] = (
+        source_output.model_name
+        if source_output is not None and str(source_output.model_name or "").strip()
+        else source_document.source
+    )
+    selected_document_copy.raw_metadata["selected_vendor"] = (
+        source_output.vendor
+        if source_output is not None and str(source_output.vendor or "").strip()
+        else source_document.source
+    )
+    selected_document_copy.raw_metadata["selected_source_type"] = (
+        source_output.source_type
+        if source_output is not None and str(source_output.source_type or "").strip()
+        else "final"
+    )
+    selected_document_copy.raw_metadata["selected_by"] = "seal_candidate_selection"
+    selected_document_copy.raw_metadata["selected_image_id"] = image_id
+    if str(selection.reason or "").strip():
+        selected_document_copy.raw_metadata["selection_reason"] = str(
+            selection.reason or ""
+        ).strip()
+    selected_document_copy.warnings = _deduplicate(
+        selected_document_copy.warnings
+        + _collect_document_warnings(mineru_document, qwen_document)
+    )
+    return selected_document_copy
 
 
 def _override_flowchart_mode_consensus(

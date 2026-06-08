@@ -11,6 +11,7 @@ from src.schema import (
     OcrRegion,
     PatchDecision,
     ParsedLabel,
+    SealSelectionDecision,
     StructuredLabel,
 )
 
@@ -1066,3 +1067,183 @@ def test_adjudicator_uses_projected_single_block_view_for_seal_comparison() -> N
     assert artifact.added_qwen_block_count == 0
     assert artifact.final_document.raw_metadata["comparison_view"] == "single_block_projection"
     assert len(artifact.final_document.blocks) == 3
+
+
+def test_adjudicator_selects_auxiliary_seal_candidate_as_final() -> None:
+    image_task = ImageTask(
+        image_id="img-seal-select-aux",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-seal-select-aux",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={"img_path": "data/demo.png", "image_caption": ["上海日轲电子有限公司"]},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+            )
+        ],
+    )
+    paddle_document = CanonicalDocument(
+        document_id="img-seal-select-aux",
+        source="paddle",
+        backend="paddle",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="p1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司\n\n4541982082",
+                content={
+                    "img_path": "data/demo.png",
+                    "image_caption": ["上海日轲电子有限公司\n\n4541982082"],
+                },
+                source="paddle",
+                caption_structured=CaptionStructured(brief="上海日轲电子有限公司"),
+            )
+        ],
+    )
+    paddle_label = ParsedLabel(
+        image_type="seal",
+        caption="上海日轲电子有限公司",
+        caption_structured=CaptionStructured(
+            brief="上海日轲电子有限公司",
+            visual_type="seal",
+            main_subject="上海日轲电子有限公司",
+            confidence="high",
+        ),
+        structured_label=StructuredLabel(
+            kind="none", content="", format="none", source="none"
+        ),
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=CanonicalDocument(
+            document_id="img-seal-select-aux",
+            source="qwen_judge_not_triggered",
+            backend="empty",
+            page_count=1,
+            blocks=[],
+        ),
+        mineru_label=ParsedLabel(image_type="seal", caption="上海日轲电子有限公司"),
+        qwen_label=None,
+        mineru_output=ModelOutput(
+            image_id="img-seal-select-aux",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-seal-select-aux",
+            model_name="qwen-judge",
+            success=True,
+            raw_text='{"selected_candidate":"paddle"}',
+        ),
+        seal_selection=SealSelectionDecision(
+            selected_candidate="paddle",
+            reason="paddle text is more complete",
+            confidence="high",
+        ),
+        seal_selected_role="paddle",
+        seal_selected_document=paddle_document,
+        seal_selected_label=paddle_label,
+        seal_selected_output=ModelOutput(
+            image_id="img-seal-select-aux",
+            model_name="paddle-local",
+            success=True,
+            raw_text="{}",
+            vendor="paddleocr",
+            source_type="local_service",
+        ),
+    )
+
+    assert artifact.final_document.source == "paddle"
+    assert artifact.final_document.raw_metadata["selected_output_role"] == "paddle"
+    assert artifact.final_document.raw_metadata["selected_by"] == "seal_candidate_selection"
+    assert artifact.final_label is not None
+    assert artifact.final_label.image_type == "seal"
+    assert artifact.review_required is False
+    assert artifact.seal_selection is not None
+    assert artifact.seal_selection.selected_candidate == "paddle"
+
+
+def test_adjudicator_marks_review_when_seal_selection_requests_review() -> None:
+    image_task = ImageTask(
+        image_id="img-seal-select-review",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-seal-select-review",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="image",
+                sub_type="seal",
+                bbox=[0, 0, 999, 999],
+                text="上海日轲电子有限公司",
+                content={"img_path": "data/demo.png", "image_caption": ["上海日轲电子有限公司"]},
+                source="mineru",
+            )
+        ],
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=CanonicalDocument(
+            document_id="img-seal-select-review",
+            source="qwen_judge_not_triggered",
+            backend="empty",
+            page_count=1,
+            blocks=[],
+        ),
+        mineru_label=ParsedLabel(image_type="seal", caption="上海日轲电子有限公司"),
+        qwen_label=None,
+        mineru_output=ModelOutput(
+            image_id="img-seal-select-review",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-seal-select-review",
+            model_name="qwen-judge",
+            success=True,
+            raw_text='{"selected_candidate":"review"}',
+        ),
+        seal_selection=SealSelectionDecision(
+            selected_candidate="review",
+            reason="all candidates are unreliable",
+            confidence="low",
+        ),
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "review"
+    assert artifact.review_required is True
+    assert artifact.final_document.source == "adjudicated"
