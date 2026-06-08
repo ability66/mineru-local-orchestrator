@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 from time import sleep
+from typing import Any
 
 from src.clients import BaseLocalClient
 from src.normalizer import _extract_first_json_object, _strip_code_fences
-from src.pipeline.flowchart_utils import normalize_mermaid_text
+from src.pipeline.flowchart_utils import (
+    flowchart_graph_from_mermaid,
+    looks_like_mermaid,
+    normalize_mermaid_text,
+)
 from src.schema import (
     ImageTask,
     Issue,
@@ -121,6 +126,12 @@ def _parse_patch_decision(issue: Issue, output: ModelOutput | None) -> PatchDeci
     decision = _normalize_decision(payload.get("decision"))
     patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else {}
     reason = str(payload.get("reason", "") or "").strip()
+    decision, patch, reason = _validate_patch_decision(
+        issue=issue,
+        decision=decision,
+        patch=patch,
+        reason=reason,
+    )
     return PatchDecision(
         issue_id=str(payload.get("issue_id") or issue.issue_id),
         target_block_id=str(
@@ -228,8 +239,16 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
         "current_block": _compact_block_summary(issue.mineru_block),
         "reference_block": _compact_block_summary(issue.qwen_block),
         "graph_diff": _compact_graph_diff(graph_diff),
-        "current_excerpt": _build_mermaid_excerpt(current_mermaid, focus_terms),
-        "reference_excerpt": _build_mermaid_excerpt(reference_mermaid, focus_terms),
+        "current_excerpt": _build_mermaid_excerpt(
+            current_mermaid,
+            focus_terms,
+            review_mode=review_mode,
+        ),
+        "reference_excerpt": _build_mermaid_excerpt(
+            reference_mermaid,
+            focus_terms,
+            review_mode=review_mode,
+        ),
         "thinking_mode": "disabled_requested_for_flowchart_adjudication",
     }
     if ocr_reference_texts:
@@ -319,7 +338,11 @@ def _collect_flowchart_focus_terms(graph_diff: object) -> list[str]:
     return _deduplicate_texts(terms)
 
 
-def _build_mermaid_excerpt(mermaid: str, focus_terms: list[str]) -> str:
+def _build_mermaid_excerpt(
+    mermaid: str,
+    focus_terms: list[str],
+    review_mode: str = "disagreement",
+) -> str:
     text = normalize_mermaid_text(mermaid)
     if not text:
         return ""
@@ -329,6 +352,9 @@ def _build_mermaid_excerpt(mermaid: str, focus_terms: list[str]) -> str:
 
     header = lines[0].strip()
     body = lines[1:]
+    if len(body) <= 24:
+        return text
+
     selected_indexes: set[int] = set()
 
     lowered_terms = [term.lower() for term in focus_terms if term.strip()]
@@ -336,13 +362,151 @@ def _build_mermaid_excerpt(mermaid: str, focus_terms: list[str]) -> str:
         for index, line in enumerate(body):
             lowered_line = line.lower()
             if any(term in lowered_line for term in lowered_terms):
-                selected_indexes.add(index)
+                for candidate in range(max(0, index - 1), min(len(body), index + 2)):
+                    selected_indexes.add(candidate)
     if not selected_indexes:
-        selected_indexes.update(range(min(len(body), 12)))
+        selected_indexes.update(range(min(len(body), 8)))
+        selected_indexes.update(range(max(0, len(body) - 8), len(body)))
+    elif str(review_mode or "").strip().lower() == "disagreement":
+        selected_indexes.update(range(min(len(body), 2)))
+        selected_indexes.update(range(max(0, len(body) - 2), len(body)))
 
-    selected_lines = [body[index] for index in sorted(selected_indexes)[:16]]
+    selected_lines = _select_excerpt_lines(
+        body=body,
+        selected_indexes=selected_indexes,
+        max_lines=20,
+    )
     excerpt_lines = [header] + selected_lines if header else selected_lines
     return "\n".join(line for line in excerpt_lines if str(line).strip())
+
+
+def _select_excerpt_lines(
+    body: list[str],
+    selected_indexes: set[int],
+    max_lines: int,
+) -> list[str]:
+    ordered_indexes = sorted(
+        index for index in selected_indexes if 0 <= index < len(body)
+    )
+    if len(ordered_indexes) <= max_lines:
+        return [body[index] for index in ordered_indexes]
+
+    pinned_indexes = sorted(
+        {
+            *range(min(len(body), 2)),
+            *range(max(0, len(body) - 2), len(body)),
+        }
+    )
+    remaining_slots = max(0, max_lines - len(pinned_indexes))
+    middle_indexes = [
+        index for index in ordered_indexes if index not in set(pinned_indexes)
+    ]
+    trimmed_middle = middle_indexes[:remaining_slots]
+    final_indexes = sorted({*pinned_indexes, *trimmed_middle})
+    return [body[index] for index in final_indexes]
+
+
+def _validate_patch_decision(
+    issue: Issue,
+    decision: str,
+    patch: dict[str, Any],
+    reason: str,
+) -> tuple[str, dict[str, Any], str]:
+    if issue.issue_type != "flowchart_graph_conflict":
+        return decision, patch, reason
+    if decision != "merge":
+        return decision, patch, reason
+
+    candidate_payload = (
+        issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
+    )
+    review_mode = str(candidate_payload.get("review_mode", "") or "disagreement")
+    if review_mode.strip().lower() != "disagreement":
+        return decision, patch, reason
+
+    content_payload = patch.get("content") if isinstance(patch.get("content"), dict) else {}
+    proposed_mermaid = normalize_mermaid_text(
+        str(content_payload.get("content", "") or "")
+    )
+    if not looks_like_mermaid(proposed_mermaid):
+        return "keep_mineru", {}, "llm_patch_invalid_flowchart_merge"
+
+    current_mermaid = normalize_mermaid_text(
+        str(candidate_payload.get("current_mermaid", "") or "")
+    )
+    reference_mermaid = normalize_mermaid_text(
+        str(candidate_payload.get("reference_mermaid", "") or "")
+    )
+    evidence_nodes, evidence_edges = _merge_flowchart_signatures(
+        current_mermaid,
+        reference_mermaid,
+    )
+    proposed_nodes, proposed_edges = _collect_flowchart_signatures(proposed_mermaid)
+    novel_nodes = proposed_nodes - evidence_nodes
+    novel_edges = proposed_edges - evidence_edges
+    if len(novel_nodes) > 1 or len(novel_edges) > 2:
+        return "keep_mineru", {}, "llm_patch_overreach_on_disagreement"
+    return decision, patch, reason
+
+
+def _merge_flowchart_signatures(*mermaid_texts: str) -> tuple[set[str], set[str]]:
+    node_signatures: set[str] = set()
+    edge_signatures: set[str] = set()
+    for mermaid in mermaid_texts:
+        nodes, edges = _collect_flowchart_signatures(mermaid)
+        node_signatures.update(nodes)
+        edge_signatures.update(edges)
+    return node_signatures, edge_signatures
+
+
+def _collect_flowchart_signatures(mermaid: str) -> tuple[set[str], set[str]]:
+    graph_payload = flowchart_graph_from_mermaid(mermaid)
+    if not isinstance(graph_payload, dict):
+        return set(), set()
+
+    node_id_to_signature: dict[str, str] = {}
+    node_signatures: set[str] = set()
+    for item in graph_payload.get("nodes", []):
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id", "") or "").strip()
+        node_text = str(item.get("text", "") or "").strip()
+        node_signature = _normalize_graph_signature_text(node_text) or (
+            f"id:{_normalize_graph_signature_text(node_id)}"
+            if node_id
+            else ""
+        )
+        if not node_signature:
+            continue
+        node_signatures.add(node_signature)
+        if node_id:
+            node_id_to_signature[node_id] = node_signature
+
+    edge_signatures: set[str] = set()
+    for item in graph_payload.get("edges", []):
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source", "") or "").strip()
+        target_id = str(item.get("target", "") or "").strip()
+        if not source_id or not target_id:
+            continue
+        source_signature = node_id_to_signature.get(
+            source_id,
+            f"id:{_normalize_graph_signature_text(source_id)}",
+        )
+        target_signature = node_id_to_signature.get(
+            target_id,
+            f"id:{_normalize_graph_signature_text(target_id)}",
+        )
+        edge_label = _normalize_graph_signature_text(item.get("label"))
+        edge_signatures.add(
+            f"{source_signature}|{edge_label}|{target_signature}"
+        )
+    return node_signatures, edge_signatures
+
+
+def _normalize_graph_signature_text(value: object) -> str:
+    return "".join(str(value or "").split()).lower()
 
 
 def _as_text_list(value: object) -> list[str]:

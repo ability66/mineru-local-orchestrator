@@ -1483,21 +1483,100 @@ def _parse_node_token(
         return None
 
     raw_id = match.group("id")
-    if match.group("square") is not None:
+    wrapper_match = _consume_node_wrapper(segment, match.end("id"))
+    if wrapper_match is not None:
+        raw_text, shape, end_position = wrapper_match
+    elif match.group("square") is not None:
         raw_text = match.group("square")
         shape = "rectangle"
+        end_position = match.end()
     elif match.group("round") is not None:
         raw_text = match.group("round")
         shape = "ellipse"
+        end_position = match.end()
     elif match.group("curly") is not None:
         raw_text = match.group("curly")
         shape = "diamond"
+        end_position = match.end()
     else:
         raw_text = raw_id
         shape = "unknown"
+        end_position = match.end()
 
     text = _strip_mermaid_wrappers(str(raw_text or "").strip()) or raw_id
-    return raw_id, text, shape, match.end()
+    return raw_id, text, shape, end_position
+
+
+def _consume_node_wrapper(
+    segment: str,
+    position: int,
+) -> tuple[str, str, int] | None:
+    while position < len(segment) and segment[position].isspace():
+        position += 1
+    if position >= len(segment):
+        return None
+
+    opening = segment[position]
+    if opening == "[":
+        return _consume_wrapped_text(
+            segment=segment,
+            position=position,
+            opening="[",
+            closing="]",
+            shape="rectangle",
+        )
+    if opening == "{":
+        return _consume_wrapped_text(
+            segment=segment,
+            position=position,
+            opening="{",
+            closing="}",
+            shape="diamond",
+        )
+    if opening == "(":
+        return _consume_wrapped_text(
+            segment=segment,
+            position=position,
+            opening="(",
+            closing=")",
+            shape="ellipse",
+        )
+    return None
+
+
+def _consume_wrapped_text(
+    segment: str,
+    position: int,
+    opening: str,
+    closing: str,
+    shape: str,
+) -> tuple[str, str, int] | None:
+    if position >= len(segment) or segment[position] != opening:
+        return None
+
+    cursor = position + 1
+    inner: list[str] = []
+    depth = 1
+    in_double_quote = False
+    in_single_quote = False
+
+    while cursor < len(segment):
+        char = segment[cursor]
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+        elif char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+
+        if not in_double_quote and not in_single_quote:
+            if char == opening:
+                depth += 1
+            elif char == closing:
+                depth -= 1
+                if depth == 0:
+                    return "".join(inner).strip(), shape, cursor + 1
+        inner.append(char)
+        cursor += 1
+    return None
 
 
 def _parse_arrow(segment: str, position: int) -> tuple[str, int] | None:
@@ -1526,7 +1605,20 @@ def _register_mermaid_node(
         return
 
     existing = node_lookup[raw_id]
-    if _visible_text_score(text) > _visible_text_score(existing["text"]):
+    incoming_text = text or raw_id
+    if (
+        incoming_text != raw_id
+        and (
+            existing["text"] == raw_id
+            or _visible_text_score(incoming_text) > _visible_text_score(existing["text"])
+        )
+    ):
+        existing["text"] = incoming_text
+    elif (
+        incoming_text == raw_id
+        and not existing["text"].strip()
+        and raw_id.strip()
+    ):
         existing["text"] = text or raw_id
     if existing["shape"] == "unknown" and shape != "unknown":
         existing["shape"] = shape

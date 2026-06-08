@@ -381,3 +381,102 @@ def test_detect_flowchart_second_pass_issue_without_qwen_reference() -> None:
     prompt_payload = build_issue_prompt_payload(issues[0], "flowchart_adjudication")
     assert prompt_payload["review_mode"] == "second_pass"
     assert prompt_payload["reference_excerpt"] == ""
+
+
+def test_detect_flowchart_issue_ignores_node_id_alias_when_visible_text_matches() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-alias",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_mermaid = (
+        'flowchart TD\n'
+        'Start["家族史和/或高危因素"] -->|有| D["遗传咨询"]\n'
+        'D --> End["是否可以进行增强CT?"]'
+    )
+    qwen_mermaid = (
+        'flowchart TD\n'
+        'Risk["家族史和/或高危因素"] -->|有| Genetic["遗传咨询"]\n'
+        'Genetic --> CT_Q["是否可以进行增强CT?"]'
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-alias",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": mineru_mermaid},
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content=mineru_mermaid,
+                    format="mermaid",
+                    source="mineru",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-alias",
+        source="qwen",
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": qwen_mermaid},
+                source="qwen",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content=qwen_mermaid,
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content=mineru_mermaid,
+            format="mermaid",
+            source="mineru",
+        ),
+    )
+    qwen_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content=qwen_mermaid,
+            format="mermaid",
+            source="model",
+        ),
+    )
+
+    issues = detect_flowchart_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+    )
+
+    assert issues == []

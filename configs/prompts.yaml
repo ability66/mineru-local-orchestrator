@@ -137,6 +137,9 @@ qwen_flowchart_adjudication_prompt: |
   - 如果 `review_mode=second_pass`，表示这是流程图二次识别，不是双方对比
   - 在 `review_mode=second_pass` 下，如果你能识别出更完整/更准确的流程图，直接使用 `merge` 并给出完整 Mermaid
   - 在 `review_mode=second_pass` 下，如果当前 Mermaid 已经足够好，使用 `keep_mineru`
+  - 如果 `review_mode=disagreement`，表示你拿到的是围绕冲突点裁剪后的局部证据，不代表整张图的全部内容
+  - 在 `review_mode=disagreement` 下，不要因为 excerpt 没包含某些远端分支，就判断整张图“不完整”
+  - 在 `review_mode=disagreement` 下，只允许修正当前冲突直接相关的节点、连边、标签；不要重建整张图，不要补写 excerpt 之外缺乏证据的远端结构
   - 只看冲突项，不要重述整张图
   - 默认保留 MinerU 的块位置和页结构
   - 如果当前 Mermaid 基本正确，使用 `keep_mineru`

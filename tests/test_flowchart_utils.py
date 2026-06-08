@@ -31,3 +31,15 @@ def test_looks_like_mermaid_rejects_plain_text_and_single_tokens() -> None:
     assert not looks_like_mermaid("A")
     assert not looks_like_mermaid("N001")
     assert looks_like_mermaid("A-->B")
+
+
+def test_flowchart_graph_from_mermaid_preserves_visible_text_for_quoted_nodes() -> None:
+    graph = flowchart_graph_from_mermaid(
+        'flowchart TD\nRisk["家族史和/或高危因素"] -->|有| Genetic["遗传咨询"]\n'
+        'Genetic --> CT_Q["是否可以进行增强CT?"]'
+    )
+
+    assert graph is not None
+    node_texts = {node["text"] for node in graph["nodes"]}
+    assert "遗传咨询" in node_texts
+    assert "是否可以进行增强CT?" in node_texts
