@@ -716,21 +716,22 @@ def _build_panel(
             ),
         )
 
-    mermaid_text = _extract_mermaid_text(blocks=blocks, label_payload=label_payload)
-    if mermaid_text:
-        return ComparePanel(
-            title=title,
-            source_path=source_path,
-            image_type=image_type or "flowchart",
-            caption=caption,
-            render_kind="mermaid",
-            render_text=mermaid_text,
-            note="；".join(
-                item
-                for item in ["直接从结构化内容提取 Mermaid", extra_note]
-                if item
-            ),
-        )
+    if _has_flowchart_render_signal(blocks=blocks, label_payload=label_payload):
+        mermaid_text = _extract_mermaid_text(blocks=blocks, label_payload=label_payload)
+        if mermaid_text:
+            return ComparePanel(
+                title=title,
+                source_path=source_path,
+                image_type=image_type or "flowchart",
+                caption=caption,
+                render_kind="mermaid",
+                render_text=mermaid_text,
+                note="；".join(
+                    item
+                    for item in ["直接从结构化内容提取 Mermaid", extra_note]
+                    if item
+                ),
+            )
 
     table_markdown = _extract_table_markdown(blocks=blocks, label_payload=label_payload)
     if table_markdown:
@@ -927,6 +928,34 @@ def _extract_mermaid_text(blocks: list[dict[str, Any]], label_payload: Any) -> s
             if looks_like_mermaid(normalized):
                 return normalized
     return ""
+
+
+def _has_flowchart_render_signal(blocks: list[dict[str, Any]], label_payload: Any) -> bool:
+    if isinstance(label_payload, dict):
+        image_type = str(label_payload.get("image_type", "") or "").strip().lower()
+        if image_type == "flowchart":
+            return True
+        structured = label_payload.get("structured_label")
+        if (
+            isinstance(structured, dict)
+            and str(structured.get("kind", "") or "").strip().lower() == "mermaid"
+        ):
+            return True
+        if isinstance(label_payload.get("flowchart_graph"), dict):
+            return True
+
+    for block in blocks:
+        if str(block.get("sub_type", "") or "").strip().lower() == "flowchart":
+            return True
+        structured = block.get("structured_label")
+        if (
+            isinstance(structured, dict)
+            and str(structured.get("kind", "") or "").strip().lower() == "mermaid"
+        ):
+            return True
+        if isinstance(block.get("flowchart_graph"), dict):
+            return True
+    return False
 
 
 def _extract_textual_content(blocks: list[dict[str, Any]], label_payload: Any) -> str:

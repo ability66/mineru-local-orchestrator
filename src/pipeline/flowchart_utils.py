@@ -6,6 +6,10 @@ from typing import Any
 
 _BR_TAG_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
 _EDGE_LABEL_RE = re.compile(r"\|(?P<label>[^|\n]+)\|")
+_FLOWCHART_HEADER_RE = re.compile(
+    r"(?im)^\s*(flowchart|graph)\s+(TD|TB|BT|RL|LR)\b"
+)
+_FLOWCHART_EDGE_RE = re.compile(r"(-->|-\.->|==>)")
 
 
 def normalize_mermaid_text(text: str) -> str:
@@ -21,6 +25,8 @@ def looks_like_mermaid(content: str) -> bool:
     text = normalize_mermaid_text(content)
     if not text:
         return False
+    if not _has_mermaid_flow_signal(text):
+        return False
 
     from src.graph_fusion import extract_weak_flowchart_graph_from_mermaid
 
@@ -35,6 +41,12 @@ def flowchart_graph_from_mermaid(content: str) -> dict[str, Any] | None:
     from src.graph_fusion import extract_weak_flowchart_graph_from_mermaid
 
     return extract_weak_flowchart_graph_from_mermaid(text)
+
+
+def _has_mermaid_flow_signal(text: str) -> bool:
+    if _FLOWCHART_HEADER_RE.search(text):
+        return True
+    return _FLOWCHART_EDGE_RE.search(text) is not None
 
 
 def build_flowchart_graph_payload(graph_fusion_result: Any) -> dict[str, Any] | None:

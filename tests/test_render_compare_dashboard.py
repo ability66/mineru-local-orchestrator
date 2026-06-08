@@ -136,3 +136,82 @@ def test_generate_compare_dashboard_uses_final_payload_subtype_for_seal_records(
     html = html_path.read_text(encoding="utf-8")
     assert ">印章<" in html
     assert 'data-record-type="seal"' in html
+
+
+def test_generate_compare_dashboard_does_not_render_seal_text_as_mermaid(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+
+    data_dir = tmp_path / "data" / "stamp"
+    data_dir.mkdir(parents=True)
+    (data_dir / "circle_Aug09869.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "seal",
+                    "bbox": [0, 0, 999, 999],
+                    "text": "上海日轲电子有限公司",
+                    "content": {
+                        "image_caption": ["上海日轲电子有限公司"],
+                        "img_path": str(data_dir / "circle_Aug09869.png"),
+                    },
+                    "ocr_regions": [
+                        {"role": "seal", "text": "上海日轲电子有限公司", "confidence": "medium"}
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "bbox": [194, 330, 543, 384],
+                    "text": "4541982082",
+                    "content": {
+                        "paragraph_content": [{"type": "text", "content": "4541982082"}]
+                    },
+                },
+                {
+                    "type": "image",
+                    "sub_type": "natural_image",
+                    "bbox": [361, 390, 641, 644],
+                    "text": "Red hammer and sickle symbol on white background (no text or numbers)",
+                    "content": {
+                        "image_caption": [
+                            "Red hammer and sickle symbol on white background (no text or numbers)"
+                        ],
+                        "img_path": str(data_dir / "circle_Aug09869.png"),
+                    },
+                },
+            ]
+        },
+        "derived_label": {
+            "image_type": "seal",
+            "caption": "上海日轲电子有限公司",
+            "structured_label": {
+                "kind": "none",
+                "content": "",
+                "format": "none",
+                "source": "none",
+            },
+            "flowchart_graph": None,
+            "ocr_regions": [
+                {"role": "seal", "text": "上海日轲电子有限公司", "confidence": "medium"}
+            ],
+        },
+    }
+
+    (output_dir / "normalized" / "mineru" / "circle_Aug09869.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">印章<" in html
+    assert "4541982082" in html
+    assert 'data-mermaid-b64="' not in html

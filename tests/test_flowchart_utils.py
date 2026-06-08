@@ -23,3 +23,11 @@ flowchart TD
     assert "ChestAbdCT -->|发现囊性病变 / 或CT无法确定| CT" in normalized
     assert looks_like_mermaid(raw_mermaid)
     assert flowchart_graph_from_mermaid(raw_mermaid) is not None
+
+
+def test_looks_like_mermaid_rejects_plain_text_and_single_tokens() -> None:
+    assert not looks_like_mermaid("4541982082")
+    assert not looks_like_mermaid("Red hammer and sickle symbol on white background (no text or numbers)")
+    assert not looks_like_mermaid("A")
+    assert not looks_like_mermaid("N001")
+    assert looks_like_mermaid("A-->B")
