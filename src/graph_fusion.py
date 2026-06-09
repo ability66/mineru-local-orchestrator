@@ -117,7 +117,8 @@ def extract_weak_flowchart_graph_from_mermaid(content: str) -> dict[str, Any] | 
     processed_content = _normalize_mermaid_content(content)
     node_lookup: dict[str, dict[str, str]] = {}
     node_order: list[str] = []
-    raw_edges: list[tuple[str, str, str]] = []
+    raw_edges: list[tuple[str, str, str, str]] = []
+    subgraph_stack: list[str] = []
 
     for line_number, raw_line in enumerate(processed_content.splitlines(), start=1):
         line = _clean_mermaid_line(raw_line)
@@ -133,25 +134,47 @@ def extract_weak_flowchart_graph_from_mermaid(content: str) -> dict[str, Any] | 
         for segment in _split_mermaid_segments(line):
             if not segment:
                 continue
+            lowered_segment = segment.strip().lower()
+            if lowered_segment == "end":
+                if subgraph_stack:
+                    subgraph_stack.pop()
+                continue
+            if lowered_segment.startswith("subgraph "):
+                subgraph_label = _parse_subgraph_label(segment)
+                subgraph_stack.append(
+                    subgraph_label or f"subgraph_{len(subgraph_stack) + 1}"
+                )
+                continue
             parsed_edges = _parse_segment_edges(
                 segment=segment,
                 node_lookup=node_lookup,
                 node_order=node_order,
+                parent_path="/".join(subgraph_stack),
             )
             if parsed_edges:
                 raw_edges.extend(parsed_edges)
                 continue
 
             node_token = _parse_node_token(segment, 0)
-            if node_token is None or node_token[3] != len(segment):
+            if node_token is None or node_token[5] != len(segment):
                 continue
-            raw_id, raw_text, shape, _ = node_token
+            (
+                raw_id,
+                raw_text,
+                shape,
+                class_names,
+                preserve_empty_text,
+                _end_position,
+            ) = node_token
             _register_mermaid_node(
                 node_lookup=node_lookup,
                 node_order=node_order,
                 raw_id=raw_id,
                 text=raw_text,
                 shape=shape,
+                class_names=class_names,
+                preserve_empty_text=preserve_empty_text,
+                parent_path="/".join(subgraph_stack),
             )
 
     if not node_order:
@@ -163,22 +186,33 @@ def extract_weak_flowchart_graph_from_mermaid(content: str) -> dict[str, Any] | 
     nodes = [
         {
             "node_id": raw_to_normalized[raw_id],
+            "raw_node_id": raw_id,
             "order_index": index,
             "row_index": None,
             "col_index": None,
             "bbox_hint": None,
             "shape": node_lookup[raw_id]["shape"],
             "text": node_lookup[raw_id]["text"],
+            "parent": str(node_lookup[raw_id].get("parent", "") or "").strip(),
         }
         for index, raw_id in enumerate(node_order, start=1)
     ]
     edges: list[dict[str, Any]] = []
-    for raw_source, raw_target, label in raw_edges:
+    for raw_source, raw_target, label, edge_type in raw_edges:
         source = raw_to_normalized.get(raw_source)
         target = raw_to_normalized.get(raw_target)
         if source is None or target is None:
             continue
-        edges.append({"source": source, "target": target, "label": label})
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "label": label,
+                "edge_type": edge_type,
+                "source_raw_id": raw_source,
+                "target_raw_id": raw_target,
+            }
+        )
 
     return {
         "node_order_rule": "mermaid_appearance_order",
@@ -1436,7 +1470,8 @@ def _parse_segment_edges(
     segment: str,
     node_lookup: dict[str, dict[str, Any]],
     node_order: list[str],
-) -> list[tuple[str, str, str]]:
+    parent_path: str,
+) -> list[tuple[str, str, str, str]]:
     first = _parse_node_token(segment, 0)
     if first is None:
         return []
@@ -1450,15 +1485,16 @@ def _parse_segment_edges(
         shape=source_shape,
         class_names=source_classes,
         preserve_empty_text=source_preserve_empty,
+        parent_path=parent_path,
     )
     previous_id = source_id
-    edges: list[tuple[str, str, str]] = []
+    edges: list[tuple[str, str, str, str]] = []
 
     while True:
         arrow_match = _parse_arrow(segment, position)
         if arrow_match is None:
             break
-        label, position = arrow_match
+        label, edge_type, position = arrow_match
         next_node = _parse_node_token(segment, position)
         if next_node is None:
             return edges
@@ -1478,8 +1514,9 @@ def _parse_segment_edges(
             shape=target_shape,
             class_names=target_classes,
             preserve_empty_text=target_preserve_empty,
+            parent_path=parent_path,
         )
-        edges.append((previous_id, target_id, label))
+        edges.append((previous_id, target_id, label, edge_type))
         previous_id = target_id
     return edges
 
@@ -1617,13 +1654,19 @@ def _consume_wrapped_text(
     return None
 
 
-def _parse_arrow(segment: str, position: int) -> tuple[str, int] | None:
-    for pattern in (PIPE_ARROW_RE, TEXT_ARROW_RE, DOTTED_ARROW_RE, THICK_ARROW_RE, PLAIN_ARROW_RE):
+def _parse_arrow(segment: str, position: int) -> tuple[str, str, int] | None:
+    for pattern, edge_type in (
+        (PIPE_ARROW_RE, "-->"),
+        (TEXT_ARROW_RE, "--text-->"),
+        (DOTTED_ARROW_RE, "-.->"),
+        (THICK_ARROW_RE, "==>"),
+        (PLAIN_ARROW_RE, "-->"),
+    ):
         match = pattern.match(segment, position)
         if match is None:
             continue
         label = str(match.groupdict().get("label", "") or "").strip()
-        return label, match.end()
+        return label, edge_type, match.end()
     return None
 
 
@@ -1635,6 +1678,7 @@ def _register_mermaid_node(
     shape: str,
     class_names: list[str],
     preserve_empty_text: bool,
+    parent_path: str = "",
 ) -> None:
     normalized_classes = [
         str(item).strip() for item in class_names if str(item).strip()
@@ -1647,6 +1691,7 @@ def _register_mermaid_node(
             "class_names": normalized_classes,
             "hidden": hidden,
             "preserve_empty_text": preserve_empty_text,
+            "parent": str(parent_path or "").strip(),
         }
         node_order.append(raw_id)
         return
@@ -1682,6 +1727,28 @@ def _register_mermaid_node(
     if existing["shape"] == "unknown" and shape != "unknown":
         existing["shape"] = shape
     existing["preserve_empty_text"] = bool(existing.get("preserve_empty_text")) or preserve_empty_text
+    if not str(existing.get("parent", "") or "").strip() and str(parent_path or "").strip():
+        existing["parent"] = str(parent_path or "").strip()
+
+
+def _parse_subgraph_label(segment: str) -> str:
+    remainder = re.sub(r"(?i)^subgraph\b", "", segment, count=1).strip()
+    if not remainder:
+        return ""
+    if "[" in remainder and "]" in remainder:
+        left = remainder.find("[")
+        right = remainder.rfind("]")
+        if 0 <= left < right:
+            candidate = remainder[left + 1 : right].strip()
+            normalized = _strip_mermaid_wrappers(candidate)
+            if normalized:
+                return normalized
+    parts = remainder.split(None, 1)
+    if len(parts) == 2:
+        normalized = _strip_mermaid_wrappers(parts[1].strip())
+        if normalized:
+            return normalized
+    return _strip_mermaid_wrappers(remainder)
 
 
 def _strip_mermaid_wrappers(text: str) -> str:

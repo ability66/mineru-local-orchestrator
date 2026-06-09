@@ -5,6 +5,7 @@ import unicodedata
 from collections import Counter
 from itertools import combinations
 
+from src.pipeline.flowchart_utils import score_mermaid_similarity
 from src.schema import ModelOutput, ParsedLabel
 from src.seal_utils import is_stamp_mode, primary_seal_signature
 
@@ -146,18 +147,38 @@ def _structure_agreement(labels: list[ParsedLabel]) -> float:
         return min(1.0, 0.65 + 0.35 * majority_ratio)
 
     if majority_kind == "mermaid":
-        prefix_score = sum("flowchart TD" in content for content in contents) / max(
-            len(contents), 1
+        if not contents:
+            return 0.0
+        if len(contents) == 1:
+            single_metrics = score_mermaid_similarity(contents[0], contents[0])
+            syntax_bonus = 0.1 if int(single_metrics.get("syntax_valid", 0)) else 0.0
+            return max(0.0, min(1.0, 0.4 + syntax_bonus))
+
+        pairwise_scores = [
+            float(
+                score_mermaid_similarity(left, right).get("mermaid_score", 0.0)
+            )
+            for left, right in combinations(contents, 2)
+        ]
+        graph_structure_scores = [
+            float(
+                score_mermaid_similarity(left, right).get("graph_structure_sim", 0.0)
+            )
+            for left, right in combinations(contents, 2)
+        ]
+        mermaid_score = (
+            sum(pairwise_scores) / len(pairwise_scores) if pairwise_scores else 0.0
         )
-        arrow_counts = [_count_mermaid_arrows(content) for content in contents if content]
-        arrow_score = _range_similarity(arrow_counts)
-        keyword_score = _average_pairwise(contents, _keyword_similarity)
+        graph_structure_score = (
+            sum(graph_structure_scores) / len(graph_structure_scores)
+            if graph_structure_scores
+            else 0.0
+        )
         empty_penalty = 0.6 if any(not content for content in contents) else 1.0
         score = (
-            0.4 * majority_ratio
-            + 0.2 * prefix_score
-            + 0.2 * arrow_score
-            + 0.2 * keyword_score
+            0.15 * majority_ratio
+            + 0.25 * mermaid_score
+            + 0.60 * graph_structure_score
         )
         return max(0.0, min(1.0, score * empty_penalty))
 

@@ -5,6 +5,8 @@ from src.pipeline.flowchart_utils import (
     flowchart_graph_from_mermaid,
     looks_like_mermaid,
     normalize_mermaid_text,
+    score_flowchart_graph_similarity,
+    score_mermaid_similarity,
 )
 
 
@@ -93,3 +95,67 @@ classDef hidden display:none;"""
     )
 
     assert diffs == []
+
+
+def test_diff_flowchart_graphs_detects_duplicate_label_collapse_by_context() -> None:
+    current = """flowchart TD
+Start1["发起"] --> Review["审批"]
+Start2["复核"] --> Review
+Review --> Pass["通过"]
+Review --> Reject["拒绝"]"""
+    reference = """flowchart TD
+Start1["发起"] --> Review1["审批"]
+Review1 --> Pass["通过"]
+Start2["复核"] --> Review2["审批"]
+Review2 --> Reject["拒绝"]"""
+
+    diffs = diff_flowchart_graphs(
+        flowchart_graph_from_mermaid(current),
+        flowchart_graph_from_mermaid(reference),
+    )
+    metrics = score_flowchart_graph_similarity(
+        flowchart_graph_from_mermaid(current),
+        flowchart_graph_from_mermaid(reference),
+    )
+
+    assert any(diff["diff_kind"] == "missing_node" for diff in diffs)
+    assert metrics["duplicate_collapse_penalty"] > 0
+    assert metrics["graph_structure_sim"] < 1.0
+
+
+def test_score_flowchart_graph_similarity_penalizes_duplicate_label_splitting() -> None:
+    current = """flowchart TD
+Start["开始"] --> Review1["审批"]
+Start --> Review2["审批"]
+Review1 --> Pass["通过"]
+Review2 --> Pass"""
+    reference = """flowchart TD
+Start["开始"] --> Review["审批"]
+Review --> Pass["通过"]"""
+
+    metrics = score_flowchart_graph_similarity(
+        flowchart_graph_from_mermaid(current),
+        flowchart_graph_from_mermaid(reference),
+    )
+
+    assert metrics["node_split_penalty"] > 0
+    assert metrics["graph_structure_sim"] < 1.0
+
+
+def test_score_mermaid_similarity_prefers_structure_over_label_identity() -> None:
+    current = """flowchart TD
+Start1["发起"] --> Review["审批"]
+Start2["复核"] --> Review
+Review --> Pass["通过"]
+Review --> Reject["拒绝"]"""
+    reference = """flowchart TD
+Start1["发起"] --> Review1["审批"]
+Review1 --> Pass["通过"]
+Start2["复核"] --> Review2["审批"]
+Review2 --> Reject["拒绝"]"""
+
+    metrics = score_mermaid_similarity(current, reference)
+
+    assert metrics["syntax_valid"] == 1
+    assert metrics["graph_structure_sim"] < 1.0
+    assert metrics["mermaid_score"] < 1.0
