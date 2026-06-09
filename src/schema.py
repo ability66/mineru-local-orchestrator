@@ -79,7 +79,7 @@ ImageType = Literal[
 ]
 
 StructuredKind = Literal["none", "table", "mermaid", "text"]
-StructuredFormat = Literal["markdown", "csv", "html", "mermaid", "plain_text", "none"]
+StructuredFormat = Literal["markdown", "csv", "mermaid", "plain_text", "none"]
 StructuredSource = Literal["model", "fused_graph", "mineru", "none"]
 DecisionType = Literal["accepted", "review", "failed"]
 CaptionSource = Literal["generated"]
@@ -93,7 +93,7 @@ IssueType = Literal[
     "seal_unmatched_qwen_candidate",
     "flowchart_graph_conflict",
     "flowchart_candidate_review",
-    "html_table_conflict",
+    "table_conflict",
 ]
 PatchDecisionType = Literal[
     "keep_mineru",

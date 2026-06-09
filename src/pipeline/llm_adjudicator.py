@@ -208,8 +208,8 @@ def build_issue_prompt_payload(issue: Issue, mode: str) -> dict[str, object]:
     normalized_mode = str(mode or "").strip().lower()
     if normalized_mode == "flowchart_adjudication":
         return _build_flowchart_prompt_payload(issue)
-    if normalized_mode == "html_table_adjudication":
-        return _build_html_table_prompt_payload(issue)
+    if normalized_mode == "table_adjudication":
+        return _build_table_prompt_payload(issue)
     return issue.model_dump()
 
 
@@ -263,7 +263,7 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
     return payload
 
 
-def _build_html_table_prompt_payload(issue: Issue) -> dict[str, object]:
+def _build_table_prompt_payload(issue: Issue) -> dict[str, object]:
     candidate_payload = (
         issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
     )
@@ -272,8 +272,8 @@ def _build_html_table_prompt_payload(issue: Issue) -> dict[str, object]:
     pairwise_matrix = candidate_payload.get("pairwise_matrix")
     consensus_diagnostics = candidate_payload.get("consensus_diagnostics")
     review_mode = str(
-        candidate_payload.get("review_mode", "") or "html_table_disagreement"
-    ).strip() or "html_table_disagreement"
+        candidate_payload.get("review_mode", "") or "table_disagreement"
+    ).strip() or "table_disagreement"
     payload = {
         "issue_id": issue.issue_id,
         "issue_type": issue.issue_type,
@@ -291,7 +291,7 @@ def _build_html_table_prompt_payload(issue: Issue) -> dict[str, object]:
             if isinstance(consensus_diagnostics, dict)
             else {}
         ),
-        "thinking_mode": "disabled_requested_for_html_table_adjudication",
+        "thinking_mode": "disabled_requested_for_table_adjudication",
     }
     for key in (
         "branch_mode",

@@ -129,13 +129,10 @@ def test_apply_patch_decisions_supports_use_qwen_fields_for_flowchart_reference(
     assert block.flowchart_graph is not None
 
 
-def test_apply_patch_decisions_preserves_html_table_semantics_for_chart_block() -> None:
-    html_table = (
-        "<table><tr><th>指标</th><th>值</th></tr>"
-        "<tr><td>增长率</td><td>12%</td></tr></table>"
-    )
+def test_apply_patch_decisions_preserves_markdown_table_semantics_for_chart_block() -> None:
+    markdown_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
     mineru_document = CanonicalDocument(
-        document_id="img-html-table-1",
+        document_id="img-table-1",
         source="mineru",
         blocks=[
             CanonicalBlock(
@@ -153,31 +150,30 @@ def test_apply_patch_decisions_preserves_html_table_semantics_for_chart_block() 
     )
     issues = [
         Issue(
-            issue_id="html-table-m1",
-            issue_type="html_table_conflict",
+            issue_id="table-m1",
+            issue_type="table_conflict",
             page_idx=0,
             target_block_id="m1",
             candidate_payload={
                 "reference_patch": {
                     "type": "chart",
-                    "sub_type": "html_table",
                     "content": {
-                        "content": html_table,
+                        "content": markdown_table,
                         "img_path": "data/demo.png",
                         "chart_caption": ["图表标题"],
                     },
                 }
             },
-            reasons=["html_table_candidates_diverge"],
+            reasons=["table_candidates_diverge"],
         )
     ]
     patch_decisions = [
         PatchDecision(
-            issue_id="html-table-m1",
+            issue_id="table-m1",
             target_block_id="m1",
             decision="use_qwen_fields",
             patch={},
-            reason="采用参考 HTML table",
+            reason="采用参考 Markdown 表格",
         )
     ]
 
@@ -190,6 +186,6 @@ def test_apply_patch_decisions_preserves_html_table_semantics_for_chart_block() 
     block = patched.blocks[0]
     assert block.type == "table"
     assert block.sub_type is None
-    assert block.content["table_body"] == html_table
+    assert block.content["table_body"] == markdown_table
     assert block.structured_label.kind == "table"
-    assert block.structured_label.format == "html"
+    assert block.structured_label.format == "markdown"

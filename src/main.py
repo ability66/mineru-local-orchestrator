@@ -24,11 +24,11 @@ from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import (
     adjudicate_documents,
-    analyze_html_table_bundles,
-    pick_html_table_reference_bundle,
+    analyze_table_bundles,
+    pick_table_reference_bundle,
 )
 from src.pipeline.issues import (
-    build_html_table_issue,
+    build_table_issue,
     detect_flowchart_second_pass_issues,
     detect_flowchart_issues,
     detect_seal_issues,
@@ -69,7 +69,7 @@ from src.writer import (
     write_image_result,
 )
 
-_HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS = {
+_TABLE_ARTIFACT_PLACEHOLDER_REASONS = {
     "only one parsable label",
     "single model result cannot be auto-accepted",
     "overall consensus score below acceptance threshold",
@@ -77,17 +77,17 @@ _HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS = {
     "validator score below acceptance threshold",
     "hallucination risk above acceptance threshold",
 }
-_HTML_TABLE_ARTIFACT_PLACEHOLDER_ESCALATIONS = {
+_TABLE_ARTIFACT_PLACEHOLDER_ESCALATIONS = {
     "single_model_result",
     "low_consensus_score",
     "low_evidence_score",
     "low_validator_score",
     "high_hallucination_risk",
 }
-_HTML_TABLE_REVIEW_REASON_MESSAGES = {
-    "severe_structure_or_formula_conflict": "html table severe structure or formula conflict",
-    "pairwise_similarity_matrix_empty": "html table pairwise similarity matrix is empty",
-    "no_stable_html_table_consensus": "html table candidates do not form stable consensus",
+_TABLE_REVIEW_REASON_MESSAGES = {
+    "severe_structure_or_formula_conflict": "table severe structure or formula conflict",
+    "pairwise_similarity_matrix_empty": "table pairwise similarity matrix is empty",
+    "no_stable_table_consensus": "table candidates do not form stable consensus",
     "chart_table_requires_qwen_second_pass": "chart table branch always escalates to qwen second-stage adjudication",
 }
 
@@ -468,7 +468,7 @@ def _should_use_flowchart_branch(
     return _has_flowchart_signal(mineru_document, mineru_label)
 
 
-def _should_use_html_table_branch(
+def _should_use_table_branch(
     mineru_document: CanonicalDocument,
     mineru_label: ParsedLabel | None,
     auxiliary_bundles: list[dict[str, Any]],
@@ -512,15 +512,15 @@ def _should_force_chart_table_second_pass(
     )
 
 
-def _pick_stage2_html_table_reference_bundle(
-    html_table_analysis: dict[str, Any] | None,
+def _pick_stage2_table_reference_bundle(
+    table_analysis: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    bundle = pick_html_table_reference_bundle(html_table_analysis)
+    bundle = pick_table_reference_bundle(table_analysis)
     if bundle is not None:
         return bundle
-    if not isinstance(html_table_analysis, dict):
+    if not isinstance(table_analysis, dict):
         return None
-    candidate_bundles = html_table_analysis.get("candidate_bundles")
+    candidate_bundles = table_analysis.get("candidate_bundles")
     if not isinstance(candidate_bundles, list):
         return None
     non_mineru = [
@@ -578,15 +578,15 @@ def _deduplicate_text_values(values: list[Any]) -> list[str]:
     return ordered
 
 
-def _build_html_table_analysis_summary(
-    html_table_analysis: dict[str, Any],
+def _build_table_analysis_summary(
+    table_analysis: dict[str, Any],
     artifact_reference_bundle: dict[str, Any] | None,
-    html_table_issues: list[Any],
-    html_table_patch_decisions: list[PatchDecision],
-    html_table_patch_outputs: list[ModelOutput],
+    table_issues: list[Any],
+    table_patch_decisions: list[PatchDecision],
+    table_patch_outputs: list[ModelOutput],
 ) -> dict[str, Any]:
     candidate_roles = _deduplicate_text_values(
-        list(html_table_analysis.get("candidate_roles") or [])
+        list(table_analysis.get("candidate_roles") or [])
     )
     artifact_reference_role = (
         str(artifact_reference_bundle.get("role", "") or "").strip().lower()
@@ -594,7 +594,7 @@ def _build_html_table_analysis_summary(
         else ""
     )
     pairwise_scores: list[dict[str, Any]] = []
-    for item in list(html_table_analysis.get("pairwise") or []):
+    for item in list(table_analysis.get("pairwise") or []):
         if not isinstance(item, dict):
             continue
         left = str(item.get("left", "") or "").strip().lower()
@@ -609,53 +609,53 @@ def _build_html_table_analysis_summary(
 
     return {
         "branch_used": True,
-        "branch_mode": str(html_table_analysis.get("branch_mode", "") or "").strip()
+        "branch_mode": str(table_analysis.get("branch_mode", "") or "").strip()
         or "table",
-        "forced_second_pass": bool(html_table_analysis.get("forced_second_pass", False)),
+        "forced_second_pass": bool(table_analysis.get("forced_second_pass", False)),
         "candidate_count": len(candidate_roles),
         "candidate_roles": candidate_roles,
-        "fallback": bool(html_table_analysis.get("fallback", False)),
-        "fallback_reason": str(html_table_analysis.get("reason", "") or "").strip(),
-        "stable_consensus": bool(html_table_analysis.get("stable_consensus", False)),
-        "consensus_kind": str(html_table_analysis.get("consensus_kind", "") or "").strip(),
+        "fallback": bool(table_analysis.get("fallback", False)),
+        "fallback_reason": str(table_analysis.get("reason", "") or "").strip(),
+        "stable_consensus": bool(table_analysis.get("stable_consensus", False)),
+        "consensus_kind": str(table_analysis.get("consensus_kind", "") or "").strip(),
         "consensus_cluster": _deduplicate_text_values(
-            list(html_table_analysis.get("consensus_cluster") or [])
+            list(table_analysis.get("consensus_cluster") or [])
         ),
-        "reference_role": str(html_table_analysis.get("reference_role", "") or "").strip().lower()
+        "reference_role": str(table_analysis.get("reference_role", "") or "").strip().lower()
         or None,
-        "requires_qwen": bool(html_table_analysis.get("requires_qwen", False)),
+        "requires_qwen": bool(table_analysis.get("requires_qwen", False)),
         "review_reasons": _deduplicate_text_values(
-            list(html_table_analysis.get("review_reasons") or [])
+            list(table_analysis.get("review_reasons") or [])
         ),
         "severe_conflicts": _deduplicate_text_values(
-            list(html_table_analysis.get("severe_conflicts") or [])
+            list(table_analysis.get("severe_conflicts") or [])
         ),
-        "pairwise_matrix": dict(html_table_analysis.get("matrix") or {}),
+        "pairwise_matrix": dict(table_analysis.get("matrix") or {}),
         "pairwise_scores": pairwise_scores,
         "artifact_reference_role": artifact_reference_role or None,
         "artifact_reference_included": bool(artifact_reference_role),
-        "stage2_issue_count": len(html_table_issues),
+        "stage2_issue_count": len(table_issues),
         "stage2_patch_decisions": _deduplicate_text_values(
-            [decision.decision for decision in html_table_patch_decisions]
+            [decision.decision for decision in table_patch_decisions]
         ),
-        "stage2_output_count": len(html_table_patch_outputs),
+        "stage2_output_count": len(table_patch_outputs),
         "stage2_success_count": sum(
-            1 for output in html_table_patch_outputs if bool(getattr(output, "success", False))
+            1 for output in table_patch_outputs if bool(getattr(output, "success", False))
         ),
     }
 
 
-def _build_html_table_artifact_reason_override(summary: dict[str, Any]) -> list[str]:
+def _build_table_artifact_reason_override(summary: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     forced_second_pass = bool(summary.get("forced_second_pass", False))
     if bool(summary.get("fallback", False)):
-        reasons.append("html table branch fell back before candidate consensus")
+        reasons.append("table branch fell back before candidate consensus")
         fallback_reason = str(summary.get("fallback_reason", "") or "").strip()
         if fallback_reason:
-            reasons.append(f"html table fallback reason: {fallback_reason}")
+            reasons.append(f"table fallback reason: {fallback_reason}")
     else:
         for review_reason in list(summary.get("review_reasons") or []):
-            mapped = _HTML_TABLE_REVIEW_REASON_MESSAGES.get(str(review_reason or "").strip())
+            mapped = _TABLE_REVIEW_REASON_MESSAGES.get(str(review_reason or "").strip())
             if mapped:
                 reasons.append(mapped)
         if (
@@ -668,31 +668,31 @@ def _build_html_table_artifact_reason_override(summary: dict[str, Any]) -> list[
             and int(summary.get("stage2_issue_count", 0) or 0) > 0
         ):
             reasons.append(
-                "html table second-stage adjudication did not produce an adoptable patch"
+                "table second-stage adjudication did not produce an adoptable patch"
             )
-    reasons.append("html table auxiliary candidates were analyzed outside artifact pairwise comparison")
+    reasons.append("table auxiliary candidates were analyzed outside artifact pairwise comparison")
     return _deduplicate_text_values(reasons)
 
 
-def _annotate_html_table_artifact(
+def _annotate_table_artifact(
     artifact: Any,
-    html_table_analysis: dict[str, Any] | None,
+    table_analysis: dict[str, Any] | None,
     artifact_reference_bundle: dict[str, Any] | None,
-    html_table_issues: list[Any],
-    html_table_patch_decisions: list[PatchDecision],
-    html_table_patch_outputs: list[ModelOutput],
+    table_issues: list[Any],
+    table_patch_decisions: list[PatchDecision],
+    table_patch_outputs: list[ModelOutput],
 ) -> None:
-    if not isinstance(html_table_analysis, dict):
+    if not isinstance(table_analysis, dict):
         return
 
-    summary = _build_html_table_analysis_summary(
-        html_table_analysis=html_table_analysis,
+    summary = _build_table_analysis_summary(
+        table_analysis=table_analysis,
         artifact_reference_bundle=artifact_reference_bundle,
-        html_table_issues=html_table_issues,
-        html_table_patch_decisions=html_table_patch_decisions,
-        html_table_patch_outputs=html_table_patch_outputs,
+        table_issues=table_issues,
+        table_patch_decisions=table_patch_decisions,
+        table_patch_outputs=table_patch_outputs,
     )
-    artifact.final_document.raw_metadata["html_table_analysis"] = summary
+    artifact.final_document.raw_metadata["table_analysis"] = summary
 
     if (
         summary["candidate_count"] < 2
@@ -701,27 +701,27 @@ def _annotate_html_table_artifact(
     ):
         return
 
-    override_reasons = _build_html_table_artifact_reason_override(summary)
+    override_reasons = _build_table_artifact_reason_override(summary)
     artifact.consensus.reasons = _deduplicate_text_values(
         override_reasons
         + [
             reason
             for reason in artifact.consensus.reasons
-            if reason not in _HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS
+            if reason not in _TABLE_ARTIFACT_PLACEHOLDER_REASONS
         ]
     )
     artifact.consensus.escalation_reasons = _deduplicate_text_values(
         [
-            "html_table_auxiliary_candidates_not_reflected_in_artifact_pairwise_scores",
+            "table_auxiliary_candidates_not_reflected_in_artifact_pairwise_scores",
         ]
         + [
             reason
             for reason in artifact.consensus.escalation_reasons
-            if reason not in _HTML_TABLE_ARTIFACT_PLACEHOLDER_ESCALATIONS
+            if reason not in _TABLE_ARTIFACT_PLACEHOLDER_ESCALATIONS
         ]
     )
     artifact.consensus.validation_warnings = _deduplicate_text_values(
-        ["html_table_consensus_uses_auxiliary_candidate_matrix"]
+        ["table_consensus_uses_auxiliary_candidate_matrix"]
         + list(artifact.consensus.validation_warnings)
     )
     artifact.reasons = _deduplicate_text_values(
@@ -729,7 +729,7 @@ def _annotate_html_table_artifact(
         + [
             reason
             for reason in artifact.reasons
-            if reason not in _HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS
+            if reason not in _TABLE_ARTIFACT_PLACEHOLDER_REASONS
         ]
     )
 
@@ -1260,7 +1260,7 @@ def process_image_task(
     seal_adjudication_prompt: str,
     flowchart_adjudication_prompt: str,
     output_dir: Path,
-    html_table_adjudication_prompt: str = "",
+    table_adjudication_prompt: str = "",
 ) -> dict[str, Any]:
     mineru_bundle = _run_first_pass_model(
         image_task=image_task,
@@ -1339,10 +1339,10 @@ def process_image_task(
         if not use_flowchart_branch
         else False
     )
-    use_html_table_branch = (
+    use_table_branch = (
         (
             force_chart_table_second_pass
-            or _should_use_html_table_branch(
+            or _should_use_table_branch(
                 mineru_document=mineru_document,
                 mineru_label=mineru_label,
                 auxiliary_bundles=auxiliary_bundles,
@@ -1353,7 +1353,7 @@ def process_image_task(
     )
     seal_candidate_bundles: list[dict[str, Any]] = []
     seal_selection_payload: dict[str, Any] | None = None
-    if not use_flowchart_branch and not use_html_table_branch:
+    if not use_flowchart_branch and not use_table_branch:
         seal_candidate_bundles, seal_selection_payload = _build_seal_adjudication_candidates(
             image_task=image_task,
             mineru_bundle=mineru_bundle,
@@ -1363,10 +1363,10 @@ def process_image_task(
     flowchart_issues: list[Any] = []
     flowchart_patch_decisions: list[PatchDecision] = []
     flowchart_patch_outputs: list[ModelOutput] = []
-    html_table_issues: list[Any] = []
-    html_table_patch_decisions: list[PatchDecision] = []
-    html_table_patch_outputs: list[ModelOutput] = []
-    html_table_analysis: dict[str, Any] | None = None
+    table_issues: list[Any] = []
+    table_patch_decisions: list[PatchDecision] = []
+    table_patch_outputs: list[ModelOutput] = []
+    table_analysis: dict[str, Any] | None = None
     paddle_ocr_reference_texts, paddle_ocr_reference_model = (
         _extract_flowchart_ocr_reference(paddle_bundle)
         if use_flowchart_branch
@@ -1395,62 +1395,62 @@ def process_image_task(
         if seal_selection_output is not None:
             qwen_output = seal_selection_output
 
-    if use_html_table_branch:
-        html_table_analysis = analyze_html_table_bundles(
+    if use_table_branch:
+        table_analysis = analyze_table_bundles(
             mineru_bundle=mineru_bundle,
             auxiliary_bundles=auxiliary_bundles,
             allow_non_table_chart_fallback=force_chart_table_second_pass,
         )
-        if isinstance(html_table_analysis, dict):
-            html_table_analysis["branch_mode"] = (
+        if isinstance(table_analysis, dict):
+            table_analysis["branch_mode"] = (
                 "chart_table" if force_chart_table_second_pass else "table"
             )
-            html_table_analysis["forced_second_pass"] = force_chart_table_second_pass
+            table_analysis["forced_second_pass"] = force_chart_table_second_pass
             if force_chart_table_second_pass:
-                html_table_analysis["requires_qwen"] = True
-                html_table_analysis["review_reasons"] = _deduplicate_text_values(
-                    list(html_table_analysis.get("review_reasons") or [])
+                table_analysis["requires_qwen"] = True
+                table_analysis["review_reasons"] = _deduplicate_text_values(
+                    list(table_analysis.get("review_reasons") or [])
                     + ["chart_table_requires_qwen_second_pass"]
                 )
-            reference_bundle = _pick_stage2_html_table_reference_bundle(
-                html_table_analysis
+            reference_bundle = _pick_stage2_table_reference_bundle(
+                table_analysis
             )
             if (
                 force_chart_table_second_pass
                 and isinstance(reference_bundle, dict)
-                and not str(html_table_analysis.get("reference_role", "") or "").strip()
+                and not str(table_analysis.get("reference_role", "") or "").strip()
             ):
-                html_table_analysis["reference_role"] = str(
+                table_analysis["reference_role"] = str(
                     reference_bundle.get("role", "") or ""
                 ).strip().lower()
-            html_table_issue = build_html_table_issue(
+            table_issue = build_table_issue(
                 image_task=image_task,
-                mineru_candidate=html_table_analysis.get("mineru_candidate"),
-                candidate_bundles=html_table_analysis.get("candidate_bundles") or [],
-                consensus_analysis=html_table_analysis,
+                mineru_candidate=table_analysis.get("mineru_candidate"),
+                candidate_bundles=table_analysis.get("candidate_bundles") or [],
+                consensus_analysis=table_analysis,
             )
             if (
                 (
                     force_chart_table_second_pass
                     or (
-                        not bool(html_table_analysis.get("fallback", False))
-                        and bool(html_table_analysis.get("requires_qwen"))
+                        not bool(table_analysis.get("fallback", False))
+                        and bool(table_analysis.get("requires_qwen"))
                     )
                 )
-                and html_table_issue is not None
+                and table_issue is not None
             ):
-                html_table_issues = [html_table_issue]
+                table_issues = [table_issue]
                 if qwen_client is not None:
-                    html_table_patch_decisions, html_table_patch_outputs = adjudicate_issues_with_llm(
+                    table_patch_decisions, table_patch_outputs = adjudicate_issues_with_llm(
                         client=qwen_client,
                         image_task=image_task,
-                        prompt=html_table_adjudication_prompt,
-                        issues=html_table_issues,
-                        mode="html_table_adjudication",
+                        prompt=table_adjudication_prompt,
+                        issues=table_issues,
+                        mode="table_adjudication",
                         retry=args.retry,
                     )
-                    if html_table_patch_outputs:
-                        qwen_output = html_table_patch_outputs[-1]
+                    if table_patch_outputs:
+                        qwen_output = table_patch_outputs[-1]
 
     if use_flowchart_branch:
         reference_bundle, flowchart_issues = _pick_flowchart_reference_bundle(
@@ -1498,11 +1498,11 @@ def process_image_task(
         stage2_records.append(seal_stage2_record)
     stage2_records.extend(
         build_stage2_records(
-            issues=html_table_issues,
-            outputs=html_table_patch_outputs,
-            patch_decisions=html_table_patch_decisions,
-            prompt=html_table_adjudication_prompt,
-            mode="html_table_adjudication",
+            issues=table_issues,
+            outputs=table_patch_outputs,
+            patch_decisions=table_patch_decisions,
+            prompt=table_adjudication_prompt,
+            mode="table_adjudication",
         )
     )
     stage2_records.extend(
@@ -1517,8 +1517,8 @@ def process_image_task(
     if not stage2_records:
         stage2_records = None
 
-    all_issues = html_table_issues + flowchart_issues
-    patch_decisions = html_table_patch_decisions + flowchart_patch_decisions
+    all_issues = table_issues + flowchart_issues
+    patch_decisions = table_patch_decisions + flowchart_patch_decisions
     final_mineru_document = mineru_document
     final_mineru_label = mineru_label
     if patch_decisions:
@@ -1532,9 +1532,9 @@ def process_image_task(
     artifact_reference_bundle = reference_bundle
     if force_chart_table_second_pass:
         artifact_reference_bundle = None
-    elif html_table_issues and not any(
+    elif table_issues and not any(
         decision.decision in {"use_qwen_fields", "merge", "keep_candidate", "add_qwen_block"}
-        for decision in html_table_patch_decisions
+        for decision in table_patch_decisions
     ):
         artifact_reference_bundle = None
 
@@ -1588,13 +1588,13 @@ def process_image_task(
             else None
         ),
     )
-    _annotate_html_table_artifact(
+    _annotate_table_artifact(
         artifact=artifact,
-        html_table_analysis=html_table_analysis,
+        table_analysis=table_analysis,
         artifact_reference_bundle=artifact_reference_bundle,
-        html_table_issues=html_table_issues,
-        html_table_patch_decisions=html_table_patch_decisions,
-        html_table_patch_outputs=html_table_patch_outputs,
+        table_issues=table_issues,
+        table_patch_decisions=table_patch_decisions,
+        table_patch_outputs=table_patch_outputs,
     )
     summary_record = write_image_result(
         output_dir=output_dir,
@@ -1655,8 +1655,8 @@ def main() -> None:
     flowchart_adjudication_prompt = load_prompt(
         args.prompts_config, "qwen_flowchart_adjudication_prompt"
     )
-    html_table_adjudication_prompt = load_prompt(
-        args.prompts_config, "qwen_html_table_adjudication_prompt"
+    table_adjudication_prompt = load_prompt(
+        args.prompts_config, "qwen_table_adjudication_prompt"
     )
 
     image_tasks = load_image_tasks(args.data_dir)
@@ -1679,7 +1679,7 @@ def main() -> None:
                 recognition_prompt=recognition_prompt,
                 seal_adjudication_prompt=seal_adjudication_prompt,
                 flowchart_adjudication_prompt=flowchart_adjudication_prompt,
-                html_table_adjudication_prompt=html_table_adjudication_prompt,
+                table_adjudication_prompt=table_adjudication_prompt,
                 output_dir=args.output_dir,
             )
             append_summary_record(summary_path, summary_record)
@@ -1698,7 +1698,7 @@ def main() -> None:
                     seal_adjudication_prompt,
                     flowchart_adjudication_prompt,
                     args.output_dir,
-                    html_table_adjudication_prompt,
+                    table_adjudication_prompt,
                 )
                 for image_task in image_tasks
             ]

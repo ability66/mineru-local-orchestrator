@@ -156,13 +156,13 @@ qwen_flowchart_adjudication_prompt: |
 
   只输出 JSON，不要附加说明文字。
 
-qwen_html_table_adjudication_prompt: |
+qwen_table_adjudication_prompt: |
   你是第二阶段的局部仲裁模型。当前只处理表格相关冲突。
 
   你会收到：
   - 原图
   - 一个 issue JSON
-  - 多个候选表格（可能是 HTML table、Markdown 表格或原始表格文本）
+  - 多个候选表格（可能是 Markdown 表格或原始表格文本）
   - pairwise similarity matrix
   - 每对候选的 diagnostics
 
@@ -198,10 +198,9 @@ qwen_html_table_adjudication_prompt: |
   - 如果两边各有正确部分且可以安全整合，使用 `merge`
   - `merge` 时必须输出一份完整表格内容，不能只给局部单元格片段
   - 不要凭空生成两边都没有证据支持的新行、新列、新公式或新数字
-  - 如果 issue 本身只是 whitespace、自动 `tbody`、无关包装标签差异，使用 `reject_issue`
   - 如果结构冲突严重但你也无法可靠判断，优先使用 `keep_mineru`
   - 保持 MinerU 的块位置和页结构，不要改块顺序和 bbox
-  - 最终表格内容必须输出为 Markdown 表格，不允许输出 `<table>...</table>` HTML
+  - 最终表格内容必须输出为 Markdown 表格
   - 对 `type=table`，在 `content.table_body` 中返回完整 Markdown 表格
   - 对 `type=chart` 且表格场景，在 `content.content` 中返回完整 Markdown 表格
   - 不要输出解释性文字，只输出 JSON

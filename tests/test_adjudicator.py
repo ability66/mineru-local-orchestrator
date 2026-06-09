@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.pipeline.adjudicator import adjudicate_documents, analyze_html_table_bundles
+from src.pipeline.adjudicator import adjudicate_documents, analyze_table_bundles
 from src.schema import (
     CanonicalBlock,
     CanonicalDocument,
@@ -1249,28 +1249,28 @@ def test_adjudicator_marks_review_when_seal_selection_requests_review() -> None:
     assert artifact.final_document.source == "adjudicated"
 
 
-def _html_table_bundle(
+def _table_bundle(
     role: str,
-    html_table: str,
+    markdown_table: str,
     image_type: str = "table",
 ) -> dict[str, object]:
     block_type = "table" if image_type == "table" else "chart"
-    block_sub_type = None if block_type == "table" else "html_table"
+    block_sub_type = None
     content = (
-        {"img_path": "data/demo.png", "table_body": html_table, "table_caption": ["表格"]}
+        {"img_path": "data/demo.png", "table_body": markdown_table, "table_caption": ["表格"]}
         if block_type == "table"
-        else {"img_path": "data/demo.png", "content": html_table, "chart_caption": ["图表"]}
+        else {"img_path": "data/demo.png", "content": markdown_table, "chart_caption": ["图表"]}
     )
     return {
         "role": role,
         "output": ModelOutput(
-            image_id=f"{role}-html-table",
+            image_id=f"{role}-table",
             model_name=f"{role}-local",
             success=True,
             raw_text="{}",
         ),
         "document": CanonicalDocument(
-            document_id=f"{role}-html-table",
+            document_id=f"{role}-table",
             source=role,
             blocks=[
                 CanonicalBlock(
@@ -1285,8 +1285,8 @@ def _html_table_bundle(
                     source=role,
                     structured_label=StructuredLabel(
                         kind="table",
-                        content=html_table,
-                        format="html",
+                        content=markdown_table,
+                        format="markdown",
                         source="model",
                     ),
                     caption_structured=CaptionStructured(brief="表格"),
@@ -1299,28 +1299,24 @@ def _html_table_bundle(
             caption_structured=CaptionStructured(brief="表格", visual_type=image_type),
             structured_label=StructuredLabel(
                 kind="table",
-                content=html_table,
-                format="html",
+                content=markdown_table,
+                format="markdown",
                 source="model",
             ),
         ),
     }
 
 
-def test_analyze_html_table_bundles_detects_all_candidate_consensus() -> None:
-    html_table = (
-        "<table><tr><th>指标</th><th>值</th></tr>"
-        "<tr><td>增长率</td><td>12%</td></tr></table>"
-    )
+def test_analyze_table_bundles_detects_all_candidate_consensus() -> None:
+    markdown_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
 
-    analysis = analyze_html_table_bundles(
-        mineru_bundle=_html_table_bundle("mineru", html_table),
+    analysis = analyze_table_bundles(
+        mineru_bundle=_table_bundle("mineru", markdown_table),
         auxiliary_bundles=[
-            _html_table_bundle("paddle", html_table),
-            _html_table_bundle(
+            _table_bundle("paddle", markdown_table),
+            _table_bundle(
                 "glm",
-                "<table><tbody><tr><th>指标</th><th>值</th></tr>"
-                "<tr><td>增长率</td><td>12%</td></tr></tbody></table>",
+                markdown_table,
             ),
         ],
     )
@@ -1332,21 +1328,15 @@ def test_analyze_html_table_bundles_detects_all_candidate_consensus() -> None:
     assert analysis["reference_role"] in {"paddle", "glm"}
 
 
-def test_analyze_html_table_bundles_detects_mineru_pair_consensus_cluster() -> None:
-    stable_html = (
-        "<table><tr><th>指标</th><th>值</th></tr>"
-        "<tr><td>增长率</td><td>12%</td></tr></table>"
-    )
-    divergent_html = (
-        "<table><tr><th>地区</th><th>Q1</th><th>Q2</th></tr>"
-        "<tr><td>华东</td><td>10</td><td>20</td></tr></table>"
-    )
+def test_analyze_table_bundles_detects_mineru_pair_consensus_cluster() -> None:
+    stable_markdown = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
+    divergent_markdown = "| 地区 | Q1 | Q2 |\n| --- | --- | --- |\n| 华东 | 10 | 20 |"
 
-    analysis = analyze_html_table_bundles(
-        mineru_bundle=_html_table_bundle("mineru", stable_html),
+    analysis = analyze_table_bundles(
+        mineru_bundle=_table_bundle("mineru", stable_markdown),
         auxiliary_bundles=[
-            _html_table_bundle("paddle", stable_html),
-            _html_table_bundle("glm", divergent_html),
+            _table_bundle("paddle", stable_markdown),
+            _table_bundle("glm", divergent_markdown),
         ],
     )
 

@@ -4,17 +4,18 @@ from difflib import SequenceMatcher
 from itertools import combinations
 from typing import Any
 
-from src.pipeline.table_ir import TableCell, parse_html_table
 from src.pipeline.table_utils import (
+    MarkdownTableCell,
     extract_numeric_values_and_units,
     normalize_cell_text,
     normalize_latex_formula,
+    parse_markdown_table,
 )
 
 
-def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
-    ir_a = parse_html_table(html_a)
-    ir_b = parse_html_table(html_b)
+def evaluate_markdown_table(table_a: str, table_b: str) -> dict[str, Any]:
+    ir_a = parse_markdown_table(table_a)
+    ir_b = parse_markdown_table(table_b)
     parse_valid = bool(ir_a.parse_valid and ir_b.parse_valid)
     has_table = bool(ir_a.has_table and ir_b.has_table)
 
@@ -22,7 +23,6 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
         "table_a": {
             "row_count": ir_a.row_count,
             "col_count": ir_a.col_count,
-            "caption": ir_a.caption,
             "parse_valid": ir_a.parse_valid,
             "has_table": ir_a.has_table,
             "diagnostics": ir_a.diagnostics,
@@ -30,7 +30,6 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
         "table_b": {
             "row_count": ir_b.row_count,
             "col_count": ir_b.col_count,
-            "caption": ir_b.caption,
             "parse_valid": ir_b.parse_valid,
             "has_table": ir_b.has_table,
             "diagnostics": ir_b.diagnostics,
@@ -38,7 +37,6 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
         "matched_cells": [],
         "missing_cells": [],
         "extra_cells": [],
-        "wrong_spans": [],
         "wrong_headers": [],
         "wrong_numeric": [],
         "wrong_formula": [],
@@ -54,12 +52,12 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
             "formula_sim": 0.0,
             "omission_rate": 1.0 if ir_a.has_table else 0.0,
             "hallucination_rate": 1.0 if ir_b.has_table else 0.0,
-            "html_table_score": 0.0,
+            "table_score": 0.0,
             "diagnostics": diagnostics,
         }
 
-    cell_map_a = {(cell.row_start, cell.col_start): cell for cell in ir_a.cells}
-    cell_map_b = {(cell.row_start, cell.col_start): cell for cell in ir_b.cells}
+    cell_map_a = {(cell.row_index, cell.col_index): cell for cell in ir_a.cells}
+    cell_map_b = {(cell.row_index, cell.col_index): cell for cell in ir_b.cells}
     matched_keys = sorted(set(cell_map_a) & set(cell_map_b))
     missing_keys = sorted(set(cell_map_a) - set(cell_map_b))
     extra_keys = sorted(set(cell_map_b) - set(cell_map_a))
@@ -69,16 +67,13 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
     for key in extra_keys:
         diagnostics["extra_cells"].append(_cell_summary(cell_map_b[key]))
     for key in matched_keys:
-        cell_a = cell_map_a[key]
-        cell_b = cell_map_b[key]
-        if cell_a.rowspan != cell_b.rowspan or cell_a.colspan != cell_b.colspan:
-            diagnostics["wrong_spans"].append(
-                {
-                    "anchor": {"row": key[0], "col": key[1]},
-                    "a": _cell_summary(cell_a),
-                    "b": _cell_summary(cell_b),
-                }
-            )
+        diagnostics["matched_cells"].append(
+            {
+                "anchor": {"row": key[0], "col": key[1]},
+                "a": _cell_summary(cell_map_a[key]),
+                "b": _cell_summary(cell_map_b[key]),
+            }
+        )
 
     grid_structure_sim = _grid_structure_similarity(ir_a=ir_a, ir_b=ir_b)
     cell_content_sim = _cell_content_similarity(
@@ -89,7 +84,6 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
     header_semantic_sim = _header_semantic_similarity(
         cell_map_a=cell_map_a,
         cell_map_b=cell_map_b,
-        matched_keys=matched_keys,
         diagnostics=diagnostics,
     )
     numeric_fidelity = _numeric_fidelity(
@@ -104,25 +98,16 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
         matched_keys=matched_keys,
         diagnostics=diagnostics,
     )
-    omission_rate = round(len(missing_keys) / max(len(ir_a.cells), 1), 4)
-    hallucination_rate = round(len(extra_keys) / max(len(ir_b.cells), 1), 4)
+    omission_rate = round(len(missing_keys) / max(len(cell_map_a), 1), 4)
+    hallucination_rate = round(len(extra_keys) / max(len(cell_map_b), 1), 4)
 
-    html_table_score = (
+    table_score = (
         0.40 * grid_structure_sim
         + 0.30 * cell_content_sim
         + 0.10 * header_semantic_sim
         + 0.10 * numeric_fidelity
         + 0.10 * formula_sim
     )
-
-    for key in matched_keys:
-        diagnostics["matched_cells"].append(
-            {
-                "anchor": {"row": key[0], "col": key[1]},
-                "a": _cell_summary(cell_map_a[key]),
-                "b": _cell_summary(cell_map_b[key]),
-            }
-        )
 
     return {
         "parse_valid": parse_valid,
@@ -134,18 +119,20 @@ def evaluate_html_table(html_a: str, html_b: str) -> dict[str, Any]:
         "formula_sim": round(formula_sim, 4),
         "omission_rate": omission_rate,
         "hallucination_rate": hallucination_rate,
-        "html_table_score": round(html_table_score, 4),
+        "table_score": round(table_score, 4),
         "diagnostics": diagnostics,
     }
 
 
-def analyze_html_table_candidate_consensus(
+def analyze_table_candidate_consensus(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     normalized_candidates = [
         candidate
         for candidate in candidates
-        if isinstance(candidate, dict) and str(candidate.get("html", "") or "").strip()
+        if isinstance(candidate, dict)
+        and str(candidate.get("table_format", "") or "").strip().lower() == "markdown"
+        and str(candidate.get("table_text", "") or "").strip()
     ]
     if len(normalized_candidates) < 2:
         return None
@@ -157,11 +144,11 @@ def analyze_html_table_candidate_consensus(
     for left, right in combinations(normalized_candidates, 2):
         left_role = str(left.get("role", "") or "").strip().lower()
         right_role = str(right.get("role", "") or "").strip().lower()
-        metrics = evaluate_html_table(
-            str(left.get("html", "") or ""),
-            str(right.get("html", "") or ""),
+        metrics = evaluate_markdown_table(
+            str(left.get("table_text", "") or ""),
+            str(right.get("table_text", "") or ""),
         )
-        score = float(metrics.get("html_table_score", 0.0))
+        score = float(metrics.get("table_score", 0.0))
         pair_scores[(left_role, right_role)] = score
         pair_scores[(right_role, left_role)] = score
         pairwise.append(
@@ -185,9 +172,12 @@ def analyze_html_table_candidate_consensus(
     if parse_failures:
         return {
             "fallback": True,
-            "reason": "html_table_parse_failure",
+            "reason": "table_parse_failure",
             "pairwise": pairwise,
-            "candidate_roles": [str(candidate.get("role", "") or "").strip().lower() for candidate in normalized_candidates],
+            "candidate_roles": [
+                str(candidate.get("role", "") or "").strip().lower()
+                for candidate in normalized_candidates
+            ],
         }
 
     role_to_candidate = {
@@ -218,11 +208,6 @@ def analyze_html_table_candidate_consensus(
             non_mineru_roles[0] if non_mineru_roles else None
         )
     else:
-        mineru_pairs = [
-            item
-            for item in pairwise
-            if "mineru" in {item["left"], item["right"]}
-        ]
         strongest_pair = max(pairwise, key=lambda item: item["score"], default=None)
         if strongest_pair is not None:
             pair_roles = {strongest_pair["left"], strongest_pair["right"]}
@@ -253,7 +238,7 @@ def analyze_html_table_candidate_consensus(
         if not pairwise:
             review_reasons.append("pairwise_similarity_matrix_empty")
         else:
-            review_reasons.append("no_stable_html_table_consensus")
+            review_reasons.append("no_stable_table_consensus")
         reference_role = _best_reference_role(
             [role for role in role_to_candidate if role != "mineru"],
             role_scores,
@@ -303,35 +288,15 @@ def _best_reference_role(roles: list[str], role_scores: dict[str, list[float]]) 
 def _grid_structure_similarity(ir_a: Any, ir_b: Any) -> float:
     row_sim = _ratio_similarity(ir_a.row_count, ir_b.row_count)
     col_sim = _ratio_similarity(ir_a.col_count, ir_b.col_count)
-    anchor_a = {
-        (cell.row_start, cell.col_start, cell.rowspan, cell.colspan, cell.tag)
-        for cell in ir_a.cells
-    }
-    anchor_b = {
-        (cell.row_start, cell.col_start, cell.rowspan, cell.colspan, cell.tag)
-        for cell in ir_b.cells
-    }
-    expanded_a = _expanded_grid_signature(ir_a)
-    expanded_b = _expanded_grid_signature(ir_b)
-    anchor_sim = _jaccard(anchor_a, anchor_b)
-    expanded_sim = _jaccard(expanded_a, expanded_b)
-    return _clamp(0.2 * row_sim + 0.2 * col_sim + 0.3 * anchor_sim + 0.3 * expanded_sim)
-
-
-def _expanded_grid_signature(table_ir: Any) -> set[tuple[int, int, str]]:
-    id_to_tag = {cell.id: cell.tag for cell in table_ir.cells}
-    signatures: set[tuple[int, int, str]] = set()
-    for row_index, row in enumerate(table_ir.grid):
-        for col_index, cell_id in enumerate(row):
-            if cell_id is None:
-                continue
-            signatures.add((row_index, col_index, id_to_tag.get(cell_id, "td")))
-    return signatures
+    positions_a = {(cell.row_index, cell.col_index) for cell in ir_a.cells}
+    positions_b = {(cell.row_index, cell.col_index) for cell in ir_b.cells}
+    position_sim = _jaccard(positions_a, positions_b)
+    return _clamp(0.3 * row_sim + 0.3 * col_sim + 0.4 * position_sim)
 
 
 def _cell_content_similarity(
-    cell_map_a: dict[tuple[int, int], TableCell],
-    cell_map_b: dict[tuple[int, int], TableCell],
+    cell_map_a: dict[tuple[int, int], MarkdownTableCell],
+    cell_map_b: dict[tuple[int, int], MarkdownTableCell],
     matched_keys: list[tuple[int, int]],
 ) -> float:
     if not matched_keys:
@@ -348,25 +313,42 @@ def _cell_content_similarity(
 
 
 def _header_semantic_similarity(
-    cell_map_a: dict[tuple[int, int], TableCell],
-    cell_map_b: dict[tuple[int, int], TableCell],
-    matched_keys: list[tuple[int, int]],
+    cell_map_a: dict[tuple[int, int], MarkdownTableCell],
+    cell_map_b: dict[tuple[int, int], MarkdownTableCell],
     diagnostics: dict[str, Any],
 ) -> float:
-    if not matched_keys:
-        return 0.0
+    header_keys = sorted(
+        {
+            key
+            for key, cell in cell_map_a.items()
+            if cell.is_header
+        }
+        | {
+            key
+            for key, cell in cell_map_b.items()
+            if cell.is_header
+        }
+    )
+    if not header_keys:
+        return 1.0
 
-    header_scores: list[float] = []
-    for key in matched_keys:
-        cell_a = cell_map_a[key]
-        cell_b = cell_map_b[key]
-        tag_match = 1.0 if cell_a.tag == cell_b.tag else 0.0
-        scope_match = 1.0
-        if cell_a.scope or cell_b.scope:
-            scope_match = 1.0 if (cell_a.scope or "") == (cell_b.scope or "") else 0.0
-        position_match = 1.0 if _is_header_position(cell_a) == _is_header_position(cell_b) else 0.0
-        header_scores.append((0.5 * tag_match) + (0.25 * scope_match) + (0.25 * position_match))
-        if tag_match < 1.0 or scope_match < 1.0 or position_match < 1.0:
+    scores: list[float] = []
+    for key in header_keys:
+        cell_a = cell_map_a.get(key)
+        cell_b = cell_map_b.get(key)
+        if cell_a is None or cell_b is None:
+            diagnostics["wrong_headers"].append(
+                {
+                    "anchor": {"row": key[0], "col": key[1]},
+                    "a": _cell_summary(cell_a),
+                    "b": _cell_summary(cell_b),
+                }
+            )
+            scores.append(0.0)
+            continue
+        score = _text_similarity(cell_a.text, cell_b.text)
+        scores.append(score)
+        if score < 1.0:
             diagnostics["wrong_headers"].append(
                 {
                     "anchor": {"row": key[0], "col": key[1]},
@@ -376,23 +358,21 @@ def _header_semantic_similarity(
             )
 
     header_set_a = {
-        (cell.row_start, cell.col_start, cell.scope or "", cell.tag)
+        (cell.col_index, normalize_cell_text(cell.text))
         for cell in cell_map_a.values()
-        if cell.tag == "th"
+        if cell.is_header
     }
     header_set_b = {
-        (cell.row_start, cell.col_start, cell.scope or "", cell.tag)
+        (cell.col_index, normalize_cell_text(cell.text))
         for cell in cell_map_b.values()
-        if cell.tag == "th"
+        if cell.is_header
     }
-    header_jaccard = _jaccard(header_set_a, header_set_b)
-    coverage = len(matched_keys) / max(max(len(cell_map_a), len(cell_map_b)), 1)
-    return _clamp((0.7 * (sum(header_scores) / len(header_scores)) + 0.3 * header_jaccard) * coverage)
+    return _clamp(0.7 * (sum(scores) / len(scores)) + 0.3 * _jaccard(header_set_a, header_set_b))
 
 
 def _numeric_fidelity(
-    cell_map_a: dict[tuple[int, int], TableCell],
-    cell_map_b: dict[tuple[int, int], TableCell],
+    cell_map_a: dict[tuple[int, int], MarkdownTableCell],
+    cell_map_b: dict[tuple[int, int], MarkdownTableCell],
     matched_keys: list[tuple[int, int]],
     diagnostics: dict[str, Any],
 ) -> float:
@@ -420,16 +400,24 @@ def _numeric_fidelity(
 
 
 def _formula_similarity(
-    cell_map_a: dict[tuple[int, int], TableCell],
-    cell_map_b: dict[tuple[int, int], TableCell],
+    cell_map_a: dict[tuple[int, int], MarkdownTableCell],
+    cell_map_b: dict[tuple[int, int], MarkdownTableCell],
     matched_keys: list[tuple[int, int]],
     diagnostics: dict[str, Any],
 ) -> float:
     cell_scores: list[float] = []
     relevant_pairs = 0
     for key in matched_keys:
-        formulas_a = [normalize_latex_formula(item) for item in cell_map_a[key].formulas if normalize_latex_formula(item)]
-        formulas_b = [normalize_latex_formula(item) for item in cell_map_b[key].formulas if normalize_latex_formula(item)]
+        formulas_a = [
+            normalize_latex_formula(item)
+            for item in cell_map_a[key].formulas
+            if normalize_latex_formula(item)
+        ]
+        formulas_b = [
+            normalize_latex_formula(item)
+            for item in cell_map_b[key].formulas
+            if normalize_latex_formula(item)
+        ]
         if not formulas_a and not formulas_b:
             continue
         relevant_pairs += 1
@@ -492,23 +480,15 @@ def _text_similarity(left: str, right: str) -> float:
     return _clamp(max(sequence_score, (0.6 * token_score) + (0.4 * sequence_score)))
 
 
-def _is_header_position(cell: TableCell) -> bool:
-    return cell.tag == "th" or cell.row_start == 0 or cell.col_start == 0
-
-
-def _cell_summary(cell: TableCell) -> dict[str, Any]:
+def _cell_summary(cell: MarkdownTableCell | None) -> dict[str, Any] | None:
+    if cell is None:
+        return None
     return {
-        "id": cell.id,
-        "row_start": cell.row_start,
-        "row_end": cell.row_end,
-        "col_start": cell.col_start,
-        "col_end": cell.col_end,
-        "tag": cell.tag,
+        "row_index": cell.row_index,
+        "col_index": cell.col_index,
         "text": cell.text,
         "normalized_text": cell.normalized_text,
-        "rowspan": cell.rowspan,
-        "colspan": cell.colspan,
-        "scope": cell.scope,
+        "is_header": cell.is_header,
         "formulas": list(cell.formulas),
     }
 

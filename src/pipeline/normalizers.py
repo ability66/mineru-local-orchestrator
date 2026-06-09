@@ -1082,7 +1082,8 @@ def _structured_label_from_block_payload(
 
 
 def _normalize_table_format(table_content: str) -> str:
-    return "html" if detect_table_format(table_content) == "html" else "markdown"
+    del table_content
+    return "markdown"
 
 
 def _parsed_label_prefers_table_semantics(parsed_label: ParsedLabel) -> bool:

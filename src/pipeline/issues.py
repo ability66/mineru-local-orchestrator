@@ -260,7 +260,7 @@ def detect_flowchart_second_pass_issues(
     ]
 
 
-def build_html_table_issue(
+def build_table_issue(
     image_task: ImageTask,
     mineru_candidate: dict[str, Any] | None,
     candidate_bundles: list[dict[str, Any]],
@@ -283,11 +283,11 @@ def build_html_table_issue(
     review_mode = (
         "chart_table_second_pass"
         if forced_second_pass and branch_mode == "chart_table"
-        else "html_table_disagreement"
+        else "table_disagreement"
     )
     for bundle in candidate_bundles:
         role = str(bundle.get("role", "") or "").strip().lower()
-        candidate = bundle.get("html_table_candidate")
+        candidate = bundle.get("table_candidate")
         if not isinstance(candidate, dict):
             continue
         block_candidate = candidate.get("block")
@@ -304,7 +304,6 @@ def build_html_table_issue(
                 "ocr_texts": list(candidate.get("ocr_texts") or [])[:10],
                 "table_format": str(candidate.get("table_format", "") or ""),
                 "table_content": str(candidate.get("table_text", "") or ""),
-                "html_table": str(candidate.get("html", "") or ""),
                 "cell_count": len(getattr(candidate.get("table_ir"), "cells", []) or []),
                 "row_count": getattr(candidate.get("table_ir"), "row_count", 0),
                 "col_count": getattr(candidate.get("table_ir"), "col_count", 0),
@@ -319,22 +318,22 @@ def build_html_table_issue(
     ):
         candidate_payloads.insert(0, _build_issue_candidate_from_block(block, role="mineru"))
 
-    reference_patch = _build_html_table_reference_patch(reference_bundle)
+    reference_patch = _build_table_reference_patch(reference_bundle)
     reasons = list(consensus_analysis.get("review_reasons") or [])
     if not reasons:
-        reasons = ["html_table_candidates_diverge"]
+        reasons = ["table_candidates_diverge"]
 
     return Issue(
-        issue_id=f"html-table-{block.block_id}",
-        issue_type="html_table_conflict",
+        issue_id=f"table-{block.block_id}",
+        issue_type="table_conflict",
         page_idx=block.page_idx,
         target_block_id=block.block_id,
         mineru_block=block.model_dump(),
         qwen_block=(
-            reference_bundle["html_table_candidate"]["block"].model_dump()
+            reference_bundle["table_candidate"]["block"].model_dump()
             if isinstance(reference_bundle, dict)
-            and isinstance(reference_bundle.get("html_table_candidate"), dict)
-            and isinstance(reference_bundle["html_table_candidate"].get("block"), CanonicalBlock)
+            and isinstance(reference_bundle.get("table_candidate"), dict)
+            and isinstance(reference_bundle["table_candidate"].get("block"), CanonicalBlock)
             else None
         ),
         candidate_payload={
@@ -431,13 +430,10 @@ def _build_issue_candidate_from_block(
             for region in block.ocr_regions
             if str(region.text or "").strip()
         ][:10],
-        "table_format": "html"
-        if str(block.structured_label.format or "").strip().lower() == "html"
-        else "markdown"
+        "table_format": "markdown"
         if str(block.structured_label.format or "").strip().lower() == "markdown"
         else "none",
         "table_content": table_content,
-        "html_table": "",
         "cell_count": 0,
         "row_count": 0,
         "col_count": 0,
@@ -499,12 +495,12 @@ def _detect_pair_issue(
     return None
 
 
-def _build_html_table_reference_patch(
+def _build_table_reference_patch(
     bundle: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if not isinstance(bundle, dict):
         return {}
-    candidate = bundle.get("html_table_candidate")
+    candidate = bundle.get("table_candidate")
     if not isinstance(candidate, dict):
         return {}
     block = candidate.get("block")
@@ -517,7 +513,7 @@ def _build_html_table_reference_patch(
     }
     if block.sub_type is not None:
         patch["sub_type"] = block.sub_type
-    candidate_text = str(candidate.get("table_text", "") or candidate.get("html", "") or "")
+    candidate_text = str(candidate.get("table_text", "") or "")
     if block.type == "table":
         patch["content"]["table_body"] = str(
             candidate_text or patch["content"].get("table_body", "") or ""

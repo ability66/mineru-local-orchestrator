@@ -7,7 +7,7 @@ from src.decision import decide_consensus
 from src.pipeline.alignment import BlockMatch, align_blocks
 from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
-from src.pipeline.table_evaluator import analyze_html_table_candidate_consensus
+from src.pipeline.table_evaluator import analyze_table_candidate_consensus
 from src.pipeline.table_utils import extract_best_table_candidate, is_table_like
 from src.projection import (
     is_single_block_projection_document,
@@ -32,7 +32,7 @@ from src.seal_utils import is_stamp_mode
 from src.validators import ValidationResult
 
 
-def analyze_html_table_bundles(
+def analyze_table_bundles(
     mineru_bundle: dict[str, Any],
     auxiliary_bundles: list[dict[str, Any]],
     allow_non_table_chart_fallback: bool = False,
@@ -43,7 +43,7 @@ def analyze_html_table_bundles(
         if isinstance(mineru_bundle.get("document"), CanonicalDocument)
         else None
     )
-    fallback_target_block = _pick_html_table_issue_target_block(mineru_document)
+    fallback_target_block = _pick_table_issue_target_block(mineru_document)
     candidate_bundles: list[dict[str, Any]] = []
     candidate_payloads: list[dict[str, Any]] = []
     signaled_roles: list[str] = []
@@ -60,32 +60,33 @@ def analyze_html_table_bundles(
         if not is_table_like(document) and not is_table_like(label) and not has_chart_fallback_signal:
             continue
         signaled_roles.append(role)
-        html_table_candidate = extract_best_table_candidate(
+        table_candidate = extract_best_table_candidate(
             document,
             allow_non_table_chart_fallback=has_chart_fallback_signal,
         )
-        if not isinstance(html_table_candidate, dict):
+        if not isinstance(table_candidate, dict):
             continue
         candidate_bundle = {
             **bundle,
             "role": role,
-            "html_table_candidate": html_table_candidate,
+            "table_candidate": table_candidate,
         }
         candidate_bundles.append(candidate_bundle)
         candidate_payloads.append(
             {
                 "role": role,
-                "html": str(html_table_candidate.get("html", "") or ""),
+                "table_format": str(table_candidate.get("table_format", "") or ""),
+                "table_text": str(table_candidate.get("table_text", "") or ""),
             }
         )
 
-    analysis = analyze_html_table_candidate_consensus(candidate_payloads)
+    analysis = analyze_table_candidate_consensus(candidate_payloads)
     if analysis is None:
         if signaled_roles:
             fallback_reason = (
-                "html_table_candidate_extraction_failed"
+                "table_candidate_extraction_failed"
                 if not candidate_bundles
-                else "html_table_consensus_unavailable"
+                else "table_consensus_unavailable"
             )
             return {
                 "fallback": True,
@@ -99,7 +100,7 @@ def analyze_html_table_bundles(
                 },
                 "mineru_candidate": next(
                     (
-                        bundle.get("html_table_candidate")
+                        bundle.get("table_candidate")
                         for bundle in candidate_bundles
                         if str(bundle.get("role", "") or "").strip().lower() == "mineru"
                     ),
@@ -116,7 +117,7 @@ def analyze_html_table_bundles(
     analysis["fallback_target_block"] = fallback_target_block
     analysis["mineru_candidate"] = next(
         (
-            bundle.get("html_table_candidate")
+            bundle.get("table_candidate")
             for bundle in candidate_bundles
             if str(bundle.get("role", "") or "").strip().lower() == "mineru"
         ),
@@ -125,7 +126,7 @@ def analyze_html_table_bundles(
     return analysis
 
 
-def pick_html_table_reference_bundle(
+def pick_table_reference_bundle(
     analysis: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     if not isinstance(analysis, dict):
@@ -159,7 +160,7 @@ def _has_non_flowchart_chart_signal(document: CanonicalDocument) -> bool:
     return False
 
 
-def _pick_html_table_issue_target_block(
+def _pick_table_issue_target_block(
     document: CanonicalDocument | None,
 ) -> CanonicalBlock | None:
     if not isinstance(document, CanonicalDocument):
@@ -1190,7 +1191,7 @@ def _select_issue_driven_flowchart_document(
 
 def _is_issue_driven_chart_table_mode(issues: list[Issue]) -> bool:
     for issue in issues:
-        if str(issue.issue_type or "").strip() != "html_table_conflict":
+        if str(issue.issue_type or "").strip() != "table_conflict":
             continue
         candidate_payload = (
             issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}

@@ -225,21 +225,23 @@ def test_parse_patch_decision_rejects_false_positive_helper_node_conflict() -> N
     assert decision.reason == "flowchart_conflict_false_positive"
 
 
-def test_build_issue_prompt_payload_for_html_table_contains_similarity_context() -> None:
+def test_build_issue_prompt_payload_for_table_contains_similarity_context() -> None:
     issue = Issue(
-        issue_id="html-table-m1",
-        issue_type="html_table_conflict",
+        issue_id="table-m1",
+        issue_type="table_conflict",
         page_idx=0,
         target_block_id="m1",
         candidate_payload={
             "candidates": [
                 {
                     "candidate_id": "mineru",
-                    "html_table": "<table><tr><td>1</td></tr></table>",
+                    "table_format": "markdown",
+                    "table_content": "| A |\n| --- |\n| 1 |",
                 },
                 {
                     "candidate_id": "paddle",
-                    "html_table": "<table><tr><td>1</td></tr></table>",
+                    "table_format": "markdown",
+                    "table_content": "| A |\n| --- |\n| 1 |",
                 },
             ],
             "pairwise_scores": [
@@ -254,12 +256,12 @@ def test_build_issue_prompt_payload_for_html_table_contains_similarity_context()
                 "consensus_kind": "none",
             },
         },
-        reasons=["no_stable_html_table_consensus"],
+        reasons=["no_stable_table_consensus"],
     )
 
-    prompt_payload = build_issue_prompt_payload(issue, "html_table_adjudication")
+    prompt_payload = build_issue_prompt_payload(issue, "table_adjudication")
 
-    assert prompt_payload["review_mode"] == "html_table_disagreement"
+    assert prompt_payload["review_mode"] == "table_disagreement"
     assert len(prompt_payload["candidates"]) == 2
     assert prompt_payload["pairwise_matrix"]["mineru"]["paddle"] == 0.97
     assert prompt_payload["consensus_diagnostics"]["consensus_kind"] == "none"
@@ -267,8 +269,8 @@ def test_build_issue_prompt_payload_for_html_table_contains_similarity_context()
 
 def test_build_issue_prompt_payload_for_chart_table_second_pass_requires_final_table() -> None:
     issue = Issue(
-        issue_id="html-table-m1",
-        issue_type="html_table_conflict",
+        issue_id="table-m1",
+        issue_type="table_conflict",
         page_idx=0,
         target_block_id="m1",
         candidate_payload={
@@ -295,7 +297,7 @@ def test_build_issue_prompt_payload_for_chart_table_second_pass_requires_final_t
         reasons=["chart_table_requires_qwen_second_pass"],
     )
 
-    prompt_payload = build_issue_prompt_payload(issue, "html_table_adjudication")
+    prompt_payload = build_issue_prompt_payload(issue, "table_adjudication")
 
     assert prompt_payload["review_mode"] == "chart_table_second_pass"
     assert prompt_payload["branch_mode"] == "chart_table"

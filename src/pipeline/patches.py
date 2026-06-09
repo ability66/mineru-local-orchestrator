@@ -182,7 +182,8 @@ def _refresh_block_semantics(block: CanonicalBlock) -> None:
 
 
 def _normalize_table_format(table_body: str) -> str:
-    return "html" if detect_table_format(table_body) == "html" else "markdown"
+    del table_body
+    return "markdown"
 
 
 def _rewrite_chart_block_as_table(block: CanonicalBlock, table_body: str) -> None:

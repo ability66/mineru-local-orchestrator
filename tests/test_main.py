@@ -65,27 +65,25 @@ def _qwen_raw_payload(blocks: list[dict[str, Any]]) -> str:
     return json.dumps({"content_list_v2": [blocks]}, ensure_ascii=False)
 
 
-def _html_table_block(
+def _table_block(
     block_id: str,
-    html_table: str,
+    table_markdown: str,
     block_type: str = "table",
     image_path: str = "data/demo.png",
 ) -> dict[str, Any]:
     content: dict[str, Any] = {"img_path": image_path}
     if block_type == "table":
-        content["table_body"] = html_table
-        content["table_caption"] = ["HTML 表格"]
+        content["table_body"] = table_markdown
+        content["table_caption"] = ["Markdown 表格"]
     else:
-        content["content"] = html_table
-        content["chart_caption"] = ["HTML 表格"]
+        content["content"] = table_markdown
+        content["chart_caption"] = ["Markdown 表格"]
     block = {
         "block_id": block_id,
         "type": block_type,
         "bbox": [0, 0, 1000, 1000],
         "content": content,
     }
-    if block_type == "chart":
-        block["sub_type"] = "html_table"
     return block
 
 
@@ -722,32 +720,29 @@ def test_process_image_task_keeps_non_flowchart_branch_without_qwen_first_pass(
     assert len(glm_client.calls) == 1
 
 
-def test_process_image_task_auto_accepts_high_consensus_html_table_branch(
+def test_process_image_task_auto_accepts_high_consensus_table_branch(
     tmp_path,
 ) -> None:
     image_task = ImageTask(
-        image_id="html-table-accept",
+        image_id="table-accept",
         image_path="data/demo.png",
-        file_name="html-table-accept.png",
+        file_name="table-accept.png",
         file_ext=".png",
     )
-    html_table = (
-        "<table><tr><th>指标</th><th>值</th></tr>"
-        "<tr><td>增长率</td><td>12%</td></tr></table>"
-    )
+    markdown_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
     mineru_client = StubClient(
         model_name="mineru-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", html_table)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("m1", markdown_table)])}],
         config={"provider": "minerupro_local", "role": "mineru"},
     )
     paddle_client = StubClient(
         model_name="paddle-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", html_table)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("p1", markdown_table)])}],
         config={"provider": "paddle_local", "role": "paddle"},
     )
     glm_client = StubClient(
         model_name="glm-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", "<table><tbody><tr><th>指标</th><th>值</th></tr><tr><td>增长率</td><td>12%</td></tr></tbody></table>")])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("g1", markdown_table)])}],
         config={"provider": "glm_openai_compatible", "role": "glm"},
     )
     qwen_client = StubClient(
@@ -767,53 +762,44 @@ def test_process_image_task_auto_accepts_high_consensus_html_table_branch(
         seal_adjudication_prompt="seal prompt",
         flowchart_adjudication_prompt="flow prompt",
         output_dir=tmp_path,
-        html_table_adjudication_prompt="html table prompt",
+        table_adjudication_prompt="table prompt",
     )
 
     artifact = json.loads(
-        (tmp_path / "final" / "html-table-accept_artifact.json").read_text(encoding="utf-8")
+        (tmp_path / "final" / "table-accept_artifact.json").read_text(encoding="utf-8")
     )
     assert len(qwen_client.calls) == 0
     assert artifact["consensus"]["decision"] == "accepted"
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["candidate_count"] >= 2
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stable_consensus"] is True
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["artifact_reference_included"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["candidate_count"] >= 2
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["stable_consensus"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["artifact_reference_included"] is True
 
 
-def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
+def test_process_image_task_triggers_qwen_for_divergent_table_branch(
     tmp_path,
 ) -> None:
     image_task = ImageTask(
-        image_id="html-table-review",
+        image_id="table-review",
         image_path="data/demo.png",
-        file_name="html-table-review.png",
+        file_name="table-review.png",
         file_ext=".png",
     )
-    mineru_html = (
-        "<table><tr><th>指标</th><th>值</th></tr>"
-        "<tr><td>增长率</td><td>12%</td></tr></table>"
-    )
-    paddle_html = (
-        "<table><tr><th>地区</th><th>Q1</th><th>Q2</th></tr>"
-        "<tr><td>华东</td><td>10</td><td>20</td></tr></table>"
-    )
-    glm_html = (
-        "<table><tr><th>公式</th><th>值</th></tr>"
-        "<tr><td>$x^2$</td><td>5</td></tr></table>"
-    )
+    mineru_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
+    paddle_table = "| 地区 | Q1 | Q2 |\n| --- | --- | --- |\n| 华东 | 10 | 20 |"
+    glm_table = "| 公式 | 值 |\n| --- | --- |\n| $x^2$ | 5 |"
     mineru_client = StubClient(
         model_name="mineru-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", mineru_html)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("m1", mineru_table)])}],
         config={"provider": "minerupro_local", "role": "mineru"},
     )
     paddle_client = StubClient(
         model_name="paddle-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", paddle_html)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("p1", paddle_table)])}],
         config={"provider": "paddle_local", "role": "paddle"},
     )
     glm_client = StubClient(
         model_name="glm-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", glm_html)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("g1", glm_table)])}],
         config={"provider": "glm_openai_compatible", "role": "glm"},
     )
     qwen_client = StubClient(
@@ -823,7 +809,7 @@ def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
                 "success": True,
                 "raw_text": json.dumps(
                     {
-                        "issue_id": "html-table-m1",
+                        "issue_id": "table-m1",
                         "target_block_id": "m1",
                         "decision": "keep_mineru",
                         "patch": {},
@@ -847,48 +833,48 @@ def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
         seal_adjudication_prompt="seal prompt",
         flowchart_adjudication_prompt="flow prompt",
         output_dir=tmp_path,
-        html_table_adjudication_prompt="html table prompt",
+        table_adjudication_prompt="table prompt",
     )
 
     assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
     assert "pairwise_matrix" in qwen_client.calls[0]["context"]["issue_payload"]
     artifact = json.loads(
-        (tmp_path / "final" / "html-table-review_artifact.json").read_text(encoding="utf-8")
+        (tmp_path / "final" / "table-review_artifact.json").read_text(encoding="utf-8")
     )
     assert "only one parsable label" not in artifact["consensus"]["reasons"]
     assert "single model result cannot be auto-accepted" not in artifact["consensus"]["reasons"]
     assert (
-        "html table candidates do not form stable consensus"
+        "table candidates do not form stable consensus"
         in artifact["consensus"]["reasons"]
     )
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["candidate_count"] >= 2
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["candidate_count"] >= 2
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["requires_qwen"] is True
 
 
 def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch(
     tmp_path,
 ) -> None:
     image_task = ImageTask(
-        image_id="html-table-fallback",
+        image_id="table-fallback",
         image_path="data/demo.png",
-        file_name="html-table-fallback.png",
+        file_name="table-fallback.png",
         file_ext=".png",
     )
     markdown_table = "|指标|值|\n|---|---|\n|增长率|12%|"
     mineru_client = StubClient(
         model_name="mineru-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", markdown_table, block_type="chart")])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("m1", markdown_table, block_type="chart")])}],
         config={"provider": "minerupro_local", "role": "mineru"},
     )
     paddle_client = StubClient(
         model_name="paddle-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", markdown_table, block_type="chart")])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("p1", markdown_table, block_type="chart")])}],
         config={"provider": "paddle_local", "role": "paddle"},
     )
     glm_client = StubClient(
         model_name="glm-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", markdown_table, block_type="chart")])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("g1", markdown_table, block_type="chart")])}],
         config={"provider": "glm_openai_compatible", "role": "glm"},
     )
     qwen_client = StubClient(
@@ -898,7 +884,7 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
                 "success": True,
                 "raw_text": json.dumps(
                     {
-                        "issue_id": "html-table-m1",
+                        "issue_id": "table-m1",
                         "target_block_id": "m1",
                         "decision": "merge",
                         "patch": {
@@ -928,17 +914,17 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
         seal_adjudication_prompt="seal prompt",
         flowchart_adjudication_prompt="flow prompt",
         output_dir=tmp_path,
-        html_table_adjudication_prompt="html table prompt",
+        table_adjudication_prompt="table prompt",
     )
 
     artifact = json.loads(
-        (tmp_path / "final" / "html-table-fallback_artifact.json").read_text(encoding="utf-8")
+        (tmp_path / "final" / "table-fallback_artifact.json").read_text(encoding="utf-8")
     )
     final_output = json.loads(
-        (tmp_path / "final" / "html-table-fallback.json").read_text(encoding="utf-8")
+        (tmp_path / "final" / "table-fallback.json").read_text(encoding="utf-8")
     )
     assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
     assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
     assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
     assert final_output["model_name"] == "qwen-local"
@@ -962,17 +948,17 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
         in artifact["consensus"]["reasons"]
     )
     assert "only one parsable label" not in artifact["consensus"]["reasons"]
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is False
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stable_consensus"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["fallback"] is False
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["stable_consensus"] is True
     assert (
-        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["forced_second_pass"]
+        artifact["final_document"]["raw_metadata"]["table_analysis"]["forced_second_pass"]
         is True
     )
     assert (
-        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["branch_mode"]
+        artifact["final_document"]["raw_metadata"]["table_analysis"]["branch_mode"]
         == "chart_table"
     )
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["requires_qwen"] is True
 
 
 def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
@@ -1007,7 +993,7 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
                 "success": True,
                 "raw_text": json.dumps(
                     {
-                        "issue_id": "html-table-m1",
+                        "issue_id": "table-m1",
                         "target_block_id": "m1",
                         "decision": "merge",
                         "patch": {
@@ -1037,7 +1023,7 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
         seal_adjudication_prompt="seal prompt",
         flowchart_adjudication_prompt="flow prompt",
         output_dir=tmp_path,
-        html_table_adjudication_prompt="html table prompt",
+        table_adjudication_prompt="table prompt",
     )
 
     artifact = json.loads(
@@ -1051,7 +1037,7 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
         )
     )
     assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
     assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
     assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
     assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_format"] == "none"
@@ -1077,19 +1063,19 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
         in artifact["consensus"]["reasons"]
     )
     assert (
-        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["forced_second_pass"]
+        artifact["final_document"]["raw_metadata"]["table_analysis"]["forced_second_pass"]
         is True
     )
     assert (
-        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["branch_mode"]
+        artifact["final_document"]["raw_metadata"]["table_analysis"]["branch_mode"]
         == "chart_table"
     )
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["fallback"] is True
     assert (
-        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback_reason"]
-        == "html_table_consensus_unavailable"
+        artifact["final_document"]["raw_metadata"]["table_analysis"]["fallback_reason"]
+        == "table_consensus_unavailable"
     )
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["requires_qwen"] is True
 
 
 def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
@@ -1124,7 +1110,7 @@ def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
                 "success": True,
                 "raw_text": json.dumps(
                     {
-                        "issue_id": "html-table-m1",
+                        "issue_id": "table-m1",
                         "target_block_id": "m1",
                         "decision": "merge",
                         "patch": {
@@ -1154,7 +1140,7 @@ def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
         seal_adjudication_prompt="seal prompt",
         flowchart_adjudication_prompt="flow prompt",
         output_dir=tmp_path,
-        html_table_adjudication_prompt="html table prompt",
+        table_adjudication_prompt="table prompt",
     )
 
     artifact = json.loads(
@@ -1173,7 +1159,7 @@ def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
         )
     )
     assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
     assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
     assert any(
         candidate["candidate_id"] == "mineru"
@@ -1183,45 +1169,36 @@ def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
     assert artifact["issues"]
     assert artifact["issues"][0]["target_block_id"] == "m1"
     assert artifact["patch_decisions"]
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stage2_issue_count"] == 1
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["stage2_issue_count"] == 1
     assert artifact["final_document"]["raw_metadata"]["selected_output_role"] == "qwen"
     assert stage2_payload["record_count"] == 1
 
 
-def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(
+def test_process_image_task_falls_back_to_mineru_when_table_qwen_fails(
     tmp_path,
 ) -> None:
     image_task = ImageTask(
-        image_id="html-table-qwen-fail",
+        image_id="table-qwen-fail",
         image_path="data/demo.png",
-        file_name="html-table-qwen-fail.png",
+        file_name="table-qwen-fail.png",
         file_ext=".png",
     )
-    mineru_html = (
-        "<table><tr><th>指标</th><th>值</th></tr>"
-        "<tr><td>增长率</td><td>12%</td></tr></table>"
-    )
-    paddle_html = (
-        "<table><tr><th>地区</th><th>Q1</th><th>Q2</th></tr>"
-        "<tr><td>华东</td><td>10</td><td>20</td></tr></table>"
-    )
-    glm_html = (
-        "<table><tr><th>公式</th><th>值</th></tr>"
-        "<tr><td>$x^2$</td><td>5</td></tr></table>"
-    )
+    mineru_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
+    paddle_table = "| 地区 | Q1 | Q2 |\n| --- | --- | --- |\n| 华东 | 10 | 20 |"
+    glm_table = "| 公式 | 值 |\n| --- | --- |\n| $x^2$ | 5 |"
     mineru_client = StubClient(
         model_name="mineru-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", mineru_html)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("m1", mineru_table)])}],
         config={"provider": "minerupro_local", "role": "mineru"},
     )
     paddle_client = StubClient(
         model_name="paddle-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", paddle_html)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("p1", paddle_table)])}],
         config={"provider": "paddle_local", "role": "paddle"},
     )
     glm_client = StubClient(
         model_name="glm-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", glm_html)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_table_block("g1", glm_table)])}],
         config={"provider": "glm_openai_compatible", "role": "glm"},
     )
     qwen_client = StubClient(
@@ -1241,17 +1218,17 @@ def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(
         seal_adjudication_prompt="seal prompt",
         flowchart_adjudication_prompt="flow prompt",
         output_dir=tmp_path,
-        html_table_adjudication_prompt="html table prompt",
+        table_adjudication_prompt="table prompt",
     )
 
     artifact = json.loads(
-        (tmp_path / "final" / "html-table-qwen-fail_artifact.json").read_text(encoding="utf-8")
+        (tmp_path / "final" / "table-qwen-fail_artifact.json").read_text(encoding="utf-8")
     )
     assert len(qwen_client.calls) == 1
-    assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == mineru_html
+    assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == mineru_table
     assert "only one parsable label" not in artifact["consensus"]["reasons"]
     assert (
-        "html table second-stage adjudication did not produce an adoptable patch"
+        "table second-stage adjudication did not produce an adoptable patch"
         in artifact["consensus"]["reasons"]
     )
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["artifact_reference_included"] is False
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["artifact_reference_included"] is False

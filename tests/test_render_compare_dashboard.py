@@ -376,7 +376,7 @@ def test_generate_compare_dashboard_prefers_final_label_type_for_record_type(tmp
     assert 'data-record-type="seal"' in html
 
 
-def test_generate_compare_dashboard_renders_table_markdown_as_html_table(
+def test_generate_compare_dashboard_renders_table_markdown(
     tmp_path,
 ) -> None:
     output_dir = tmp_path / "outputs"
@@ -428,7 +428,9 @@ def test_generate_compare_dashboard_renders_table_markdown_as_html_table(
 
     assert html_path is not None
     html = html_path.read_text(encoding="utf-8")
-    assert ">表格<" in html
+    assert '<option value="chart">图表</option>' in html
+    assert '<option value="table">表格</option>' not in html
+    assert 'data-record-type="chart"' in html
     assert "Rendered Markdown" in html
     assert '<table class="markdown-table">' in html
     assert "<th>检查项</th>" in html
@@ -437,16 +439,17 @@ def test_generate_compare_dashboard_renders_table_markdown_as_html_table(
     assert "<td>升高</td>" in html
 
 
-def test_generate_compare_dashboard_renders_html_table_with_latex(
+def test_generate_compare_dashboard_renders_markdown_table_with_latex(
     tmp_path,
 ) -> None:
     output_dir = tmp_path / "outputs"
     (output_dir / "normalized" / "mineru").mkdir(parents=True)
 
-    html_table = (
-        "<table><thead><tr><th>指标</th><th>表达式</th></tr></thead>"
-        "<tbody><tr><td>面积</td><td>$x^2 + y^2$</td></tr>"
-        "<tr><td>积分</td><td>\\(\\int_0^1 x^2 dx\\)</td></tr></tbody></table>"
+    table_markdown = (
+        "| 指标 | 表达式 |\n"
+        "| --- | --- |\n"
+        "| 面积 | $x^2 + y^2$ |\n"
+        "| 积分 | \\(\\int_0^1 x^2 dx\\) |"
     )
     normalized_payload = {
         "document": {
@@ -454,11 +457,11 @@ def test_generate_compare_dashboard_renders_html_table_with_latex(
                 {
                     "type": "table",
                     "sub_type": "table",
-                    "content": {"table_body": html_table},
+                    "content": {"table_body": table_markdown},
                     "structured_label": {
-                        "kind": "text",
-                        "content": html_table,
-                        "format": "html",
+                        "kind": "table",
+                        "content": table_markdown,
+                        "format": "markdown",
                         "source": "model",
                     },
                 }
@@ -466,17 +469,17 @@ def test_generate_compare_dashboard_renders_html_table_with_latex(
         },
         "derived_label": {
             "image_type": "table",
-            "caption": "HTML 表格",
+            "caption": "Markdown 表格",
             "structured_label": {
-                "kind": "text",
-                "content": html_table,
-                "format": "html",
+                "kind": "table",
+                "content": table_markdown,
+                "format": "markdown",
                 "source": "model",
             },
         },
     }
 
-    (output_dir / "normalized" / "mineru" / "table-html-demo.json").write_text(
+    (output_dir / "normalized" / "mineru" / "table-latex-demo.json").write_text(
         json.dumps(normalized_payload, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -488,8 +491,8 @@ def test_generate_compare_dashboard_renders_html_table_with_latex(
 
     assert html_path is not None
     html = html_path.read_text(encoding="utf-8")
-    assert "Rendered HTML" in html
-    assert "<table>" in html
+    assert "Rendered Markdown" in html
+    assert '<table class="markdown-table">' in html
     assert "<th>指标</th>" in html
     assert "$x^2 + y^2$" in html
     assert "tex-chtml.js" in html
@@ -701,7 +704,7 @@ def test_generate_compare_dashboard_shows_qwen_chart_second_pass_table_for_non_f
         },
         "issues": [
             {
-                "issue_id": "html-table-m1",
+                "issue_id": "table-m1",
                 "candidate_payload": {
                     "review_mode": "chart_table_second_pass",
                     "branch_mode": "chart_table",
@@ -710,7 +713,7 @@ def test_generate_compare_dashboard_shows_qwen_chart_second_pass_table_for_non_f
         ],
         "patch_decisions": [
             {
-                "issue_id": "html-table-m1",
+                "issue_id": "table-m1",
                 "decision": "merge",
                 "reason": "chart table second-pass adjudication",
                 "patch": {
@@ -811,7 +814,8 @@ def test_generate_compare_dashboard_hides_empty_qwen_adjudication_panel_for_non_
 
     assert html_path is not None
     html = html_path.read_text(encoding="utf-8")
-    assert ">表格<" in html
+    assert '<option value="chart">图表</option>' in html
+    assert '<option value="table">表格</option>' not in html
     assert ">Qwen<" not in html
 
 
@@ -942,9 +946,10 @@ def test_generate_compare_dashboard_moves_metadata_below_rendered_content(
     image_path = data_dir / "table.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    html_table = (
-        "<table><thead><tr><th>指标</th><th>表达式</th></tr></thead>"
-        "<tbody><tr><td>面积</td><td>$x^2 + y^2$</td></tr></tbody></table>"
+    table_markdown = (
+        "| 指标 | 表达式 |\n"
+        "| --- | --- |\n"
+        "| 面积 | $x^2 + y^2$ |"
     )
     normalized_payload = {
         "document": {
@@ -953,13 +958,13 @@ def test_generate_compare_dashboard_moves_metadata_below_rendered_content(
                     "type": "table",
                     "sub_type": "table",
                     "content": {
-                        "table_body": html_table,
+                        "table_body": table_markdown,
                         "img_path": str(image_path),
                     },
                     "structured_label": {
-                        "kind": "text",
-                        "content": html_table,
-                        "format": "html",
+                        "kind": "table",
+                        "content": table_markdown,
+                        "format": "markdown",
                         "source": "model",
                     },
                 }
@@ -967,11 +972,11 @@ def test_generate_compare_dashboard_moves_metadata_below_rendered_content(
         },
         "derived_label": {
             "image_type": "table",
-            "caption": "HTML 表格",
+            "caption": "Markdown 表格",
             "structured_label": {
-                "kind": "text",
-                "content": html_table,
-                "format": "html",
+                "kind": "table",
+                "content": table_markdown,
+                "format": "markdown",
                 "source": "model",
             },
         },
@@ -989,8 +994,8 @@ def test_generate_compare_dashboard_moves_metadata_below_rendered_content(
 
     assert html_path is not None
     html = html_path.read_text(encoding="utf-8")
-    assert "Rendered HTML" in html
+    assert "Rendered Markdown" in html
     assert '<div class="card-meta">' in html
-    assert html.index("Rendered HTML") < html.index("Caption：HTML 表格")
-    assert html.index("Rendered HTML") < html.index("文件：normalized/mineru/metadata-demo.json")
+    assert html.index("Rendered Markdown") < html.index("Caption：Markdown 表格")
+    assert html.index("Rendered Markdown") < html.index("文件：normalized/mineru/metadata-demo.json")
     assert html.index('<img src="data:image/png;base64,') < html.index(str(image_path))
