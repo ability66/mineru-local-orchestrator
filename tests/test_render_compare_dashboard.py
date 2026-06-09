@@ -437,6 +437,64 @@ def test_generate_compare_dashboard_renders_table_markdown_as_html_table(
     assert "<td>升高</td>" in html
 
 
+def test_generate_compare_dashboard_renders_html_table_with_latex(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+
+    html_table = (
+        "<table><thead><tr><th>指标</th><th>表达式</th></tr></thead>"
+        "<tbody><tr><td>面积</td><td>$x^2 + y^2$</td></tr>"
+        "<tr><td>积分</td><td>\\(\\int_0^1 x^2 dx\\)</td></tr></tbody></table>"
+    )
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {"table_body": html_table},
+                    "structured_label": {
+                        "kind": "text",
+                        "content": html_table,
+                        "format": "html",
+                        "source": "model",
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "table",
+            "caption": "HTML 表格",
+            "structured_label": {
+                "kind": "text",
+                "content": html_table,
+                "format": "html",
+                "source": "model",
+            },
+        },
+    }
+
+    (output_dir / "normalized" / "mineru" / "table-html-demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert "Rendered HTML" in html
+    assert "<table>" in html
+    assert "<th>指标</th>" in html
+    assert "$x^2 + y^2$" in html
+    assert "tex-chtml.js" in html
+
+
 def test_generate_compare_dashboard_renders_table_markdown_when_label_kind_is_text(
     tmp_path,
 ) -> None:

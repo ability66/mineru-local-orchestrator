@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from html import escape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,45 @@ TYPE_LABELS = {
     "document": "文档",
     "unknown": "未知类型",
 }
+
+_ALLOWED_TABLE_HTML_TAGS = {
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+    "caption",
+    "colgroup",
+    "col",
+    "div",
+    "span",
+    "p",
+    "br",
+    "sub",
+    "sup",
+    "strong",
+    "em",
+    "b",
+    "i",
+}
+_ALLOWED_TABLE_HTML_ATTRS = {
+    "table": {"class"},
+    "thead": {"class"},
+    "tbody": {"class"},
+    "tfoot": {"class"},
+    "tr": {"class"},
+    "th": {"class", "colspan", "rowspan", "scope", "align"},
+    "td": {"class", "colspan", "rowspan", "align"},
+    "caption": {"class"},
+    "colgroup": {"class", "span"},
+    "col": {"class", "span"},
+    "div": {"class"},
+    "span": {"class"},
+    "p": {"class"},
+}
+_SKIPPED_TABLE_HTML_TAGS = {"script", "style", "iframe", "object", "embed"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -354,39 +394,50 @@ def build_dashboard_html(
       letter-spacing: 0.08em;
       color: var(--muted);
     }}
-    .markdown-body {{
+    .markdown-body,
+    .html-body {{
       display: grid;
       gap: 12px;
       color: var(--ink);
       font-size: 14px;
       line-height: 1.65;
     }}
-    .markdown-body p {{
+    .markdown-body p,
+    .html-body p {{
       margin: 0;
     }}
-    .markdown-table-wrap {{
+    .markdown-table-wrap,
+    .html-table-wrap {{
       overflow: auto;
       border: 1px solid rgba(213, 204, 184, 0.9);
       background: rgba(255, 253, 248, 0.92);
     }}
-    .markdown-table {{
+    .markdown-table,
+    .html-body table {{
       width: 100%;
       border-collapse: collapse;
       font-size: 14px;
     }}
     .markdown-table th,
-    .markdown-table td {{
+    .markdown-table td,
+    .html-body th,
+    .html-body td {{
       padding: 10px 12px;
       border: 1px solid rgba(213, 204, 184, 0.9);
       text-align: left;
       vertical-align: top;
     }}
-    .markdown-table thead th {{
+    .markdown-table thead th,
+    .html-body thead th {{
       background: var(--code-bg);
       font-weight: 700;
     }}
-    .markdown-table tbody tr:nth-child(even) {{
+    .markdown-table tbody tr:nth-child(even),
+    .html-body tbody tr:nth-child(even) {{
       background: rgba(246, 240, 226, 0.42);
+    }}
+    .html-body mjx-container {{
+      font-size: 1em !important;
     }}
     pre {{
       margin: 0;
@@ -406,7 +457,7 @@ def build_dashboard_html(
   <div class="page">
     <section class="hero">
       <h1>输出对比总览</h1>
-      <p>原图、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格展示 Markdown，其它展示文字。</p>
+      <p>原图、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格优先展示 HTML，其次兼容 Markdown，其它展示文字。</p>
       <div class="controls">
         <label for="type-select">查看类型</label>
         <select id="type-select">{type_options_html}</select>
@@ -416,6 +467,18 @@ def build_dashboard_html(
     </section>
     {sections_html}
   </div>
+  <script>
+    window.MathJax = {{
+      tex: {{
+        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+        displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
+      }},
+      options: {{
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      }}
+    }};
+  </script>
+  <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
   <script src="{escape(mermaid_script_path)}"></script>
   <script>
     (function () {{
@@ -646,6 +709,18 @@ def _build_panel_content(panel: ComparePanel) -> str:
           <pre>{escape(panel.render_text)}</pre>
         </div>
 """
+    if panel.render_kind == "html":
+        rendered_html = _sanitize_table_html(panel.render_text)
+        return f"""
+        <div class="code-wrap">
+          <h3>Rendered HTML</h3>
+          <div class="html-body"><div class="html-table-wrap">{rendered_html}</div></div>
+        </div>
+        <div class="code-wrap">
+          <h3>HTML Source</h3>
+          <pre>{escape(panel.render_text or "(empty)")}</pre>
+        </div>
+"""
     if panel.render_kind == "markdown":
         rendered_html = _render_markdown_content(panel.render_text)
         return f"""
@@ -852,21 +927,29 @@ def _build_panel(
                 ),
             )
 
-    table_markdown = _extract_table_markdown(
+    table_render = _extract_table_render_payload(
         blocks=blocks,
         label_payload=label_payload,
         prefer_label_semantics=prefer_label_semantics,
     )
-    if table_markdown:
+    if table_render is not None:
+        render_kind, render_text = table_render
         return ComparePanel(
             title=title,
             source_path=source_path,
             image_type=image_type or "table",
             caption=caption,
-            render_kind="markdown",
-            render_text=table_markdown,
+            render_kind=render_kind,
+            render_text=render_text,
             note="；".join(
-                item for item in ["表格内容以 Markdown 展示", extra_note] if item
+                item
+                for item in [
+                    "表格内容以 HTML 展示"
+                    if render_kind == "html"
+                    else "表格内容以 Markdown 展示",
+                    extra_note,
+                ]
+                if item
             ),
         )
 
@@ -1002,6 +1085,76 @@ def _infer_caption(label_payload: Any, blocks: list[dict[str, Any]]) -> str:
         caption = _extract_caption_from_block(block)
         if caption:
             return caption
+    return ""
+
+
+def _extract_table_render_payload(
+    blocks: list[dict[str, Any]],
+    label_payload: Any,
+    prefer_label_semantics: bool = False,
+) -> tuple[str, str] | None:
+    html_table = _extract_table_html(
+        blocks=blocks,
+        label_payload=label_payload,
+        prefer_label_semantics=prefer_label_semantics,
+    )
+    if html_table:
+        return "html", html_table
+
+    markdown_table = _extract_table_markdown(
+        blocks=blocks,
+        label_payload=label_payload,
+        prefer_label_semantics=prefer_label_semantics,
+    )
+    if markdown_table:
+        return "markdown", markdown_table
+    return None
+
+
+def _extract_table_html(
+    blocks: list[dict[str, Any]],
+    label_payload: Any,
+    prefer_label_semantics: bool = False,
+) -> str:
+    label_image_type = _label_image_type(label_payload).strip().lower()
+    if isinstance(label_payload, dict):
+        structured = label_payload.get("structured_label")
+        if isinstance(structured, dict):
+            structured_format = str(
+                structured.get("format", "") or ""
+            ).strip().lower()
+            content = str(structured.get("content", "") or "").strip()
+            if content and (
+                structured_format == "html"
+                or _looks_like_html_table(content)
+                or (label_image_type == "table" and _looks_like_html_table(content))
+            ):
+                return content
+        if prefer_label_semantics and label_image_type not in {"", "table"}:
+            return ""
+
+    for block in blocks:
+        structured = block.get("structured_label")
+        structured_content = ""
+        structured_format = ""
+        if isinstance(structured, dict):
+            structured_content = str(structured.get("content", "") or "").strip()
+            structured_format = str(structured.get("format", "") or "").strip().lower()
+
+        content_payload = block.get("content")
+        table_body = ""
+        html_content = ""
+        if isinstance(content_payload, dict):
+            table_body = str(content_payload.get("table_body", "") or "").strip()
+            html_content = str(content_payload.get("content", "") or "").strip()
+
+        for candidate in (table_body, structured_content, html_content):
+            if candidate and (
+                structured_format == "html"
+                or _looks_like_html_table(candidate)
+                or (label_image_type == "table" and _looks_like_html_table(candidate))
+            ):
+                return candidate
     return ""
 
 
@@ -1194,6 +1347,105 @@ def _looks_like_markdown_table(text: str) -> bool:
     if len(lines) < 2:
         return False
     return _is_markdown_table_start(lines, 0)
+
+
+def _looks_like_html_table(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    return "<table" in lowered and (
+        "<tr" in lowered
+        or "<td" in lowered
+        or "<th" in lowered
+        or "<thead" in lowered
+        or "<tbody" in lowered
+    )
+
+
+def _sanitize_table_html(html_text: str) -> str:
+    parser = _SafeTableHTMLParser()
+    parser.feed(str(html_text or ""))
+    parser.close()
+    return parser.rendered_html()
+
+
+class _SafeTableHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._parts: list[str] = []
+        self._open_tags: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._emit_start(tag, attrs, closed=False)
+
+    def handle_startendtag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        self._emit_start(tag, attrs, closed=True)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = str(tag or "").strip().lower()
+        if lowered in _SKIPPED_TABLE_HTML_TAGS:
+            if self._skip_depth > 0:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth or lowered not in _ALLOWED_TABLE_HTML_TAGS:
+            return
+        if self._open_tags and self._open_tags[-1] == lowered:
+            self._open_tags.pop()
+            self._parts.append(f"</{lowered}>")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        self._parts.append(escape(data))
+
+    def handle_entityref(self, name: str) -> None:
+        if self._skip_depth:
+            return
+        self._parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if self._skip_depth:
+            return
+        self._parts.append(f"&#{name};")
+
+    def rendered_html(self) -> str:
+        while self._open_tags:
+            self._parts.append(f"</{self._open_tags.pop()}>")
+        return "".join(self._parts)
+
+    def _emit_start(
+        self, tag: str, attrs: list[tuple[str, str | None]], closed: bool
+    ) -> None:
+        lowered = str(tag or "").strip().lower()
+        if lowered in _SKIPPED_TABLE_HTML_TAGS:
+            if not closed:
+                self._skip_depth += 1
+            return
+        if self._skip_depth or lowered not in _ALLOWED_TABLE_HTML_TAGS:
+            return
+        attr_text = _format_safe_html_attrs(lowered, attrs)
+        if closed or lowered in {"br", "col"}:
+            self._parts.append(f"<{lowered}{attr_text} />")
+            return
+        self._parts.append(f"<{lowered}{attr_text}>")
+        self._open_tags.append(lowered)
+
+
+def _format_safe_html_attrs(
+    tag: str, attrs: list[tuple[str, str | None]]
+) -> str:
+    allowed = _ALLOWED_TABLE_HTML_ATTRS.get(tag, set())
+    parts: list[str] = []
+    for name, value in attrs:
+        attr_name = str(name or "").strip().lower()
+        if attr_name not in allowed:
+            continue
+        normalized_value = str(value or "").strip()
+        if not normalized_value:
+            continue
+        parts.append(f' {attr_name}="{escape(normalized_value, quote=True)}"')
+    return "".join(parts)
 
 
 def _is_markdown_table_start(lines: list[str], index: int) -> bool:

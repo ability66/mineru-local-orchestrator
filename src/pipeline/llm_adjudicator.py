@@ -133,7 +133,7 @@ def _parse_patch_decision(issue: Issue, output: ModelOutput | None) -> PatchDeci
         patch=patch,
         reason=reason,
     )
-    decision, patch, reason = _enforce_disagreement_qwen_preference(
+    decision, patch, reason = _reject_false_positive_flowchart_conflict(
         issue=issue,
         decision=decision,
         patch=patch,
@@ -246,16 +246,9 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
         "current_block": _compact_block_summary(issue.mineru_block),
         "reference_block": _compact_block_summary(issue.qwen_block),
         "graph_diff": _compact_graph_diff(graph_diff),
-        "current_excerpt": _build_mermaid_excerpt(
-            current_mermaid,
-            focus_terms,
-            review_mode=review_mode,
-        ),
-        "reference_excerpt": _build_mermaid_excerpt(
-            reference_mermaid,
-            focus_terms,
-            review_mode=review_mode,
-        ),
+        "current_mermaid": current_mermaid,
+        "reference_mermaid": reference_mermaid,
+        "focus_terms": focus_terms,
         "thinking_mode": "disabled_requested_for_flowchart_adjudication",
     }
     if ocr_reference_texts:
@@ -428,8 +421,8 @@ def _validate_patch_decision(
         issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
     )
     review_mode = str(candidate_payload.get("review_mode", "") or "disagreement")
-    if review_mode.strip().lower() != "disagreement":
-        return decision, patch, reason
+    if review_mode.strip().lower() == "second_pass":
+        return "keep_mineru", {}, "llm_patch_merge_not_allowed_for_second_pass"
 
     content_payload = patch.get("content") if isinstance(patch.get("content"), dict) else {}
     proposed_mermaid = normalize_mermaid_text(
@@ -456,7 +449,7 @@ def _validate_patch_decision(
     return decision, patch, reason
 
 
-def _enforce_disagreement_qwen_preference(
+def _reject_false_positive_flowchart_conflict(
     issue: Issue,
     decision: str,
     patch: dict[str, Any],
@@ -472,21 +465,20 @@ def _enforce_disagreement_qwen_preference(
     if review_mode.strip().lower() != "disagreement":
         return decision, patch, reason
 
-    reference_mermaid = normalize_mermaid_text(
-        str(candidate_payload.get("reference_mermaid", "") or "")
-    )
-    if not looks_like_mermaid(reference_mermaid):
-        return "keep_mineru", {}, "qwen_flowchart_reference_invalid"
-
     current_mermaid = normalize_mermaid_text(
         str(candidate_payload.get("current_mermaid", "") or "")
     )
+    reference_mermaid = normalize_mermaid_text(
+        str(candidate_payload.get("reference_mermaid", "") or "")
+    )
+    if not looks_like_mermaid(current_mermaid) or not looks_like_mermaid(reference_mermaid):
+        return decision, patch, reason
+
     current_graph = flowchart_graph_from_mermaid(current_mermaid)
     reference_graph = flowchart_graph_from_mermaid(reference_mermaid)
     if diff_flowchart_graphs(current_graph, reference_graph) == []:
         return "reject_issue", {}, "flowchart_conflict_false_positive"
-
-    return "use_qwen_fields", {}, "qwen_flowchart_preferred_on_conflict"
+    return decision, patch, reason
 
 
 def _merge_flowchart_signatures(*mermaid_texts: str) -> tuple[set[str], set[str]]:

@@ -38,11 +38,11 @@ Biopsy --> Adv["进展期或转移性PC的治疗（图3）"]"""
 
     prompt_payload = build_issue_prompt_payload(issue, "flowchart_adjudication")
 
-    assert prompt_payload["current_excerpt"] == small_mermaid
-    assert prompt_payload["reference_excerpt"] == small_mermaid
+    assert prompt_payload["current_mermaid"] == small_mermaid
+    assert prompt_payload["reference_mermaid"] == small_mermaid
 
 
-def test_parse_patch_decision_converts_overreaching_flowchart_merge_to_qwen_fields_on_disagreement() -> None:
+def test_parse_patch_decision_rejects_overreaching_flowchart_merge_on_disagreement() -> None:
     issue = Issue(
         issue_id="flowchart-diff-m1-missing-node-1",
         issue_type="flowchart_graph_conflict",
@@ -83,12 +83,12 @@ def test_parse_patch_decision_converts_overreaching_flowchart_merge_to_qwen_fiel
 
     decision = _parse_patch_decision(issue=issue, output=output)
 
-    assert decision.decision == "use_qwen_fields"
+    assert decision.decision == "keep_mineru"
     assert decision.patch == {}
-    assert decision.reason == "qwen_flowchart_preferred_on_conflict"
+    assert decision.reason == "llm_patch_overreach_on_disagreement"
 
 
-def test_parse_patch_decision_prefers_qwen_on_flowchart_disagreement() -> None:
+def test_parse_patch_decision_keeps_model_choice_on_flowchart_disagreement() -> None:
     issue = Issue(
         issue_id="flowchart-diff-m1-missing-node-2",
         issue_type="flowchart_graph_conflict",
@@ -126,9 +126,58 @@ def test_parse_patch_decision_prefers_qwen_on_flowchart_disagreement() -> None:
 
     decision = _parse_patch_decision(issue=issue, output=output)
 
-    assert decision.decision == "use_qwen_fields"
+    assert decision.decision == "keep_mineru"
     assert decision.patch == {}
-    assert decision.reason == "qwen_flowchart_preferred_on_conflict"
+    assert decision.reason == "reference excerpt incomplete"
+
+
+def test_parse_patch_decision_accepts_safe_flowchart_merge_on_disagreement() -> None:
+    issue = Issue(
+        issue_id="flowchart-diff-m1-safe-merge-1",
+        issue_type="flowchart_graph_conflict",
+        page_idx=0,
+        target_block_id="m1",
+        candidate_payload={
+            "review_mode": "disagreement",
+            "current_mermaid": (
+                'flowchart TD\nA["开始"] --> B["判断"]\n'
+                'B --> C["结束"]'
+            ),
+            "reference_mermaid": (
+                'flowchart TD\nA["开始"] --> B["判断"]\n'
+                'B --> C["结束"]\nB --> D["补充分支"]'
+            ),
+            "graph_diff": {
+                "diff_kind": "missing_node",
+                "reference_node": {"text": "补充分支"},
+            },
+        },
+        reasons=["flowchart_graph_conflict_detected"],
+    )
+    output = ModelOutput(
+        image_id="img-flow-safe-merge",
+        model_name="qwen-test",
+        success=True,
+        raw_text="""{
+  "issue_id": "flowchart-diff-m1-safe-merge-1",
+  "target_block_id": "m1",
+  "decision": "merge",
+  "patch": {
+    "type": "chart",
+    "sub_type": "flowchart",
+    "content": {
+      "content": "flowchart TD\\nA[\\"开始\\"] --> B[\\"判断\\"]\\nB --> C[\\"结束\\"]\\nB --> D[\\"补充分支\\"]"
+    }
+  },
+  "reason": "merge two correct branches"
+}""",
+    )
+
+    decision = _parse_patch_decision(issue=issue, output=output)
+
+    assert decision.decision == "merge"
+    assert decision.patch["content"]["content"].startswith("flowchart TD")
+    assert decision.reason == "merge two correct branches"
 
 
 def test_parse_patch_decision_rejects_false_positive_helper_node_conflict() -> None:

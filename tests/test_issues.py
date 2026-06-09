@@ -332,10 +332,8 @@ def test_detect_flowchart_issue_reports_graph_conflicts_against_qwen_reference()
     prompt_payload = build_issue_prompt_payload(issues[0], "flowchart_adjudication")
     assert "current_block" in prompt_payload
     assert "reference_block" in prompt_payload
-    assert "current_excerpt" in prompt_payload
-    assert "reference_excerpt" in prompt_payload
-    assert "current_mermaid" not in prompt_payload
-    assert "reference_mermaid" not in prompt_payload
+    assert "current_mermaid" in prompt_payload
+    assert "reference_mermaid" in prompt_payload
 
 
 def test_detect_flowchart_second_pass_issue_without_qwen_reference() -> None:
@@ -380,7 +378,7 @@ def test_detect_flowchart_second_pass_issue_without_qwen_reference() -> None:
 
     prompt_payload = build_issue_prompt_payload(issues[0], "flowchart_adjudication")
     assert prompt_payload["review_mode"] == "second_pass"
-    assert prompt_payload["reference_excerpt"] == ""
+    assert prompt_payload["reference_mermaid"] == ""
 
 
 def test_detect_flowchart_issue_ignores_node_id_alias_when_visible_text_matches() -> None:
