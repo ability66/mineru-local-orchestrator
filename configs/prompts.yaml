@@ -191,8 +191,7 @@ qwen_html_table_adjudication_prompt: |
 
   仲裁原则：
   - 先看表格结构，再看单元格内容，再看数字/单位/公式一致性
-  - 不要把 HTML 字符串长短或格式噪声当成主要依据
-  - `table / caption / thead / tbody / tfoot / tr / th / td` 之外的包装差异通常不是关键
+  - 不要把字符串长短或格式噪声当成主要依据
   - 如果当前 MinerU 结果已经更可信，使用 `keep_mineru`
   - 如果参考候选整体更可信，使用 `use_qwen_fields`
   - 如果某个已有候选可直接采用，也可以使用 `keep_candidate`
