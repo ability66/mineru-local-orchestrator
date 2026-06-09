@@ -267,9 +267,11 @@ def build_html_table_issue(
     consensus_analysis: dict[str, Any],
 ) -> Issue | None:
     del image_task
-    if not isinstance(mineru_candidate, dict):
-        return None
-    block = mineru_candidate.get("block")
+    block = (
+        mineru_candidate.get("block")
+        if isinstance(mineru_candidate, dict)
+        else consensus_analysis.get("fallback_target_block")
+    )
     if not isinstance(block, CanonicalBlock):
         return None
 
@@ -310,6 +312,12 @@ def build_html_table_issue(
         )
         if role == reference_role and isinstance(block_candidate, CanonicalBlock):
             reference_bundle = bundle
+
+    if not any(
+        str(item.get("candidate_id", "") or "").strip().lower() == "mineru"
+        for item in candidate_payloads
+    ):
+        candidate_payloads.insert(0, _build_issue_candidate_from_block(block, role="mineru"))
 
     reference_patch = _build_html_table_reference_patch(reference_bundle)
     reasons = list(consensus_analysis.get("review_reasons") or [])
@@ -368,6 +376,72 @@ def build_html_table_issue(
         },
         reasons=reasons,
     )
+
+
+def _build_issue_candidate_from_block(
+    block: CanonicalBlock,
+    role: str,
+) -> dict[str, Any]:
+    content = block.content if isinstance(block.content, dict) else {}
+    table_content = next(
+        (
+            candidate
+            for candidate in (
+                str(content.get("table_body", "") or "").strip(),
+                str(content.get("content", "") or "").strip(),
+                str(block.structured_label.content or "").strip(),
+                str(block.text or "").strip(),
+                next(
+                    (
+                        str(item or "").strip()
+                        for item in block.visible_text
+                        if str(item or "").strip()
+                    ),
+                    "",
+                ),
+            )
+            if candidate
+        ),
+        "",
+    )
+    caption = (
+        block.caption_structured.brief.strip()
+        or " ".join(
+            str(item).strip()
+            for item in content.get("table_caption", [])
+            if str(item).strip()
+        ).strip()
+        or " ".join(
+            str(item).strip()
+            for item in content.get("chart_caption", [])
+            if str(item).strip()
+        ).strip()
+        or None
+    )
+    return {
+        "candidate_id": str(role or "").strip().lower() or "candidate",
+        "model_name": str(role or "").strip() or "candidate",
+        "block_id": block.block_id,
+        "block_type": block.type,
+        "sub_type": block.sub_type,
+        "caption": caption,
+        "visible_text": list(block.visible_text)[:10],
+        "ocr_texts": [
+            str(region.text or "").strip()
+            for region in block.ocr_regions
+            if str(region.text or "").strip()
+        ][:10],
+        "table_format": "html"
+        if str(block.structured_label.format or "").strip().lower() == "html"
+        else "markdown"
+        if str(block.structured_label.format or "").strip().lower() == "markdown"
+        else "none",
+        "table_content": table_content,
+        "html_table": "",
+        "cell_count": 0,
+        "row_count": 0,
+        "col_count": 0,
+    }
 
 
 def _detect_pair_issue(

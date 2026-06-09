@@ -38,6 +38,12 @@ def analyze_html_table_bundles(
     allow_non_table_chart_fallback: bool = False,
 ) -> dict[str, Any] | None:
     ordered_bundles = [{"role": "mineru", **mineru_bundle}] + list(auxiliary_bundles)
+    mineru_document = (
+        mineru_bundle.get("document")
+        if isinstance(mineru_bundle.get("document"), CanonicalDocument)
+        else None
+    )
+    fallback_target_block = _pick_html_table_issue_target_block(mineru_document)
     candidate_bundles: list[dict[str, Any]] = []
     candidate_payloads: list[dict[str, Any]] = []
     signaled_roles: list[str] = []
@@ -86,6 +92,7 @@ def analyze_html_table_bundles(
                 "reason": fallback_reason,
                 "candidate_roles": list(dict.fromkeys(signaled_roles)),
                 "candidate_bundles": candidate_bundles,
+                "fallback_target_block": fallback_target_block,
                 "role_lookup": {
                     str(bundle.get("role", "") or "").strip().lower(): bundle
                     for bundle in candidate_bundles
@@ -106,6 +113,7 @@ def analyze_html_table_bundles(
     }
     analysis["candidate_bundles"] = candidate_bundles
     analysis["role_lookup"] = role_lookup
+    analysis["fallback_target_block"] = fallback_target_block
     analysis["mineru_candidate"] = next(
         (
             bundle.get("html_table_candidate")
@@ -149,6 +157,27 @@ def _has_non_flowchart_chart_signal(document: CanonicalDocument) -> bool:
         if block.type == "chart" or source_block_type == "chart":
             return True
     return False
+
+
+def _pick_html_table_issue_target_block(
+    document: CanonicalDocument | None,
+) -> CanonicalBlock | None:
+    if not isinstance(document, CanonicalDocument):
+        return None
+    for block in sorted(
+        document.blocks,
+        key=lambda item: (item.page_idx, item.order_index, item.block_id),
+    ):
+        if str(block.sub_type or "").strip().lower() == "flowchart":
+            continue
+        if block.structured_label.kind == "mermaid" or block.flowchart_graph:
+            continue
+        source_block_type = str(
+            block.provenance.get("source_block_type", "") or ""
+        ).strip().lower()
+        if block.type in {"table", "chart"} or source_block_type == "chart":
+            return block
+    return None
 
 
 def adjudicate_documents(
