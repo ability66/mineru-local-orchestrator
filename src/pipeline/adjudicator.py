@@ -286,6 +286,12 @@ def adjudicate_documents(
         graph_fusion_result=graph_fusion_result,
         existing=consensus,
     )
+    consensus = _override_chart_table_mode_consensus(
+        image_id=image_task.image_id,
+        issues=issues or [],
+        qwen_output=qwen_output,
+        existing=consensus,
+    )
     selected_seal_document = _select_issue_driven_seal_document(
         image_id=image_task.image_id,
         selection=seal_selection,
@@ -309,6 +315,15 @@ def adjudicate_documents(
     )
     if selected_flowchart_document is not None:
         final_document = selected_flowchart_document
+    selected_chart_table_document = _select_issue_driven_chart_table_document(
+        image_id=image_task.image_id,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        issues=issues or [],
+        qwen_output=qwen_output,
+    )
+    if selected_chart_table_document is not None:
+        final_document = selected_chart_table_document
     preferred_label, allow_type_override, allow_graph_override = (
         _pick_enrichment_policy(
             mineru_label=mineru_label,
@@ -342,6 +357,10 @@ def adjudicate_documents(
             if selected_role == "qwen"
             else mineru_label or qwen_label
         )
+        allow_type_override = False
+        allow_graph_override = False
+    if selected_chart_table_document is not None:
+        preferred_label = derive_label_from_document(final_document)
         allow_type_override = False
         allow_graph_override = False
     _inject_label_enrichment(
@@ -1025,6 +1044,33 @@ def _override_flowchart_mode_consensus(
     )
 
 
+def _override_chart_table_mode_consensus(
+    image_id: str,
+    issues: list[Issue],
+    qwen_output: ModelOutput | None,
+    existing: ConsensusResult | None,
+) -> ConsensusResult | None:
+    if not _is_issue_driven_chart_table_mode(issues):
+        return existing
+    if qwen_output is None or not qwen_output.success:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=[
+                "chart table requires qwen second-stage adjudication but no usable qwen result was produced"
+            ],
+            escalation_reasons=["chart_table_second_pass_missing_qwen_result"],
+            existing=existing,
+        )
+    return _build_issue_driven_consensus(
+        image_id=image_id,
+        decision="accepted",
+        reasons=["chart table resolved by qwen second-stage adjudication"],
+        escalation_reasons=[],
+        existing=existing,
+    )
+
+
 def _is_issue_driven_stamp_mode(
     mineru_document: CanonicalDocument,
     qwen_document: CanonicalDocument,
@@ -1105,6 +1151,58 @@ def _select_issue_driven_flowchart_document(
         else "final"
     )
     selected_document.raw_metadata["selected_by"] = "flowchart_issue_resolution"
+    selected_document.raw_metadata["selected_image_id"] = image_id
+    selected_document.warnings = _deduplicate(
+        selected_document.warnings
+        + _collect_document_warnings(mineru_document, qwen_document)
+    )
+    return selected_document
+
+
+def _is_issue_driven_chart_table_mode(issues: list[Issue]) -> bool:
+    for issue in issues:
+        if str(issue.issue_type or "").strip() != "html_table_conflict":
+            continue
+        candidate_payload = (
+            issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
+        )
+        review_mode = str(candidate_payload.get("review_mode", "") or "").strip().lower()
+        if review_mode == "chart_table_second_pass":
+            return True
+    return False
+
+
+def _select_issue_driven_chart_table_document(
+    image_id: str,
+    mineru_document: CanonicalDocument,
+    qwen_document: CanonicalDocument,
+    issues: list[Issue],
+    qwen_output: ModelOutput | None,
+) -> CanonicalDocument | None:
+    if not _is_issue_driven_chart_table_mode(issues):
+        return None
+    if qwen_output is None or not qwen_output.success:
+        return None
+
+    selected_document = mineru_document.model_copy(deep=True)
+    selected_document.raw_metadata = dict(selected_document.raw_metadata or {})
+    selected_document.raw_metadata["selected_output_role"] = "qwen"
+    selected_document.raw_metadata["selected_model_name"] = (
+        qwen_output.model_name
+        if str(qwen_output.model_name or "").strip()
+        else selected_document.source
+    )
+    selected_document.raw_metadata["selected_vendor"] = (
+        qwen_output.vendor
+        if str(qwen_output.vendor or "").strip()
+        else selected_document.source
+    )
+    selected_document.raw_metadata["selected_source_type"] = (
+        qwen_output.source_type
+        if str(qwen_output.source_type or "").strip()
+        else "judge_second_stage"
+    )
+    selected_document.raw_metadata["selected_by"] = "chart_table_second_pass_adjudication"
     selected_document.raw_metadata["selected_image_id"] = image_id
     selected_document.warnings = _deduplicate(
         selected_document.warnings

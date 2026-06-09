@@ -918,10 +918,14 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
     artifact = json.loads(
         (tmp_path / "final" / "html-table-fallback_artifact.json").read_text(encoding="utf-8")
     )
+    final_output = json.loads(
+        (tmp_path / "final" / "html-table-fallback.json").read_text(encoding="utf-8")
+    )
     assert len(qwen_client.calls) == 1
     assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
     assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
     assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
+    assert final_output["model_name"] == "qwen-local"
     assert artifact["final_document"]["blocks"][0]["type"] == "table"
     assert (
         artifact["final_document"]["blocks"][0]["content"]["table_body"]
@@ -930,6 +934,17 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
     assert artifact["final_document"]["blocks"][0]["content"]["table_caption"] == [
         "Qwen 终裁表格"
     ]
+    assert artifact["final_document"]["raw_metadata"]["selected_output_role"] == "qwen"
+    assert (
+        artifact["final_document"]["raw_metadata"]["selected_by"]
+        == "chart_table_second_pass_adjudication"
+    )
+    assert artifact["final_label"]["caption"] == "Qwen 终裁表格"
+    assert artifact["consensus"]["decision"] == "accepted"
+    assert (
+        "chart table resolved by qwen second-stage adjudication"
+        in artifact["consensus"]["reasons"]
+    )
     assert "only one parsable label" not in artifact["consensus"]["reasons"]
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is False
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stable_consensus"] is True
@@ -1014,12 +1029,18 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
             encoding="utf-8"
         )
     )
+    final_output = json.loads(
+        (tmp_path / "final" / "plain-chart-force-qwen.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert len(qwen_client.calls) == 1
     assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
     assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
     assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
     assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_format"] == "none"
     assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_content"] == chart_text
+    assert final_output["model_name"] == "qwen-local"
     assert artifact["final_document"]["blocks"][0]["type"] == "table"
     assert (
         artifact["final_document"]["blocks"][0]["content"]["table_body"]
@@ -1028,6 +1049,17 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
     assert artifact["final_document"]["blocks"][0]["content"]["table_caption"] == [
         "Qwen 重建表格"
     ]
+    assert artifact["final_document"]["raw_metadata"]["selected_output_role"] == "qwen"
+    assert (
+        artifact["final_document"]["raw_metadata"]["selected_by"]
+        == "chart_table_second_pass_adjudication"
+    )
+    assert artifact["final_label"]["caption"] == "Qwen 重建表格"
+    assert artifact["consensus"]["decision"] == "accepted"
+    assert (
+        "chart table resolved by qwen second-stage adjudication"
+        in artifact["consensus"]["reasons"]
+    )
     assert (
         artifact["final_document"]["raw_metadata"]["html_table_analysis"]["forced_second_pass"]
         is True
