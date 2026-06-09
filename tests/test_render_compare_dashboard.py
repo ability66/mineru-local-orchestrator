@@ -641,6 +641,120 @@ def test_generate_compare_dashboard_shows_qwen_adjudication_for_non_flowchart(
     assert "QWEN原始文本不应显示" not in html
 
 
+def test_generate_compare_dashboard_shows_qwen_chart_second_pass_table_for_non_flowchart(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    mineru_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |",
+                        "table_caption": ["MinerU 表格"],
+                    },
+                }
+            ]
+        },
+        "derived_label": {"image_type": "table", "caption": "MinerU 表格"},
+    }
+    qwen_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "chart",
+                    "text": "Qwen 原始识别文本不应显示",
+                }
+            ]
+        },
+        "derived_label": {"image_type": "chart", "caption": "Qwen 图表"},
+    }
+    artifact_payload = {
+        "final_document": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |\n| 同比 | 8% |",
+                        "table_caption": ["Qwen 终裁表格"],
+                    },
+                }
+            ]
+        },
+        "final_label": {
+            "image_type": "table",
+            "caption": "Qwen 终裁表格",
+            "structured_label": {
+                "kind": "table",
+                "content": "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |\n| 同比 | 8% |",
+                "format": "markdown",
+                "source": "model",
+            },
+        },
+        "issues": [
+            {
+                "issue_id": "html-table-m1",
+                "candidate_payload": {
+                    "review_mode": "chart_table_second_pass",
+                    "branch_mode": "chart_table",
+                },
+            }
+        ],
+        "patch_decisions": [
+            {
+                "issue_id": "html-table-m1",
+                "decision": "merge",
+                "reason": "chart table second-pass adjudication",
+                "patch": {
+                    "type": "table",
+                    "content": {
+                        "table_body": "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |\n| 同比 | 8% |",
+                        "table_caption": ["Qwen 终裁表格"],
+                    },
+                },
+            }
+        ],
+    }
+
+    (output_dir / "normalized" / "mineru" / "chart-qwen-table.json").write_text(
+        json.dumps(mineru_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "chart-qwen-table.json").write_text(
+        json.dumps(qwen_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "chart-qwen-table_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">Qwen<" in html
+    assert "final/chart-qwen-table_artifact.json" in html
+    assert "展示二阶段 Qwen 终裁表格" in html
+    assert "展示裁决结果与原因" not in html
+    assert "Rendered Markdown" in html
+    assert "<th>指标</th>" in html
+    assert "<td>8%</td>" in html
+    assert "Qwen 终裁表格" in html
+    assert "Qwen 原始识别文本不应显示" not in html
+
+
 def test_generate_compare_dashboard_hides_empty_qwen_adjudication_panel_for_non_flowchart(
     tmp_path,
 ) -> None:

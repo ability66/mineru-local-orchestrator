@@ -820,6 +820,19 @@ def _build_qwen_panel(
             source_path=source_path,
         )
 
+    qwen_table_payload = _extract_qwen_chart_table_render_payload(artifact_payload)
+    if qwen_table_payload is not None:
+        blocks, label_payload = qwen_table_payload
+        return _build_panel(
+            title="Qwen",
+            source_path=artifact_source_path,
+            blocks=blocks,
+            label_payload=label_payload,
+            mermaid_snapshot=snapshot_lookup.get("Qwen"),
+            extra_note="展示二阶段 Qwen 终裁表格",
+            prefer_label_semantics=True,
+        )
+
     adjudication_text = _extract_qwen_adjudication_text(artifact_payload)
     if not adjudication_text:
         return None
@@ -1256,6 +1269,99 @@ def _extract_table_markdown(
         ) and _looks_like_markdown_table(block_text):
             return block_text
     return ""
+
+
+def _extract_qwen_chart_table_render_payload(
+    artifact_payload: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    if not isinstance(artifact_payload, dict):
+        return None
+
+    issues = artifact_payload.get("issues")
+    patch_decisions = artifact_payload.get("patch_decisions")
+    if not isinstance(issues, list) or not isinstance(patch_decisions, list):
+        return None
+
+    issue_lookup: dict[str, dict[str, Any]] = {}
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        issue_id = str(issue.get("issue_id", "") or "").strip()
+        if issue_id:
+            issue_lookup[issue_id] = issue
+
+    blocks: list[dict[str, Any]] = []
+    for decision in patch_decisions:
+        if not isinstance(decision, dict):
+            continue
+        issue_id = str(decision.get("issue_id", "") or "").strip()
+        issue_payload = issue_lookup.get(issue_id)
+        if not _is_chart_table_second_pass_issue(issue_payload):
+            continue
+        block = _build_table_block_from_patch_payload(decision.get("patch"))
+        if block is not None:
+            blocks.append(block)
+
+    if not blocks:
+        return None
+
+    first_block = blocks[0]
+    label_payload: dict[str, Any] = {
+        "image_type": "table",
+        "caption": _extract_caption_from_block(first_block),
+    }
+    structured_label = first_block.get("structured_label")
+    if isinstance(structured_label, dict):
+        label_payload["structured_label"] = structured_label
+    return blocks, label_payload
+
+
+def _is_chart_table_second_pass_issue(issue_payload: Any) -> bool:
+    if not isinstance(issue_payload, dict):
+        return False
+    candidate_payload = issue_payload.get("candidate_payload")
+    if not isinstance(candidate_payload, dict):
+        return False
+    review_mode = str(candidate_payload.get("review_mode", "") or "").strip().lower()
+    return review_mode == "chart_table_second_pass"
+
+
+def _build_table_block_from_patch_payload(patch_payload: Any) -> dict[str, Any] | None:
+    if not isinstance(patch_payload, dict):
+        return None
+
+    content_payload = patch_payload.get("content")
+    if not isinstance(content_payload, dict):
+        return None
+
+    patch_type = str(patch_payload.get("type", "") or "").strip().lower()
+    table_body = str(content_payload.get("table_body", "") or "").strip()
+    if not table_body and patch_type == "chart":
+        table_body = str(content_payload.get("content", "") or "").strip()
+    if not table_body:
+        return None
+
+    table_caption = _coerce_text_list(content_payload.get("table_caption"))
+    if not table_caption:
+        table_caption = _coerce_text_list(content_payload.get("chart_caption"))
+
+    structured_format = "html" if _looks_like_html_table(table_body) else "markdown"
+    block_content: dict[str, Any] = {"table_body": table_body}
+    if table_caption:
+        block_content["table_caption"] = table_caption
+
+    return {
+        "type": "table",
+        "sub_type": "table",
+        "content": block_content,
+        "structured_label": {
+            "kind": "table",
+            "content": table_body,
+            "format": structured_format,
+            "source": "model",
+        },
+        "text": "\n".join(table_caption) if table_caption else table_body,
+    }
 
 
 def _extract_qwen_adjudication_text(artifact_payload: Any) -> str:
@@ -1722,6 +1828,13 @@ def _deduplicate_texts(values: list[str]) -> list[str]:
         seen.add(normalized)
         ordered.append(text)
     return ordered
+
+
+def _coerce_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [text for text in (str(item).strip() for item in value) if text]
+    text = str(value or "").strip()
+    return [text] if text else []
 
 
 def _build_type_options(records: list[dict[str, Any]]) -> list[dict[str, str]]:
