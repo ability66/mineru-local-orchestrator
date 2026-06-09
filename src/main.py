@@ -485,10 +485,8 @@ def _should_use_html_table_branch(
     return False
 
 
-def _is_non_flowchart_chart_table_block(block: CanonicalBlock) -> bool:
+def _is_non_flowchart_chart_block(block: CanonicalBlock) -> bool:
     if _is_flowchart_candidate_block(block):
-        return False
-    if block.structured_label.kind != "table":
         return False
     source_block_type = str(
         block.provenance.get("source_block_type", "") or ""
@@ -509,7 +507,7 @@ def _should_force_chart_table_second_pass(
 ) -> bool:
     del mineru_label
     return any(
-        _is_non_flowchart_chart_table_block(block)
+        _is_non_flowchart_chart_block(block)
         for block in mineru_document.blocks
     )
 
@@ -1333,11 +1331,22 @@ def process_image_task(
         if not use_flowchart_branch
         else []
     )
-    use_html_table_branch = (
-        _should_use_html_table_branch(
+    force_chart_table_second_pass = (
+        _should_force_chart_table_second_pass(
             mineru_document=mineru_document,
             mineru_label=mineru_label,
-            auxiliary_bundles=auxiliary_bundles,
+        )
+        if not use_flowchart_branch
+        else False
+    )
+    use_html_table_branch = (
+        (
+            force_chart_table_second_pass
+            or _should_use_html_table_branch(
+                mineru_document=mineru_document,
+                mineru_label=mineru_label,
+                auxiliary_bundles=auxiliary_bundles,
+            )
         )
         if not use_flowchart_branch
         else False
@@ -1358,7 +1367,6 @@ def process_image_task(
     html_table_patch_decisions: list[PatchDecision] = []
     html_table_patch_outputs: list[ModelOutput] = []
     html_table_analysis: dict[str, Any] | None = None
-    force_chart_table_second_pass = False
     paddle_ocr_reference_texts, paddle_ocr_reference_model = (
         _extract_flowchart_ocr_reference(paddle_bundle)
         if use_flowchart_branch
@@ -1388,13 +1396,10 @@ def process_image_task(
             qwen_output = seal_selection_output
 
     if use_html_table_branch:
-        force_chart_table_second_pass = _should_force_chart_table_second_pass(
-            mineru_document=mineru_document,
-            mineru_label=mineru_label,
-        )
         html_table_analysis = analyze_html_table_bundles(
             mineru_bundle=mineru_bundle,
             auxiliary_bundles=auxiliary_bundles,
+            allow_non_table_chart_fallback=force_chart_table_second_pass,
         )
         if isinstance(html_table_analysis, dict):
             html_table_analysis["branch_mode"] = (

@@ -89,6 +89,24 @@ def _html_table_block(
     return block
 
 
+def _plain_chart_block(
+    block_id: str,
+    chart_text: str,
+    image_path: str = "data/demo.png",
+) -> dict[str, Any]:
+    return {
+        "block_id": block_id,
+        "type": "chart",
+        "sub_type": "bar_chart",
+        "bbox": [0, 0, 1000, 1000],
+        "content": {
+            "img_path": image_path,
+            "content": chart_text,
+            "chart_caption": ["普通图表"],
+        },
+    }
+
+
 def test_pick_seal_reference_bundle_prefers_richer_auxiliary_result() -> None:
     image_task = ImageTask(
         image_id="seal-1",
@@ -922,6 +940,106 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
     assert (
         artifact["final_document"]["raw_metadata"]["html_table_analysis"]["branch_mode"]
         == "chart_table"
+    )
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
+
+
+def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="plain-chart-force-qwen",
+        image_path="data/demo.png",
+        file_name="plain-chart-force-qwen.png",
+        file_ext=".png",
+    )
+    chart_text = "地区 华东 10 华南 20 华北 15"
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_plain_chart_block("m1", chart_text)])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_plain_chart_block("p1", chart_text)])}],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_plain_chart_block("g1", chart_text)])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "issue_id": "html-table-m1",
+                        "target_block_id": "m1",
+                        "decision": "merge",
+                        "patch": {
+                            "type": "table",
+                            "content": {
+                                "table_body": "| 地区 | 数值 |\n| --- | --- |\n| 华东 | 10 |\n| 华南 | 20 |\n| 华北 | 15 |",
+                                "table_caption": ["Qwen 重建表格"],
+                            },
+                        },
+                        "reason": "chart table second-pass adjudication",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        html_table_adjudication_prompt="html table prompt",
+    )
+
+    artifact = json.loads(
+        (tmp_path / "final" / "plain-chart-force-qwen_artifact.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(qwen_client.calls) == 1
+    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
+    assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
+    assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_format"] == "none"
+    assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_content"] == chart_text
+    assert artifact["final_document"]["blocks"][0]["type"] == "table"
+    assert (
+        artifact["final_document"]["blocks"][0]["content"]["table_body"]
+        == "| 地区 | 数值 |\n| --- | --- |\n| 华东 | 10 |\n| 华南 | 20 |\n| 华北 | 15 |"
+    )
+    assert artifact["final_document"]["blocks"][0]["content"]["table_caption"] == [
+        "Qwen 重建表格"
+    ]
+    assert (
+        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["forced_second_pass"]
+        is True
+    )
+    assert (
+        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["branch_mode"]
+        == "chart_table"
+    )
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is True
+    assert (
+        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback_reason"]
+        == "html_table_consensus_unavailable"
     )
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
 

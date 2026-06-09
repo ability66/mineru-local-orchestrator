@@ -35,6 +35,7 @@ from src.validators import ValidationResult
 def analyze_html_table_bundles(
     mineru_bundle: dict[str, Any],
     auxiliary_bundles: list[dict[str, Any]],
+    allow_non_table_chart_fallback: bool = False,
 ) -> dict[str, Any] | None:
     ordered_bundles = [{"role": "mineru", **mineru_bundle}] + list(auxiliary_bundles)
     candidate_bundles: list[dict[str, Any]] = []
@@ -49,10 +50,14 @@ def analyze_html_table_bundles(
             continue
         if isinstance(output, ModelOutput) and not output.success:
             continue
-        if not is_table_like(document) and not is_table_like(label):
+        has_chart_fallback_signal = allow_non_table_chart_fallback and _has_non_flowchart_chart_signal(document)
+        if not is_table_like(document) and not is_table_like(label) and not has_chart_fallback_signal:
             continue
         signaled_roles.append(role)
-        html_table_candidate = extract_best_table_candidate(document)
+        html_table_candidate = extract_best_table_candidate(
+            document,
+            allow_non_table_chart_fallback=has_chart_fallback_signal,
+        )
         if not isinstance(html_table_candidate, dict):
             continue
         candidate_bundle = {
@@ -71,9 +76,14 @@ def analyze_html_table_bundles(
     analysis = analyze_html_table_candidate_consensus(candidate_payloads)
     if analysis is None:
         if signaled_roles:
+            fallback_reason = (
+                "html_table_candidate_extraction_failed"
+                if not candidate_bundles
+                else "html_table_consensus_unavailable"
+            )
             return {
                 "fallback": True,
-                "reason": "html_table_candidate_extraction_failed",
+                "reason": fallback_reason,
                 "candidate_roles": list(dict.fromkeys(signaled_roles)),
                 "candidate_bundles": candidate_bundles,
                 "role_lookup": {
@@ -120,6 +130,25 @@ def pick_html_table_reference_bundle(
         return None
     bundle = role_lookup.get(reference_role)
     return bundle if isinstance(bundle, dict) else None
+
+
+def _has_non_flowchart_chart_signal(document: CanonicalDocument) -> bool:
+    for block in document.blocks:
+        if str(block.sub_type or "").strip().lower() == "flowchart":
+            continue
+        if block.structured_label.kind == "mermaid" or block.flowchart_graph:
+            continue
+        source_block_type = str(
+            block.provenance.get("source_block_type", "") or ""
+        ).strip().lower()
+        source_sub_type = str(
+            block.provenance.get("source_sub_type", "") or ""
+        ).strip().lower()
+        if source_sub_type == "flowchart":
+            continue
+        if block.type == "chart" or source_block_type == "chart":
+            return True
+    return False
 
 
 def adjudicate_documents(

@@ -207,47 +207,107 @@ def detect_table_format(value: str) -> str:
 
 def extract_best_table_candidate(
     document: CanonicalDocument | None,
+    allow_non_table_chart_fallback: bool = False,
 ) -> dict[str, Any] | None:
     if not isinstance(document, CanonicalDocument):
         return None
 
     best_candidate: dict[str, Any] | None = None
+    fallback_candidate: dict[str, Any] | None = None
     for block in sorted(
         document.blocks,
         key=lambda item: (item.page_idx, item.order_index, item.block_id),
     ):
-        if not is_table_like(block):
+        parsed_candidate = None
+        if is_table_like(block):
+            parsed_candidate = _first_parseable_table_candidate(
+                _block_table_candidates(block)
+            )
+        if parsed_candidate is not None:
+            table_text, html_text, table_ir, table_format = parsed_candidate
+            candidate = _build_table_candidate(
+                block=block,
+                table_text=table_text,
+                html_text=html_text,
+                table_ir=table_ir,
+                table_format=table_format,
+            )
+            if best_candidate is None or _candidate_cell_count(
+                candidate
+            ) > _candidate_cell_count(best_candidate):
+                best_candidate = candidate
             continue
-        parsed_candidate = _first_parseable_table_candidate(_block_table_candidates(block))
-        if parsed_candidate is None:
+
+        if not allow_non_table_chart_fallback:
             continue
-        table_text, html_text, table_ir, table_format = parsed_candidate
-        candidate = {
-            "block": block,
-            "table_text": table_text,
-            "html": html_text,
-            "table_ir": table_ir,
-            "table_format": table_format,
-            "block_id": block.block_id,
-            "block_type": block.type,
-            "sub_type": block.sub_type,
-            "caption": block.caption_structured.brief or block.text,
-            "visible_text": list(block.visible_text),
-            "ocr_texts": [
-                str(region.text or "").strip()
-                for region in block.ocr_regions
-                if str(region.text or "").strip()
-            ],
-        }
-        if best_candidate is None or _candidate_cell_count(candidate) > _candidate_cell_count(best_candidate):
-            best_candidate = candidate
-    return best_candidate
+        if not _is_non_flowchart_chart_origin_block(block):
+            continue
+        candidate = _build_chart_fallback_candidate(block)
+        if candidate is None:
+            continue
+        if fallback_candidate is None or len(
+            str(candidate.get("table_text", "") or "")
+        ) > len(str(fallback_candidate.get("table_text", "") or "")):
+            fallback_candidate = candidate
+    return best_candidate or fallback_candidate
 
 
 def extract_best_html_table_candidate(
     document: CanonicalDocument | None,
 ) -> dict[str, Any] | None:
     return extract_best_table_candidate(document)
+
+
+def _build_table_candidate(
+    block: CanonicalBlock,
+    table_text: str,
+    html_text: str,
+    table_ir: Any,
+    table_format: str,
+) -> dict[str, Any]:
+    return {
+        "block": block,
+        "table_text": table_text,
+        "html": html_text,
+        "table_ir": table_ir,
+        "table_format": table_format,
+        "block_id": block.block_id,
+        "block_type": block.type,
+        "sub_type": block.sub_type,
+        "caption": block.caption_structured.brief or block.text,
+        "visible_text": list(block.visible_text),
+        "ocr_texts": [
+            str(region.text or "").strip()
+            for region in block.ocr_regions
+            if str(region.text or "").strip()
+        ],
+    }
+
+
+def _build_chart_fallback_candidate(block: CanonicalBlock) -> dict[str, Any] | None:
+    raw_text = next(
+        (
+            str(candidate or "").strip()
+            for candidate in _block_table_candidates(block)
+            if str(candidate or "").strip()
+        ),
+        "",
+    )
+    if not raw_text:
+        return None
+    table_format = detect_table_format(raw_text)
+    html_text = ""
+    if table_format == "html":
+        html_text = raw_text
+    elif table_format == "markdown":
+        html_text = _markdown_table_to_html(raw_text)
+    return _build_table_candidate(
+        block=block,
+        table_text=raw_text,
+        html_text=html_text,
+        table_ir=None,
+        table_format=table_format,
+    )
 
 
 def normalize_cell_text(text: str) -> str:
@@ -350,6 +410,22 @@ def _is_flowchart_block(block: CanonicalBlock) -> bool:
     if block.structured_label.kind == "mermaid":
         return True
     return bool(block.flowchart_graph)
+
+
+def _is_non_flowchart_chart_origin_block(block: CanonicalBlock) -> bool:
+    if _is_flowchart_block(block):
+        return False
+    source_block_type = str(
+        block.provenance.get("source_block_type", "") or ""
+    ).strip().lower()
+    source_sub_type = str(
+        block.provenance.get("source_sub_type", "") or ""
+    ).strip().lower()
+    if source_sub_type == "flowchart":
+        return False
+    if block.type == "chart":
+        return True
+    return source_block_type == "chart"
 
 
 def _block_table_candidates(block: CanonicalBlock) -> list[str]:
