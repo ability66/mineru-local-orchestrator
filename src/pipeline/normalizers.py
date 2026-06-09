@@ -9,6 +9,7 @@ from src.normalizer import (
     normalize_model_output,
 )
 from src.pipeline.flowchart_utils import looks_like_mermaid
+from src.pipeline.table_utils import is_html_table_like
 from src.schema import (
     CanonicalBlock,
     CanonicalDocument,
@@ -333,6 +334,12 @@ def _block_from_v2_payload(
     payload_format = "content_list_v2" if isinstance(raw_content, dict) else "json_res_flat"
 
     block_sub_type = _optional_text(block.get("sub_type"))
+    if (
+        block_type == "chart"
+        and str(block_sub_type or "").strip().lower() not in {"flowchart", "html_table"}
+        and structured_label.kind == "table"
+    ):
+        block_sub_type = "html_table"
 
     return CanonicalBlock(
         block_id=block_id,
@@ -453,7 +460,14 @@ def _document_from_parsed_label(
         sub_type = "flowchart" if parsed_label.image_type == "flowchart" else None
         if parsed_label.caption:
             content["chart_caption"] = [parsed_label.caption]
-        if parsed_label.image_type != "flowchart" and parsed_label.structured_label.content:
+        if (
+            parsed_label.image_type != "flowchart"
+            and parsed_label.structured_label.kind == "table"
+            and parsed_label.structured_label.content
+        ):
+            sub_type = "html_table"
+            content["content"] = parsed_label.structured_label.content
+        elif parsed_label.image_type != "flowchart" and parsed_label.structured_label.content:
             content["content"] = parsed_label.structured_label.content
         elif looks_like_mermaid(parsed_label.structured_label.content):
             content["content"] = parsed_label.structured_label.content
@@ -521,6 +535,14 @@ def _apply_label_patch_to_document(
     if parsed_label.image_type in {"chart", "flowchart"} and target.type == "chart":
         if parsed_label.image_type == "flowchart":
             target.sub_type = "flowchart"
+        elif (
+            parsed_label.structured_label.kind == "table"
+            and parsed_label.structured_label.content.strip()
+            and not str(target.content.get("content", "") or "").strip()
+        ):
+            target.sub_type = target.sub_type or "html_table"
+            target.content["content"] = parsed_label.structured_label.content
+            target.structured_label = parsed_label.structured_label
         if (
             looks_like_mermaid(parsed_label.structured_label.content)
             and not str(target.content.get("content", "") or "").strip()
@@ -1007,10 +1029,12 @@ def _structured_label_from_block_payload(
     content: dict[str, Any],
 ) -> StructuredLabel:
     if block_type == "table":
+        table_body = str(content.get("table_body", "") or "")
+        structured_format = "html" if is_html_table_like({"type": "table", "content": {"table_body": table_body}}) else "markdown"
         return StructuredLabel(
             kind="table",
-            content=str(content.get("table_body", "") or ""),
-            format="markdown",
+            content=table_body,
+            format=structured_format,  # type: ignore[arg-type]
             source="mineru",
         )
     if block_type == "chart" and str(block.get("sub_type") or "").strip().lower() == "flowchart":
@@ -1028,6 +1052,23 @@ def _structured_label_from_block_payload(
             content=caption_fallback,
             format="plain_text" if caption_fallback else "none",
             source="mineru" if caption_fallback else "none",
+        )
+    if (
+        block_type == "chart"
+        and str(block.get("sub_type") or "").strip().lower() != "flowchart"
+        and is_html_table_like(
+            {
+                "type": "chart",
+                "sub_type": block.get("sub_type"),
+                "content": {"content": str(content.get("content", "") or "")},
+            }
+        )
+    ):
+        return StructuredLabel(
+            kind="table",
+            content=str(content.get("content", "") or ""),
+            format="html",
+            source="mineru",
         )
     return StructuredLabel(kind="none", content="", format="none", source="none")
 

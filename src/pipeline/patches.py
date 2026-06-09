@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.pipeline.flowchart_utils import flowchart_graph_from_mermaid, looks_like_mermaid, normalize_mermaid_text
+from src.pipeline.table_utils import is_html_table_like
 from src.schema import CanonicalBlock, CanonicalDocument, OcrRegion, PatchDecision, StructuredLabel
 
 
@@ -156,12 +157,34 @@ def _refresh_block_semantics(block: CanonicalBlock) -> None:
     if block.type == "table":
         table_body = str(block.content.get("table_body", "") or "").strip()
         if table_body:
+            structured_format = "html" if is_html_table_like({"type": "table", "content": {"table_body": table_body}}) else "markdown"
             block.structured_label = StructuredLabel(
                 kind="table",
                 content=table_body,
-                format="markdown",
+                format=structured_format,  # type: ignore[arg-type]
                 source="model",
             )
+        return
+
+    if (
+        block.type == "chart"
+        and str(block.sub_type or "").strip().lower() != "flowchart"
+        and is_html_table_like(
+            {
+                "type": "chart",
+                "sub_type": block.sub_type,
+                "content": {"content": str(block.content.get("content", "") or "")},
+                "visible_text": block.visible_text,
+            }
+        )
+    ):
+        block.sub_type = block.sub_type or "html_table"
+        block.structured_label = StructuredLabel(
+            kind="table",
+            content=str(block.content.get("content", "") or ""),
+            format="html",
+            source="model",
+        )
 
 
 def _clean_content_dict(payload: dict[str, Any]) -> dict[str, Any]:

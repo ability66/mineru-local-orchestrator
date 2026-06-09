@@ -65,6 +65,30 @@ def _qwen_raw_payload(blocks: list[dict[str, Any]]) -> str:
     return json.dumps({"content_list_v2": [blocks]}, ensure_ascii=False)
 
 
+def _html_table_block(
+    block_id: str,
+    html_table: str,
+    block_type: str = "table",
+    image_path: str = "data/demo.png",
+) -> dict[str, Any]:
+    content: dict[str, Any] = {"img_path": image_path}
+    if block_type == "table":
+        content["table_body"] = html_table
+        content["table_caption"] = ["HTML 表格"]
+    else:
+        content["content"] = html_table
+        content["chart_caption"] = ["HTML 表格"]
+    block = {
+        "block_id": block_id,
+        "type": block_type,
+        "bbox": [0, 0, 1000, 1000],
+        "content": content,
+    }
+    if block_type == "chart":
+        block["sub_type"] = "html_table"
+    return block
+
+
 def test_pick_seal_reference_bundle_prefers_richer_auxiliary_result() -> None:
     image_task = ImageTask(
         image_id="seal-1",
@@ -662,3 +686,248 @@ def test_process_image_task_keeps_non_flowchart_branch_without_qwen_first_pass(
     assert len(qwen_client.calls) == 1
     assert qwen_client.calls[0]["context"]["mode"] == "seal_adjudication"
     assert len(glm_client.calls) == 1
+
+
+def test_process_image_task_auto_accepts_high_consensus_html_table_branch(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="html-table-accept",
+        image_path="data/demo.png",
+        file_name="html-table-accept.png",
+        file_ext=".png",
+    )
+    html_table = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", html_table)])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", html_table)])}],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", "<table><tbody><tr><th>指标</th><th>值</th></tr><tr><td>增长率</td><td>12%</td></tr></tbody></table>")])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        html_table_adjudication_prompt="html table prompt",
+    )
+
+    artifact = json.loads(
+        (tmp_path / "final" / "html-table-accept_artifact.json").read_text(encoding="utf-8")
+    )
+    assert len(qwen_client.calls) == 0
+    assert artifact["consensus"]["decision"] == "accepted"
+
+
+def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="html-table-review",
+        image_path="data/demo.png",
+        file_name="html-table-review.png",
+        file_ext=".png",
+    )
+    mineru_html = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+    paddle_html = (
+        "<table><tr><th>地区</th><th>Q1</th><th>Q2</th></tr>"
+        "<tr><td>华东</td><td>10</td><td>20</td></tr></table>"
+    )
+    glm_html = (
+        "<table><tr><th>公式</th><th>值</th></tr>"
+        "<tr><td>$x^2$</td><td>5</td></tr></table>"
+    )
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", mineru_html)])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", paddle_html)])}],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", glm_html)])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "issue_id": "html-table-m1",
+                        "target_block_id": "m1",
+                        "decision": "keep_mineru",
+                        "patch": {},
+                        "reason": "structures diverge too much",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        html_table_adjudication_prompt="html table prompt",
+    )
+
+    assert len(qwen_client.calls) == 1
+    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert "pairwise_matrix" in qwen_client.calls[0]["context"]["issue_payload"]
+
+
+def test_process_image_task_html_table_parse_fallback_keeps_existing_flow(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="html-table-fallback",
+        image_path="data/demo.png",
+        file_name="html-table-fallback.png",
+        file_ext=".png",
+    )
+    markdown_table = "|指标|值|\n|---|---|\n|增长率|12%|"
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", markdown_table)])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", markdown_table)])}],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", markdown_table)])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        html_table_adjudication_prompt="html table prompt",
+    )
+
+    artifact = json.loads(
+        (tmp_path / "final" / "html-table-fallback_artifact.json").read_text(encoding="utf-8")
+    )
+    assert len(qwen_client.calls) == 0
+    assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == markdown_table
+
+
+def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="html-table-qwen-fail",
+        image_path="data/demo.png",
+        file_name="html-table-qwen-fail.png",
+        file_ext=".png",
+    )
+    mineru_html = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+    paddle_html = (
+        "<table><tr><th>地区</th><th>Q1</th><th>Q2</th></tr>"
+        "<tr><td>华东</td><td>10</td><td>20</td></tr></table>"
+    )
+    glm_html = (
+        "<table><tr><th>公式</th><th>值</th></tr>"
+        "<tr><td>$x^2$</td><td>5</td></tr></table>"
+    )
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", mineru_html)])}],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", paddle_html)])}],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", glm_html)])}],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[{"success": False, "error": "timeout"}],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        html_table_adjudication_prompt="html table prompt",
+    )
+
+    artifact = json.loads(
+        (tmp_path / "final" / "html-table-qwen-fail_artifact.json").read_text(encoding="utf-8")
+    )
+    assert len(qwen_client.calls) == 1
+    assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == mineru_html

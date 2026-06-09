@@ -7,6 +7,7 @@ from src.pipeline.normalizers import (
     normalize_paddle_payload,
     normalize_qwen_payload,
 )
+from src.pipeline.table_utils import is_html_table_like
 from src.schema import ImageTask, ModelOutput
 
 
@@ -569,3 +570,87 @@ def test_normalize_qwen_payload_does_not_treat_plain_text_flowchart_content_as_m
     assert block.structured_label.kind == "text"
     assert label is not None
     assert label.image_type == "flowchart"
+
+
+def test_normalize_mineru_payload_marks_chart_html_table_as_structured_table() -> None:
+    image_task = ImageTask(
+        image_id="img-chart-html-table",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    html_table = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+    model_output = ModelOutput(
+        image_id="img-chart-html-table",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={
+            "content_list_v2": [[
+                {
+                    "type": "chart",
+                    "bbox": [0, 0, 1000, 1000],
+                    "content": {
+                        "content": html_table,
+                        "chart_caption": ["图表标题"],
+                        "img_path": "data/demo.png",
+                    },
+                }
+            ]]
+        },
+    )
+
+    _, document, label = normalize_mineru_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    block = document.blocks[0]
+    assert block.type == "chart"
+    assert block.sub_type == "html_table"
+    assert block.structured_label.kind == "table"
+    assert block.structured_label.format == "html"
+    assert is_html_table_like(document)
+    assert label is not None
+    assert label.image_type == "chart"
+
+
+def test_html_table_detector_does_not_capture_flowchart_branch() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-no-table",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    model_output = ModelOutput(
+        image_id="img-flow-no-table",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={
+            "content_list_v2": [[
+                {
+                    "type": "chart",
+                    "sub_type": "flowchart",
+                    "bbox": [0, 0, 1000, 1000],
+                    "content": {
+                        "content": "flowchart TD\nA-->B",
+                        "img_path": "data/demo.png",
+                    },
+                }
+            ]]
+        },
+    )
+
+    _, document, label = normalize_mineru_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    assert document.blocks[0].sub_type == "flowchart"
+    assert is_html_table_like(document) is False
+    assert label is not None
+    assert is_html_table_like(label) is False

@@ -22,8 +22,13 @@ except ImportError:
 
 from src.clients import CLIENT_REGISTRY, BaseLocalClient
 from src.image_loader import load_image_tasks
-from src.pipeline.adjudicator import adjudicate_documents
+from src.pipeline.adjudicator import (
+    adjudicate_documents,
+    analyze_html_table_bundles,
+    pick_html_table_reference_bundle,
+)
 from src.pipeline.issues import (
+    build_html_table_issue,
     detect_flowchart_second_pass_issues,
     detect_flowchart_issues,
     detect_seal_issues,
@@ -41,6 +46,7 @@ from src.pipeline.normalizers import (
     normalize_qwen_payload,
 )
 from src.pipeline.patches import apply_patch_decisions
+from src.pipeline.table_utils import is_html_table_like
 from src.projection import project_document_for_single_block_view
 from src.prompt_builder import load_prompt
 from src.render_compare_dashboard import generate_compare_dashboard
@@ -438,6 +444,23 @@ def _should_use_flowchart_branch(
     if _has_flowchart_path_hint(image_task):
         return True
     return _has_flowchart_signal(mineru_document, mineru_label)
+
+
+def _should_use_html_table_branch(
+    mineru_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    auxiliary_bundles: list[dict[str, Any]],
+) -> bool:
+    if _has_flowchart_signal(mineru_document, mineru_label):
+        return False
+    if is_html_table_like(mineru_document) or is_html_table_like(mineru_label):
+        return True
+    for bundle in auxiliary_bundles:
+        document = bundle.get("document")
+        label = bundle.get("label")
+        if is_html_table_like(document) or is_html_table_like(label):
+            return True
+    return False
 
 
 def _is_seal_candidate_block(block: CanonicalBlock) -> bool:
@@ -995,6 +1018,7 @@ def process_image_task(
     seal_adjudication_prompt: str,
     flowchart_adjudication_prompt: str,
     output_dir: Path,
+    html_table_adjudication_prompt: str = "",
 ) -> dict[str, Any]:
     mineru_bundle = _run_first_pass_model(
         image_task=image_task,
@@ -1065,18 +1089,31 @@ def process_image_task(
         if not use_flowchart_branch
         else []
     )
+    use_html_table_branch = (
+        _should_use_html_table_branch(
+            mineru_document=mineru_document,
+            mineru_label=mineru_label,
+            auxiliary_bundles=auxiliary_bundles,
+        )
+        if not use_flowchart_branch
+        else False
+    )
     seal_candidate_bundles: list[dict[str, Any]] = []
     seal_selection_payload: dict[str, Any] | None = None
-    if not use_flowchart_branch:
+    if not use_flowchart_branch and not use_html_table_branch:
         seal_candidate_bundles, seal_selection_payload = _build_seal_adjudication_candidates(
             image_task=image_task,
             mineru_bundle=mineru_bundle,
             auxiliary_bundles=auxiliary_bundles,
-    )
+        )
     reference_bundle: dict[str, Any] | None = None
     flowchart_issues: list[Any] = []
     flowchart_patch_decisions: list[PatchDecision] = []
     flowchart_patch_outputs: list[ModelOutput] = []
+    html_table_issues: list[Any] = []
+    html_table_patch_decisions: list[PatchDecision] = []
+    html_table_patch_outputs: list[ModelOutput] = []
+    html_table_analysis: dict[str, Any] | None = None
     paddle_ocr_reference_texts, paddle_ocr_reference_model = (
         _extract_flowchart_ocr_reference(paddle_bundle)
         if use_flowchart_branch
@@ -1104,6 +1141,36 @@ def process_image_task(
         )
         if seal_selection_output is not None:
             qwen_output = seal_selection_output
+
+    if use_html_table_branch:
+        html_table_analysis = analyze_html_table_bundles(
+            mineru_bundle=mineru_bundle,
+            auxiliary_bundles=auxiliary_bundles,
+        )
+        if isinstance(html_table_analysis, dict) and not html_table_analysis.get("fallback", False):
+            reference_bundle = pick_html_table_reference_bundle(html_table_analysis)
+            html_table_issue = build_html_table_issue(
+                image_task=image_task,
+                mineru_candidate=html_table_analysis.get("mineru_candidate"),
+                candidate_bundles=html_table_analysis.get("candidate_bundles") or [],
+                consensus_analysis=html_table_analysis,
+            )
+            if (
+                bool(html_table_analysis.get("requires_qwen"))
+                and html_table_issue is not None
+            ):
+                html_table_issues = [html_table_issue]
+                if qwen_client is not None:
+                    html_table_patch_decisions, html_table_patch_outputs = adjudicate_issues_with_llm(
+                        client=qwen_client,
+                        image_task=image_task,
+                        prompt=html_table_adjudication_prompt,
+                        issues=html_table_issues,
+                        mode="html_table_adjudication",
+                        retry=args.retry,
+                    )
+                    if html_table_patch_outputs:
+                        qwen_output = html_table_patch_outputs[-1]
 
     if use_flowchart_branch:
         reference_bundle, flowchart_issues = _pick_flowchart_reference_bundle(
@@ -1151,6 +1218,15 @@ def process_image_task(
         stage2_records.append(seal_stage2_record)
     stage2_records.extend(
         build_stage2_records(
+            issues=html_table_issues,
+            outputs=html_table_patch_outputs,
+            patch_decisions=html_table_patch_decisions,
+            prompt=html_table_adjudication_prompt,
+            mode="html_table_adjudication",
+        )
+    )
+    stage2_records.extend(
+        build_stage2_records(
             issues=flowchart_issues,
             outputs=flowchart_patch_outputs,
             patch_decisions=flowchart_patch_decisions,
@@ -1161,39 +1237,46 @@ def process_image_task(
     if not stage2_records:
         stage2_records = None
 
-    all_issues = flowchart_issues
-    patch_decisions = flowchart_patch_decisions
+    all_issues = html_table_issues + flowchart_issues
+    patch_decisions = html_table_patch_decisions + flowchart_patch_decisions
     final_mineru_document = mineru_document
     final_mineru_label = mineru_label
-    if flowchart_patch_decisions:
+    if patch_decisions:
         final_mineru_document = apply_patch_decisions(
             mineru_document=final_mineru_document,
-            issues=flowchart_issues,
-            patch_decisions=flowchart_patch_decisions,
+            issues=all_issues,
+            patch_decisions=patch_decisions,
         )
         final_mineru_label = derive_label_from_document(final_mineru_document)
+
+    artifact_reference_bundle = reference_bundle
+    if html_table_issues and not any(
+        decision.decision in {"use_qwen_fields", "merge", "keep_candidate", "add_qwen_block"}
+        for decision in html_table_patch_decisions
+    ):
+        artifact_reference_bundle = None
 
     artifact = adjudicate_documents(
         image_task=image_task,
         mineru_document=final_mineru_document,
         qwen_document=(
-            reference_bundle["document"]
-            if reference_bundle is not None
-            and isinstance(reference_bundle.get("document"), CanonicalDocument)
+            artifact_reference_bundle["document"]
+            if artifact_reference_bundle is not None
+            and isinstance(artifact_reference_bundle.get("document"), CanonicalDocument)
             else qwen_document
         ),
         mineru_label=final_mineru_label,
         qwen_label=(
-            reference_bundle["label"]
-            if reference_bundle is not None
-            and isinstance(reference_bundle.get("label"), ParsedLabel)
+            artifact_reference_bundle["label"]
+            if artifact_reference_bundle is not None
+            and isinstance(artifact_reference_bundle.get("label"), ParsedLabel)
             else qwen_label
         ),
         mineru_output=mineru_output,
         qwen_output=(
-            reference_bundle["output"]
-            if reference_bundle is not None
-            and isinstance(reference_bundle.get("output"), ModelOutput)
+            artifact_reference_bundle["output"]
+            if artifact_reference_bundle is not None
+            and isinstance(artifact_reference_bundle.get("output"), ModelOutput)
             else qwen_output
         ),
         issues=all_issues,
@@ -1282,6 +1365,9 @@ def main() -> None:
     flowchart_adjudication_prompt = load_prompt(
         args.prompts_config, "qwen_flowchart_adjudication_prompt"
     )
+    html_table_adjudication_prompt = load_prompt(
+        args.prompts_config, "qwen_html_table_adjudication_prompt"
+    )
 
     image_tasks = load_image_tasks(args.data_dir)
     if args.limit is not None:
@@ -1303,6 +1389,7 @@ def main() -> None:
                 recognition_prompt=recognition_prompt,
                 seal_adjudication_prompt=seal_adjudication_prompt,
                 flowchart_adjudication_prompt=flowchart_adjudication_prompt,
+                html_table_adjudication_prompt=html_table_adjudication_prompt,
                 output_dir=args.output_dir,
             )
             append_summary_record(summary_path, summary_record)
@@ -1321,6 +1408,7 @@ def main() -> None:
                     seal_adjudication_prompt,
                     flowchart_adjudication_prompt,
                     args.output_dir,
+                    html_table_adjudication_prompt,
                 )
                 for image_task in image_tasks
             ]

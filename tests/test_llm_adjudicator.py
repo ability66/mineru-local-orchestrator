@@ -223,3 +223,43 @@ def test_parse_patch_decision_rejects_false_positive_helper_node_conflict() -> N
     assert decision.decision == "reject_issue"
     assert decision.patch == {}
     assert decision.reason == "flowchart_conflict_false_positive"
+
+
+def test_build_issue_prompt_payload_for_html_table_contains_similarity_context() -> None:
+    issue = Issue(
+        issue_id="html-table-m1",
+        issue_type="html_table_conflict",
+        page_idx=0,
+        target_block_id="m1",
+        candidate_payload={
+            "candidates": [
+                {
+                    "candidate_id": "mineru",
+                    "html_table": "<table><tr><td>1</td></tr></table>",
+                },
+                {
+                    "candidate_id": "paddle",
+                    "html_table": "<table><tr><td>1</td></tr></table>",
+                },
+            ],
+            "pairwise_scores": [
+                {"left": "mineru", "right": "paddle", "score": 0.97, "metrics": {}}
+            ],
+            "pairwise_matrix": {
+                "mineru": {"mineru": 1.0, "paddle": 0.97},
+                "paddle": {"mineru": 0.97, "paddle": 1.0},
+            },
+            "consensus_diagnostics": {
+                "stable_consensus": False,
+                "consensus_kind": "none",
+            },
+        },
+        reasons=["no_stable_html_table_consensus"],
+    )
+
+    prompt_payload = build_issue_prompt_payload(issue, "html_table_adjudication")
+
+    assert prompt_payload["review_mode"] == "html_table_disagreement"
+    assert len(prompt_payload["candidates"]) == 2
+    assert prompt_payload["pairwise_matrix"]["mineru"]["paddle"] == 0.97
+    assert prompt_payload["consensus_diagnostics"]["consensus_kind"] == "none"

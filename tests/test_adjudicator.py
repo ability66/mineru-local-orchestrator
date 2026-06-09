@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.pipeline.adjudicator import adjudicate_documents
+from src.pipeline.adjudicator import adjudicate_documents, analyze_html_table_bundles
 from src.schema import (
     CanonicalBlock,
     CanonicalDocument,
@@ -1247,3 +1247,112 @@ def test_adjudicator_marks_review_when_seal_selection_requests_review() -> None:
     assert artifact.consensus.decision == "review"
     assert artifact.review_required is True
     assert artifact.final_document.source == "adjudicated"
+
+
+def _html_table_bundle(
+    role: str,
+    html_table: str,
+    image_type: str = "table",
+) -> dict[str, object]:
+    block_type = "table" if image_type == "table" else "chart"
+    block_sub_type = None if block_type == "table" else "html_table"
+    content = (
+        {"img_path": "data/demo.png", "table_body": html_table, "table_caption": ["表格"]}
+        if block_type == "table"
+        else {"img_path": "data/demo.png", "content": html_table, "chart_caption": ["图表"]}
+    )
+    return {
+        "role": role,
+        "output": ModelOutput(
+            image_id=f"{role}-html-table",
+            model_name=f"{role}-local",
+            success=True,
+            raw_text="{}",
+        ),
+        "document": CanonicalDocument(
+            document_id=f"{role}-html-table",
+            source=role,
+            blocks=[
+                CanonicalBlock(
+                    block_id=f"{role}_b1",
+                    page_idx=0,
+                    order_index=1,
+                    type=block_type,
+                    sub_type=block_sub_type,
+                    bbox=[0, 0, 1000, 1000],
+                    text="表格",
+                    content=content,
+                    source=role,
+                    structured_label=StructuredLabel(
+                        kind="table",
+                        content=html_table,
+                        format="html",
+                        source="model",
+                    ),
+                    caption_structured=CaptionStructured(brief="表格"),
+                )
+            ],
+        ),
+        "label": ParsedLabel(
+            image_type=image_type,
+            caption="表格",
+            caption_structured=CaptionStructured(brief="表格", visual_type=image_type),
+            structured_label=StructuredLabel(
+                kind="table",
+                content=html_table,
+                format="html",
+                source="model",
+            ),
+        ),
+    }
+
+
+def test_analyze_html_table_bundles_detects_all_candidate_consensus() -> None:
+    html_table = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+
+    analysis = analyze_html_table_bundles(
+        mineru_bundle=_html_table_bundle("mineru", html_table),
+        auxiliary_bundles=[
+            _html_table_bundle("paddle", html_table),
+            _html_table_bundle(
+                "glm",
+                "<table><tbody><tr><th>指标</th><th>值</th></tr>"
+                "<tr><td>增长率</td><td>12%</td></tr></tbody></table>",
+            ),
+        ],
+    )
+
+    assert analysis is not None
+    assert analysis["stable_consensus"] is True
+    assert analysis["consensus_kind"] == "all"
+    assert analysis["requires_qwen"] is False
+    assert analysis["reference_role"] in {"paddle", "glm"}
+
+
+def test_analyze_html_table_bundles_detects_mineru_pair_consensus_cluster() -> None:
+    stable_html = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+    divergent_html = (
+        "<table><tr><th>地区</th><th>Q1</th><th>Q2</th></tr>"
+        "<tr><td>华东</td><td>10</td><td>20</td></tr></table>"
+    )
+
+    analysis = analyze_html_table_bundles(
+        mineru_bundle=_html_table_bundle("mineru", stable_html),
+        auxiliary_bundles=[
+            _html_table_bundle("paddle", stable_html),
+            _html_table_bundle("glm", divergent_html),
+        ],
+    )
+
+    assert analysis is not None
+    assert analysis["stable_consensus"] is True
+    assert analysis["consensus_kind"] == "pair"
+    assert set(analysis["consensus_cluster"]) == {"mineru", "paddle"}
+    assert analysis["reference_role"] == "paddle"
+    assert analysis["requires_qwen"] is False

@@ -7,6 +7,8 @@ from src.decision import decide_consensus
 from src.pipeline.alignment import BlockMatch, align_blocks
 from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
+from src.pipeline.table_evaluator import analyze_html_table_candidate_consensus
+from src.pipeline.table_utils import extract_best_html_table_candidate, is_html_table_like
 from src.projection import (
     is_single_block_projection_document,
     project_document_for_single_block_view,
@@ -28,6 +30,75 @@ from src.schema import (
 from src.scorer import score_consensus
 from src.seal_utils import is_stamp_mode
 from src.validators import ValidationResult
+
+
+def analyze_html_table_bundles(
+    mineru_bundle: dict[str, Any],
+    auxiliary_bundles: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    ordered_bundles = [{"role": "mineru", **mineru_bundle}] + list(auxiliary_bundles)
+    candidate_bundles: list[dict[str, Any]] = []
+    candidate_payloads: list[dict[str, Any]] = []
+    for bundle in ordered_bundles:
+        role = str(bundle.get("role", "") or "").strip().lower() or "candidate"
+        document = bundle.get("document")
+        output = bundle.get("output")
+        label = bundle.get("label")
+        if not isinstance(document, CanonicalDocument):
+            continue
+        if isinstance(output, ModelOutput) and not output.success:
+            continue
+        if not is_html_table_like(document) and not is_html_table_like(label):
+            continue
+        html_table_candidate = extract_best_html_table_candidate(document)
+        if not isinstance(html_table_candidate, dict):
+            continue
+        candidate_bundle = {
+            **bundle,
+            "role": role,
+            "html_table_candidate": html_table_candidate,
+        }
+        candidate_bundles.append(candidate_bundle)
+        candidate_payloads.append(
+            {
+                "role": role,
+                "html": str(html_table_candidate.get("html", "") or ""),
+            }
+        )
+
+    analysis = analyze_html_table_candidate_consensus(candidate_payloads)
+    if analysis is None:
+        return None
+    role_lookup = {
+        str(bundle.get("role", "") or "").strip().lower(): bundle
+        for bundle in candidate_bundles
+    }
+    analysis["candidate_bundles"] = candidate_bundles
+    analysis["role_lookup"] = role_lookup
+    analysis["mineru_candidate"] = next(
+        (
+            bundle.get("html_table_candidate")
+            for bundle in candidate_bundles
+            if str(bundle.get("role", "") or "").strip().lower() == "mineru"
+        ),
+        None,
+    )
+    return analysis
+
+
+def pick_html_table_reference_bundle(
+    analysis: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(analysis, dict):
+        return None
+    role_lookup = analysis.get("role_lookup")
+    if not isinstance(role_lookup, dict):
+        return None
+    reference_role = str(analysis.get("reference_role", "") or "").strip().lower()
+    if not reference_role:
+        return None
+    bundle = role_lookup.get(reference_role)
+    return bundle if isinstance(bundle, dict) else None
 
 
 def adjudicate_documents(

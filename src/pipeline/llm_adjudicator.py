@@ -205,8 +205,11 @@ def _parse_json_object(raw_text: str) -> object:
 
 
 def build_issue_prompt_payload(issue: Issue, mode: str) -> dict[str, object]:
-    if str(mode or "").strip().lower() == "flowchart_adjudication":
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode == "flowchart_adjudication":
         return _build_flowchart_prompt_payload(issue)
+    if normalized_mode == "html_table_adjudication":
+        return _build_html_table_prompt_payload(issue)
     return issue.model_dump()
 
 
@@ -257,6 +260,46 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
             "仅用于节点/连线文字校对，不可用于结构推断、节点增删或边关系改写"
         )
         payload["ocr_reference_texts"] = ocr_reference_texts[:20]
+    return payload
+
+
+def _build_html_table_prompt_payload(issue: Issue) -> dict[str, object]:
+    candidate_payload = (
+        issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
+    )
+    candidates = candidate_payload.get("candidates")
+    pairwise_scores = candidate_payload.get("pairwise_scores")
+    pairwise_matrix = candidate_payload.get("pairwise_matrix")
+    consensus_diagnostics = candidate_payload.get("consensus_diagnostics")
+    payload = {
+        "issue_id": issue.issue_id,
+        "issue_type": issue.issue_type,
+        "review_mode": "html_table_disagreement",
+        "target_block_id": issue.target_block_id,
+        "page_idx": issue.page_idx,
+        "reasons": list(issue.reasons or []),
+        "current_block": _compact_block_summary(issue.mineru_block),
+        "reference_block": _compact_block_summary(issue.qwen_block),
+        "candidates": candidates if isinstance(candidates, list) else [],
+        "pairwise_scores": pairwise_scores if isinstance(pairwise_scores, list) else [],
+        "pairwise_matrix": pairwise_matrix if isinstance(pairwise_matrix, dict) else {},
+        "consensus_diagnostics": (
+            consensus_diagnostics
+            if isinstance(consensus_diagnostics, dict)
+            else {}
+        ),
+        "thinking_mode": "disabled_requested_for_html_table_adjudication",
+    }
+    reference_model_role = str(
+        candidate_payload.get("reference_model_role", "") or ""
+    ).strip()
+    reference_model_name = str(
+        candidate_payload.get("reference_model_name", "") or ""
+    ).strip()
+    if reference_model_role:
+        payload["reference_model_role"] = reference_model_role
+    if reference_model_name:
+        payload["reference_model_name"] = reference_model_name
     return payload
 
 

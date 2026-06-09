@@ -20,7 +20,7 @@ VALID_IMAGE_TYPES = {
     "unknown",
 }
 VALID_STRUCTURED_KINDS = {"none", "table", "mermaid", "text"}
-VALID_STRUCTURED_FORMATS = {"markdown", "csv", "mermaid", "plain_text", "none"}
+VALID_STRUCTURED_FORMATS = {"markdown", "csv", "html", "mermaid", "plain_text", "none"}
 VALID_CAPTION_SOURCES = {"generated"}
 VALID_CONFIDENCE = {"low", "medium", "high"}
 VALID_FLOWCHART_SHAPES = {"rectangle", "diamond", "ellipse", "rounded", "unknown"}

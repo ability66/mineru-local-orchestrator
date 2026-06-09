@@ -127,3 +127,68 @@ def test_apply_patch_decisions_supports_use_qwen_fields_for_flowchart_reference(
     assert block.content["content"] == "flowchart TD\nA-->B"
     assert block.structured_label.kind == "mermaid"
     assert block.flowchart_graph is not None
+
+
+def test_apply_patch_decisions_preserves_html_table_semantics_for_chart_block() -> None:
+    html_table = (
+        "<table><tr><th>指标</th><th>值</th></tr>"
+        "<tr><td>增长率</td><td>12%</td></tr></table>"
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-html-table-1",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                bbox=[0, 0, 1000, 1000],
+                text="图表标题",
+                content={"img_path": "data/demo.png", "chart_caption": ["图表标题"]},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="图表标题"),
+            )
+        ],
+    )
+    issues = [
+        Issue(
+            issue_id="html-table-m1",
+            issue_type="html_table_conflict",
+            page_idx=0,
+            target_block_id="m1",
+            candidate_payload={
+                "reference_patch": {
+                    "type": "chart",
+                    "sub_type": "html_table",
+                    "content": {
+                        "content": html_table,
+                        "img_path": "data/demo.png",
+                        "chart_caption": ["图表标题"],
+                    },
+                }
+            },
+            reasons=["html_table_candidates_diverge"],
+        )
+    ]
+    patch_decisions = [
+        PatchDecision(
+            issue_id="html-table-m1",
+            target_block_id="m1",
+            decision="use_qwen_fields",
+            patch={},
+            reason="采用参考 HTML table",
+        )
+    ]
+
+    patched = apply_patch_decisions(
+        mineru_document=mineru_document,
+        issues=issues,
+        patch_decisions=patch_decisions,
+    )
+
+    block = patched.blocks[0]
+    assert block.sub_type == "html_table"
+    assert block.content["content"] == html_table
+    assert block.structured_label.kind == "table"
+    assert block.structured_label.format == "html"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from src.pipeline.alignment import align_blocks, bbox_iou
@@ -259,6 +260,91 @@ def detect_flowchart_second_pass_issues(
     ]
 
 
+def build_html_table_issue(
+    image_task: ImageTask,
+    mineru_candidate: dict[str, Any] | None,
+    candidate_bundles: list[dict[str, Any]],
+    consensus_analysis: dict[str, Any],
+) -> Issue | None:
+    del image_task
+    if not isinstance(mineru_candidate, dict):
+        return None
+    block = mineru_candidate.get("block")
+    if not isinstance(block, CanonicalBlock):
+        return None
+
+    candidate_payloads: list[dict[str, Any]] = []
+    reference_bundle: dict[str, Any] | None = None
+    reference_role = str(consensus_analysis.get("reference_role", "") or "").strip().lower()
+    for bundle in candidate_bundles:
+        role = str(bundle.get("role", "") or "").strip().lower()
+        candidate = bundle.get("html_table_candidate")
+        if not isinstance(candidate, dict):
+            continue
+        block_candidate = candidate.get("block")
+        output = bundle.get("output")
+        candidate_payloads.append(
+            {
+                "candidate_id": role,
+                "model_name": getattr(output, "model_name", "") or bundle.get("role", ""),
+                "block_id": candidate.get("block_id"),
+                "block_type": candidate.get("block_type"),
+                "sub_type": candidate.get("sub_type"),
+                "caption": candidate.get("caption"),
+                "visible_text": list(candidate.get("visible_text") or [])[:10],
+                "ocr_texts": list(candidate.get("ocr_texts") or [])[:10],
+                "html_table": str(candidate.get("html", "") or ""),
+                "cell_count": len(getattr(candidate.get("table_ir"), "cells", []) or []),
+                "row_count": getattr(candidate.get("table_ir"), "row_count", 0),
+                "col_count": getattr(candidate.get("table_ir"), "col_count", 0),
+            }
+        )
+        if role == reference_role and isinstance(block_candidate, CanonicalBlock):
+            reference_bundle = bundle
+
+    reference_patch = _build_html_table_reference_patch(reference_bundle)
+    reasons = list(consensus_analysis.get("review_reasons") or [])
+    if not reasons:
+        reasons = ["html_table_candidates_diverge"]
+
+    return Issue(
+        issue_id=f"html-table-{block.block_id}",
+        issue_type="html_table_conflict",
+        page_idx=block.page_idx,
+        target_block_id=block.block_id,
+        mineru_block=block.model_dump(),
+        qwen_block=(
+            reference_bundle["html_table_candidate"]["block"].model_dump()
+            if isinstance(reference_bundle, dict)
+            and isinstance(reference_bundle.get("html_table_candidate"), dict)
+            and isinstance(reference_bundle["html_table_candidate"].get("block"), CanonicalBlock)
+            else None
+        ),
+        candidate_payload={
+            "review_mode": "html_table_disagreement",
+            "candidates": candidate_payloads,
+            "pairwise_matrix": deepcopy(consensus_analysis.get("matrix") or {}),
+            "pairwise_scores": deepcopy(consensus_analysis.get("pairwise") or []),
+            "consensus_diagnostics": {
+                "stable_consensus": bool(consensus_analysis.get("stable_consensus", False)),
+                "consensus_kind": str(consensus_analysis.get("consensus_kind", "") or ""),
+                "consensus_cluster": list(consensus_analysis.get("consensus_cluster") or []),
+                "severe_conflicts": list(consensus_analysis.get("severe_conflicts") or []),
+            },
+            "reference_model_role": reference_role or None,
+            "reference_model_name": (
+                getattr(reference_bundle.get("output"), "model_name", "")
+                if isinstance(reference_bundle, dict)
+                else ""
+            )
+            or None,
+            "reference_patch": reference_patch,
+            "candidate_patch": reference_patch,
+        },
+        reasons=reasons,
+    )
+
+
 def _detect_pair_issue(
     mineru_block: CanonicalBlock, qwen_block: CanonicalBlock | None
 ) -> Issue | None:
@@ -312,6 +398,33 @@ def _detect_pair_issue(
             reasons=["mineru_and_qwen_seal_text_conflict"],
         )
     return None
+
+
+def _build_html_table_reference_patch(
+    bundle: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(bundle, dict):
+        return {}
+    candidate = bundle.get("html_table_candidate")
+    if not isinstance(candidate, dict):
+        return {}
+    block = candidate.get("block")
+    if not isinstance(block, CanonicalBlock):
+        return {}
+    patch: dict[str, Any] = {
+        "type": block.type,
+        "content": deepcopy(block.content),
+        "visible_text": list(block.visible_text),
+    }
+    if block.sub_type is not None:
+        patch["sub_type"] = block.sub_type
+    if block.type == "table":
+        patch["content"]["table_body"] = str(candidate.get("html", "") or patch["content"].get("table_body", "") or "")
+    elif block.type == "chart":
+        patch["content"]["content"] = str(candidate.get("html", "") or patch["content"].get("content", "") or "")
+        if str(patch.get("sub_type", "") or "").strip().lower() != "flowchart":
+            patch["sub_type"] = block.sub_type or "html_table"
+    return patch
 
 
 def _find_best_target_block(
