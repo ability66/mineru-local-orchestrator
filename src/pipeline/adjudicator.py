@@ -8,7 +8,11 @@ from src.pipeline.alignment import BlockMatch, align_blocks
 from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
 from src.pipeline.table_evaluator import analyze_table_candidate_consensus
-from src.pipeline.table_utils import extract_best_table_candidate, is_table_like
+from src.pipeline.table_utils import (
+    detect_table_format,
+    extract_best_table_candidate,
+    is_table_like,
+)
 from src.projection import (
     is_single_block_projection_document,
     project_document_for_single_block_view,
@@ -318,7 +322,9 @@ def adjudicate_documents(
     )
     consensus = _override_chart_table_mode_consensus(
         image_id=image_task.image_id,
+        mineru_document=mineru_document,
         issues=issues or [],
+        patch_decisions=patch_decisions or [],
         qwen_output=qwen_output,
         existing=consensus,
     )
@@ -350,6 +356,7 @@ def adjudicate_documents(
         mineru_document=mineru_document,
         qwen_document=qwen_document,
         issues=issues or [],
+        patch_decisions=patch_decisions or [],
         qwen_output=qwen_output,
     )
     if selected_chart_table_document is not None:
@@ -1076,7 +1083,9 @@ def _override_flowchart_mode_consensus(
 
 def _override_chart_table_mode_consensus(
     image_id: str,
+    mineru_document: CanonicalDocument,
     issues: list[Issue],
+    patch_decisions: list[PatchDecision],
     qwen_output: ModelOutput | None,
     existing: ConsensusResult | None,
 ) -> ConsensusResult | None:
@@ -1090,6 +1099,22 @@ def _override_chart_table_mode_consensus(
                 "chart table requires qwen second-stage adjudication but no usable qwen result was produced"
             ],
             escalation_reasons=["chart_table_second_pass_missing_qwen_result"],
+            existing=existing,
+        )
+    unresolved_issues = _find_unresolved_chart_table_issues(
+        mineru_document=mineru_document,
+        issues=issues,
+        patch_decisions=patch_decisions,
+    )
+    if unresolved_issues:
+        return _build_issue_driven_consensus(
+            image_id=image_id,
+            decision="review",
+            reasons=[
+                "chart table second-stage adjudication did not produce an adoptable final table"
+            ]
+            + unresolved_issues,
+            escalation_reasons=["chart_table_second_pass_unresolved"],
             existing=existing,
         )
     return _build_issue_driven_consensus(
@@ -1207,11 +1232,18 @@ def _select_issue_driven_chart_table_document(
     mineru_document: CanonicalDocument,
     qwen_document: CanonicalDocument,
     issues: list[Issue],
+    patch_decisions: list[PatchDecision],
     qwen_output: ModelOutput | None,
 ) -> CanonicalDocument | None:
     if not _is_issue_driven_chart_table_mode(issues):
         return None
     if qwen_output is None or not qwen_output.success:
+        return None
+    if _find_unresolved_chart_table_issues(
+        mineru_document=mineru_document,
+        issues=issues,
+        patch_decisions=patch_decisions,
+    ):
         return None
 
     selected_document = mineru_document.model_copy(deep=True)
@@ -1310,6 +1342,56 @@ def _find_unresolved_flowchart_issues(
         final_mermaid = str(target_block.content.get("content", "") or "").strip()
         if not looks_like_mermaid(final_mermaid):
             unresolved.append(f"target_missing_valid_mermaid:{issue.issue_id}")
+    return unresolved
+
+
+def _find_unresolved_chart_table_issues(
+    mineru_document: CanonicalDocument,
+    issues: list[Issue],
+    patch_decisions: list[PatchDecision],
+) -> list[str]:
+    decision_lookup = {decision.issue_id: decision for decision in patch_decisions}
+    block_lookup = {block.block_id: block for block in mineru_document.blocks}
+    unresolved: list[str] = []
+    failure_reasons = {"llm_patch_unavailable", "llm_patch_invalid_json"}
+    adopted_decisions = {"use_qwen_fields", "merge", "keep_candidate", "add_qwen_block"}
+
+    for issue in issues:
+        if str(issue.issue_type or "").strip() != "table_conflict":
+            continue
+        candidate_payload = (
+            issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
+        )
+        review_mode = str(candidate_payload.get("review_mode", "") or "").strip().lower()
+        if review_mode != "chart_table_second_pass":
+            continue
+
+        decision = decision_lookup.get(issue.issue_id)
+        if decision is None:
+            unresolved.append(f"missing_patch_decision:{issue.issue_id}")
+            continue
+        if str(decision.reason or "").strip() in failure_reasons:
+            unresolved.append(f"patch_decision_unavailable:{issue.issue_id}")
+            continue
+        if str(decision.decision or "").strip() not in adopted_decisions:
+            unresolved.append(f"patch_decision_not_adopted:{issue.issue_id}")
+            continue
+
+        target_block_id = str(
+            decision.target_block_id or issue.target_block_id or ""
+        ).strip()
+        target_block = block_lookup.get(target_block_id) if target_block_id else None
+        if target_block is None:
+            unresolved.append(f"missing_table_target:{issue.issue_id}")
+            continue
+        if str(target_block.type or "").strip().lower() != "table":
+            unresolved.append(f"target_not_table:{issue.issue_id}")
+            continue
+
+        table_body = str(target_block.content.get("table_body", "") or "").strip()
+        if detect_table_format(table_body) != "markdown":
+            unresolved.append(f"target_missing_valid_markdown_table:{issue.issue_id}")
+
     return unresolved
 
 

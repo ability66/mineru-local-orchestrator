@@ -1249,6 +1249,106 @@ def test_adjudicator_marks_review_when_seal_selection_requests_review() -> None:
     assert artifact.final_document.source == "adjudicated"
 
 
+def test_adjudicator_reviews_chart_table_second_pass_when_patch_is_not_adopted() -> None:
+    image_task = ImageTask(
+        image_id="img-chart-table-review",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-chart-table-review",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="table",
+                bbox=[0, 0, 1000, 1000],
+                text="图表转表格",
+                content={
+                    "table_body": "| Sessions | Value |\n| --- | --- |\n| 1 | 62 |",
+                    "table_caption": ["图表转表格"],
+                    "img_path": "data/demo.png",
+                },
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="table",
+                    content="| Sessions | Value |\n| --- | --- |\n| 1 | 62 |",
+                    format="markdown",
+                    source="mineru",
+                ),
+                caption_structured=CaptionStructured(
+                    brief="图表转表格", visual_type="table"
+                ),
+            )
+        ],
+    )
+
+    artifact = adjudicate_documents(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=CanonicalDocument(
+            document_id="img-chart-table-review",
+            source="qwen_judge_not_triggered",
+            backend="empty",
+            page_count=1,
+            blocks=[],
+        ),
+        mineru_label=ParsedLabel(image_type="table", caption="图表转表格"),
+        qwen_label=None,
+        mineru_output=ModelOutput(
+            image_id="img-chart-table-review",
+            model_name="mineru",
+            success=True,
+            raw_text="{}",
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-chart-table-review",
+            model_name="qwen-judge",
+            success=True,
+            raw_text="not-json",
+        ),
+        issues=[
+            Issue(
+                issue_id="table-m1",
+                issue_type="table_conflict",
+                page_idx=0,
+                target_block_id="m1",
+                candidate_payload={
+                    "review_mode": "chart_table_second_pass",
+                    "must_output_final_table": True,
+                },
+                reasons=["chart_table_requires_qwen_second_pass"],
+            )
+        ],
+        patch_decisions=[
+            PatchDecision(
+                issue_id="table-m1",
+                target_block_id="m1",
+                decision="keep_mineru",
+                patch={},
+                reason="llm_patch_invalid_json",
+            )
+        ],
+    )
+
+    assert artifact.consensus is not None
+    assert artifact.consensus.decision == "review"
+    assert artifact.review_required is True
+    assert (
+        "chart table second-stage adjudication did not produce an adoptable final table"
+        in artifact.consensus.reasons
+    )
+    assert (
+        artifact.final_document.raw_metadata.get("selected_by", "")
+        != "chart_table_second_pass_adjudication"
+    )
+
+
 def _table_bundle(
     role: str,
     markdown_table: str,

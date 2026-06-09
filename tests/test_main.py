@@ -1078,6 +1078,93 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
     assert artifact["final_document"]["raw_metadata"]["table_analysis"]["requires_qwen"] is True
 
 
+def test_process_image_task_reviews_plain_chart_when_qwen_patch_is_invalid(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="plain-chart-invalid-qwen",
+        image_path="data/demo.png",
+        file_name="plain-chart-invalid-qwen.png",
+        file_ext=".png",
+    )
+    chart_text = "地区 华东 10 华南 20 华北 15"
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[
+            {
+                "success": True,
+                "parsed": _single_page_payload([_plain_chart_block("m1", chart_text)]),
+            }
+        ],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[
+            {
+                "success": True,
+                "parsed": _single_page_payload([_plain_chart_block("p1", chart_text)]),
+            }
+        ],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[
+            {
+                "success": True,
+                "parsed": _single_page_payload([_plain_chart_block("g1", chart_text)]),
+            }
+        ],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[{"success": True, "raw_text": "not-json"}],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        table_adjudication_prompt="table prompt",
+    )
+
+    artifact = json.loads(
+        (tmp_path / "final" / "plain-chart-invalid-qwen_artifact.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    final_output = json.loads(
+        (tmp_path / "final" / "plain-chart-invalid-qwen.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(qwen_client.calls) == 1
+    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
+    assert artifact["consensus"]["decision"] == "review"
+    assert artifact["review_required"] is True
+    assert (
+        "chart table second-stage adjudication did not produce an adoptable final table"
+        in artifact["consensus"]["reasons"]
+    )
+    assert artifact["patch_decisions"][0]["decision"] == "keep_mineru"
+    assert artifact["patch_decisions"][0]["reason"] == "llm_patch_invalid_json"
+    assert artifact["final_document"]["blocks"][0]["type"] == "chart"
+    assert artifact["final_document"]["raw_metadata"].get("selected_by") != (
+        "chart_table_second_pass_adjudication"
+    )
+    assert final_output["model_name"] == "mineru-local"
+
+
 def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
     tmp_path,
 ) -> None:
