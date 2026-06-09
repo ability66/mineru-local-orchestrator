@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.pipeline.flowchart_utils import flowchart_graph_from_mermaid, looks_like_mermaid, normalize_mermaid_text
-from src.pipeline.table_utils import is_html_table_like
+from src.pipeline.table_utils import detect_table_format
 from src.schema import CanonicalBlock, CanonicalDocument, OcrRegion, PatchDecision, StructuredLabel
 
 
@@ -157,7 +157,7 @@ def _refresh_block_semantics(block: CanonicalBlock) -> None:
     if block.type == "table":
         table_body = str(block.content.get("table_body", "") or "").strip()
         if table_body:
-            structured_format = "html" if is_html_table_like({"type": "table", "content": {"table_body": table_body}}) else "markdown"
+            structured_format = _normalize_table_format(table_body)
             block.structured_label = StructuredLabel(
                 kind="table",
                 content=table_body,
@@ -166,25 +166,43 @@ def _refresh_block_semantics(block: CanonicalBlock) -> None:
             )
         return
 
-    if (
-        block.type == "chart"
-        and str(block.sub_type or "").strip().lower() != "flowchart"
-        and is_html_table_like(
-            {
-                "type": "chart",
-                "sub_type": block.sub_type,
-                "content": {"content": str(block.content.get("content", "") or "")},
-                "visible_text": block.visible_text,
-            }
-        )
-    ):
-        block.sub_type = block.sub_type or "html_table"
+    if block.type == "chart" and str(block.sub_type or "").strip().lower() != "flowchart":
+        table_content = str(block.content.get("content", "") or block.structured_label.content or "")
+        table_format = detect_table_format(table_content)
+        if table_format == "none":
+            return
+        _rewrite_chart_block_as_table(block=block, table_body=table_content)
         block.structured_label = StructuredLabel(
             kind="table",
-            content=str(block.content.get("content", "") or ""),
-            format="html",
+            content=str(block.content.get("table_body", "") or ""),
+            format=table_format,  # type: ignore[arg-type]
             source="model",
         )
+
+
+def _normalize_table_format(table_body: str) -> str:
+    return "html" if detect_table_format(table_body) == "html" else "markdown"
+
+
+def _rewrite_chart_block_as_table(block: CanonicalBlock, table_body: str) -> None:
+    chart_caption = block.content.get("chart_caption")
+    table_caption = block.content.get("table_caption")
+    img_path = block.content.get("img_path", "")
+    rewritten = {
+        key: value
+        for key, value in block.content.items()
+        if key not in {"content", "chart_caption"}
+    }
+    rewritten["img_path"] = img_path
+    rewritten["table_body"] = table_body
+    if isinstance(table_caption, list) and table_caption:
+        rewritten["table_caption"] = [item for item in table_caption if item not in (None, "")]
+    elif isinstance(chart_caption, list) and chart_caption:
+        rewritten["table_caption"] = [item for item in chart_caption if item not in (None, "")]
+    block.type = "table"
+    block.sub_type = None
+    block.content = rewritten
+    block.caption_structured.visual_type = "table"
 
 
 def _clean_content_dict(payload: dict[str, Any]) -> dict[str, Any]:

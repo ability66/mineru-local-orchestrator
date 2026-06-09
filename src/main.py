@@ -46,7 +46,7 @@ from src.pipeline.normalizers import (
     normalize_qwen_payload,
 )
 from src.pipeline.patches import apply_patch_decisions
-from src.pipeline.table_utils import is_html_table_like
+from src.pipeline.table_utils import is_table_like
 from src.projection import project_document_for_single_block_view
 from src.prompt_builder import load_prompt
 from src.render_compare_dashboard import generate_compare_dashboard
@@ -474,12 +474,12 @@ def _should_use_html_table_branch(
 ) -> bool:
     if _has_flowchart_signal(mineru_document, mineru_label):
         return False
-    if is_html_table_like(mineru_document) or is_html_table_like(mineru_label):
+    if is_table_like(mineru_document) or is_table_like(mineru_label):
         return True
     for bundle in auxiliary_bundles:
         document = bundle.get("document")
         label = bundle.get("label")
-        if is_html_table_like(document) or is_html_table_like(label):
+        if is_table_like(document) or is_table_like(label):
             return True
     return False
 

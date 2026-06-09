@@ -9,7 +9,7 @@ from src.normalizer import (
     normalize_model_output,
 )
 from src.pipeline.flowchart_utils import looks_like_mermaid
-from src.pipeline.table_utils import is_html_table_like
+from src.pipeline.table_utils import detect_table_format
 from src.schema import (
     CanonicalBlock,
     CanonicalDocument,
@@ -317,29 +317,37 @@ def _block_from_v2_payload(
         block=block,
         default_image_path=default_image_path,
     )
-    text = _extract_block_text(
-        block_type=block_type,
-        content=normalized_content,
-        fallback=block.get("text") if block.get("text") is not None else block.get("content"),
-    )
     structured_label = _structured_label_from_block_payload(
         block_type=block_type,
         block=block,
         content=normalized_content,
+    )
+    block_sub_type = _optional_text(block.get("sub_type"))
+    if (
+        block_type == "chart"
+        and str(block_sub_type or "").strip().lower() != "flowchart"
+        and structured_label.kind == "table"
+    ):
+        block_type, block_sub_type, normalized_content = _coerce_chart_table_block(
+            content=normalized_content,
+            structured_label=structured_label,
+        )
+        structured_label = _structured_label_from_block_payload(
+            block_type=block_type,
+            block={**block, "type": block_type, "sub_type": block_sub_type},
+            content=normalized_content,
+        )
+
+    text = _extract_block_text(
+        block_type=block_type,
+        content=normalized_content,
+        fallback=block.get("text") if block.get("text") is not None else block.get("content"),
     )
     ocr_regions = _ocr_regions_from_block(block, normalized_content)
     visible_text = _deduplicate_texts(_collect_visible_texts(normalized_content, text))
     block_id = str(block.get("block_id") or f"p{page_idx:03d}_b{order_index:03d}")
     raw_content = block.get("content")
     payload_format = "content_list_v2" if isinstance(raw_content, dict) else "json_res_flat"
-
-    block_sub_type = _optional_text(block.get("sub_type"))
-    if (
-        block_type == "chart"
-        and str(block_sub_type or "").strip().lower() not in {"flowchart", "html_table"}
-        and structured_label.kind == "table"
-    ):
-        block_sub_type = "html_table"
 
     return CanonicalBlock(
         block_id=block_id,
@@ -451,7 +459,7 @@ def _document_from_parsed_label(
     sub_type: str | None = None
     content: dict[str, Any] = {"img_path": image_task.image_path}
 
-    if parsed_label.image_type == "table":
+    if _parsed_label_prefers_table_semantics(parsed_label):
         block_type = "table"
         content["table_body"] = parsed_label.structured_label.content
         content["table_caption"] = [parsed_label.caption] if parsed_label.caption else []
@@ -460,14 +468,7 @@ def _document_from_parsed_label(
         sub_type = "flowchart" if parsed_label.image_type == "flowchart" else None
         if parsed_label.caption:
             content["chart_caption"] = [parsed_label.caption]
-        if (
-            parsed_label.image_type != "flowchart"
-            and parsed_label.structured_label.kind == "table"
-            and parsed_label.structured_label.content
-        ):
-            sub_type = "html_table"
-            content["content"] = parsed_label.structured_label.content
-        elif parsed_label.image_type != "flowchart" and parsed_label.structured_label.content:
+        if parsed_label.image_type != "flowchart" and parsed_label.structured_label.content:
             content["content"] = parsed_label.structured_label.content
         elif looks_like_mermaid(parsed_label.structured_label.content):
             content["content"] = parsed_label.structured_label.content
@@ -525,11 +526,24 @@ def _apply_label_patch_to_document(
     if target is None:
         return patched_document
 
-    if parsed_label.image_type == "table" and target.type == "table":
-        if parsed_label.structured_label.content.strip() and not str(target.content.get("table_body", "") or "").strip():
-            target.content["table_body"] = parsed_label.structured_label.content
+    if _parsed_label_prefers_table_semantics(parsed_label) and target.type in {"table", "chart"}:
+        table_body = parsed_label.structured_label.content.strip()
+        _rewrite_block_as_table(
+            target=target,
+            table_body=table_body,
+            caption=parsed_label.caption,
+        )
+        if table_body:
             target.structured_label = parsed_label.structured_label
-        _append_caption(target.content, "table_caption", parsed_label.caption)
+        else:
+            normalized_table_body = str(target.content.get("table_body", "") or "").strip()
+            if normalized_table_body:
+                target.structured_label = StructuredLabel(
+                    kind="table",
+                    content=normalized_table_body,
+                    format=_normalize_table_format(normalized_table_body),  # type: ignore[arg-type]
+                    source="model",
+                )
         return patched_document
 
     if parsed_label.image_type in {"chart", "flowchart"} and target.type == "chart":
@@ -540,7 +554,6 @@ def _apply_label_patch_to_document(
             and parsed_label.structured_label.content.strip()
             and not str(target.content.get("content", "") or "").strip()
         ):
-            target.sub_type = target.sub_type or "html_table"
             target.content["content"] = parsed_label.structured_label.content
             target.structured_label = parsed_label.structured_label
         if (
@@ -1030,7 +1043,7 @@ def _structured_label_from_block_payload(
 ) -> StructuredLabel:
     if block_type == "table":
         table_body = str(content.get("table_body", "") or "")
-        structured_format = "html" if is_html_table_like({"type": "table", "content": {"table_body": table_body}}) else "markdown"
+        structured_format = _normalize_table_format(table_body)
         return StructuredLabel(
             kind="table",
             content=table_body,
@@ -1053,24 +1066,92 @@ def _structured_label_from_block_payload(
             format="plain_text" if caption_fallback else "none",
             source="mineru" if caption_fallback else "none",
         )
-    if (
-        block_type == "chart"
-        and str(block.get("sub_type") or "").strip().lower() != "flowchart"
-        and is_html_table_like(
-            {
-                "type": "chart",
-                "sub_type": block.get("sub_type"),
-                "content": {"content": str(content.get("content", "") or "")},
-            }
-        )
-    ):
+    if block_type == "chart" and str(block.get("sub_type") or "").strip().lower() != "flowchart":
+        table_content = str(content.get("content", "") or "")
+        table_format = detect_table_format(table_content)
+        if table_format == "none":
+            return StructuredLabel(kind="none", content="", format="none", source="none")
         return StructuredLabel(
             kind="table",
-            content=str(content.get("content", "") or ""),
-            format="html",
+            content=table_content,
+            format=table_format,  # type: ignore[arg-type]
             source="mineru",
         )
     return StructuredLabel(kind="none", content="", format="none", source="none")
+
+
+def _normalize_table_format(table_content: str) -> str:
+    return "html" if detect_table_format(table_content) == "html" else "markdown"
+
+
+def _parsed_label_prefers_table_semantics(parsed_label: ParsedLabel) -> bool:
+    image_type = str(parsed_label.image_type or "").strip().lower()
+    if image_type == "table":
+        return True
+    if image_type != "chart":
+        return False
+    if parsed_label.structured_label.kind != "table":
+        return False
+    if parsed_label.structured_label.format == "mermaid" or parsed_label.flowchart_graph:
+        return False
+    return bool(str(parsed_label.structured_label.content or "").strip())
+
+
+def _coerce_chart_table_block(
+    content: dict[str, Any],
+    structured_label: StructuredLabel,
+) -> tuple[str, str | None, dict[str, Any]]:
+    converted = dict(content)
+    table_body = str(
+        converted.get("content", "")
+        or converted.get("table_body", "")
+        or structured_label.content
+        or ""
+    ).strip()
+    if table_body:
+        converted["table_body"] = table_body
+    table_captions = _normalize_text_list(converted.get("table_caption", []))
+    if not table_captions:
+        table_captions = _normalize_text_list(converted.get("chart_caption", []))
+    if table_captions:
+        converted["table_caption"] = table_captions
+    converted.pop("content", None)
+    converted.pop("chart_caption", None)
+    return "table", None, converted
+
+
+def _rewrite_block_as_table(
+    target: CanonicalBlock,
+    table_body: str,
+    caption: str,
+) -> None:
+    existing_content = dict(target.content)
+    existing_captions = _normalize_text_list(existing_content.get("table_caption", []))
+    if not existing_captions:
+        existing_captions = _normalize_text_list(existing_content.get("chart_caption", []))
+
+    target.type = "table"
+    target.sub_type = None
+    target.content = {
+        key: value
+        for key, value in existing_content.items()
+        if key not in {"content", "chart_caption"}
+    }
+    if table_body:
+        target.content["table_body"] = table_body
+    else:
+        fallback_body = str(existing_content.get("content", "") or "").strip()
+        if fallback_body:
+            target.content["table_body"] = fallback_body
+    if existing_captions:
+        target.content["table_caption"] = existing_captions
+    _append_caption(target.content, "table_caption", caption)
+    target.text = _extract_block_text(
+        block_type="table",
+        content=target.content,
+        fallback=target.text,
+    )
+    target.caption_structured.visual_type = "table"
 
 
 def _caption_structured_from_block(
@@ -1131,7 +1212,11 @@ def _pick_patch_target(
     blocks: list[CanonicalBlock],
     parsed_label: ParsedLabel,
 ) -> CanonicalBlock | None:
-    if parsed_label.image_type == "table":
+    if _parsed_label_prefers_table_semantics(parsed_label):
+        for block in blocks:
+            if block.type in {"table", "chart"}:
+                return block
+    elif parsed_label.image_type == "table":
         for block in blocks:
             if block.type == "table":
                 return block

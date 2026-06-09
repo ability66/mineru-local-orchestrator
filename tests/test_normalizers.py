@@ -609,13 +609,57 @@ def test_normalize_mineru_payload_marks_chart_html_table_as_structured_table() -
     )
 
     block = document.blocks[0]
-    assert block.type == "chart"
-    assert block.sub_type == "html_table"
+    assert block.type == "table"
+    assert block.sub_type is None
     assert block.structured_label.kind == "table"
     assert block.structured_label.format == "html"
+    assert block.content["table_body"] == html_table
     assert is_html_table_like(document)
     assert label is not None
-    assert label.image_type == "chart"
+    assert label.image_type == "table"
+
+
+def test_normalize_mineru_payload_converts_chart_markdown_table_to_table_block() -> None:
+    image_task = ImageTask(
+        image_id="img-chart-markdown-table",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    markdown_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
+    model_output = ModelOutput(
+        image_id="img-chart-markdown-table",
+        model_name="mineru",
+        success=True,
+        raw_text="",
+        parsed={
+            "content_list_v2": [[
+                {
+                    "type": "chart",
+                    "bbox": [0, 0, 1000, 1000],
+                    "content": {
+                        "content": markdown_table,
+                        "chart_caption": ["图表标题"],
+                        "img_path": "data/demo.png",
+                    },
+                }
+            ]]
+        },
+    )
+
+    _, document, label = normalize_mineru_payload(
+        image_task=image_task,
+        model_output=model_output,
+    )
+
+    block = document.blocks[0]
+    assert block.type == "table"
+    assert block.sub_type is None
+    assert block.structured_label.kind == "table"
+    assert block.structured_label.format == "markdown"
+    assert block.content["table_body"] == markdown_table
+    assert label is not None
+    assert label.image_type == "table"
 
 
 def test_html_table_detector_does_not_capture_flowchart_branch() -> None:

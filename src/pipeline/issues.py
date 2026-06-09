@@ -293,6 +293,8 @@ def build_html_table_issue(
                 "caption": candidate.get("caption"),
                 "visible_text": list(candidate.get("visible_text") or [])[:10],
                 "ocr_texts": list(candidate.get("ocr_texts") or [])[:10],
+                "table_format": str(candidate.get("table_format", "") or ""),
+                "table_content": str(candidate.get("table_text", "") or ""),
                 "html_table": str(candidate.get("html", "") or ""),
                 "cell_count": len(getattr(candidate.get("table_ir"), "cells", []) or []),
                 "row_count": getattr(candidate.get("table_ir"), "row_count", 0),
@@ -418,12 +420,21 @@ def _build_html_table_reference_patch(
     }
     if block.sub_type is not None:
         patch["sub_type"] = block.sub_type
+    candidate_text = str(candidate.get("table_text", "") or candidate.get("html", "") or "")
     if block.type == "table":
-        patch["content"]["table_body"] = str(candidate.get("html", "") or patch["content"].get("table_body", "") or "")
+        patch["content"]["table_body"] = str(
+            candidate_text or patch["content"].get("table_body", "") or ""
+        )
     elif block.type == "chart":
-        patch["content"]["content"] = str(candidate.get("html", "") or patch["content"].get("content", "") or "")
-        if str(patch.get("sub_type", "") or "").strip().lower() != "flowchart":
-            patch["sub_type"] = block.sub_type or "html_table"
+        patch["type"] = "table"
+        patch["content"]["table_body"] = str(
+            candidate_text or patch["content"].get("content", "") or ""
+        )
+        if "chart_caption" in patch["content"] and "table_caption" not in patch["content"]:
+            patch["content"]["table_caption"] = patch["content"].get("chart_caption")
+        patch["content"].pop("content", None)
+        patch["content"].pop("chart_caption", None)
+        patch["sub_type"] = None
     return patch
 
 

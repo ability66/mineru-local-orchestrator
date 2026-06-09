@@ -832,7 +832,7 @@ def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
 
 
-def test_process_image_task_html_table_parse_fallback_keeps_existing_flow(
+def test_process_image_task_auto_accepts_markdown_chart_table_branch(
     tmp_path,
 ) -> None:
     image_task = ImageTask(
@@ -844,17 +844,17 @@ def test_process_image_task_html_table_parse_fallback_keeps_existing_flow(
     markdown_table = "|指标|值|\n|---|---|\n|增长率|12%|"
     mineru_client = StubClient(
         model_name="mineru-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", markdown_table)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("m1", markdown_table, block_type="chart")])}],
         config={"provider": "minerupro_local", "role": "mineru"},
     )
     paddle_client = StubClient(
         model_name="paddle-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", markdown_table)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("p1", markdown_table, block_type="chart")])}],
         config={"provider": "paddle_local", "role": "paddle"},
     )
     glm_client = StubClient(
         model_name="glm-local",
-        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", markdown_table)])}],
+        responses=[{"success": True, "parsed": _single_page_payload([_html_table_block("g1", markdown_table, block_type="chart")])}],
         config={"provider": "glm_openai_compatible", "role": "glm"},
     )
     qwen_client = StubClient(
@@ -881,13 +881,11 @@ def test_process_image_task_html_table_parse_fallback_keeps_existing_flow(
         (tmp_path / "final" / "html-table-fallback_artifact.json").read_text(encoding="utf-8")
     )
     assert len(qwen_client.calls) == 0
+    assert artifact["final_document"]["blocks"][0]["type"] == "table"
     assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == markdown_table
     assert "only one parsable label" not in artifact["consensus"]["reasons"]
-    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is True
-    assert (
-        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback_reason"]
-        == "html_table_candidate_extraction_failed"
-    )
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is False
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stable_consensus"] is True
 
 
 def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(

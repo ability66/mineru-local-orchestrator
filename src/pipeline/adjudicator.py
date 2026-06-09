@@ -8,7 +8,7 @@ from src.pipeline.alignment import BlockMatch, align_blocks
 from src.pipeline.flowchart_utils import looks_like_mermaid
 from src.pipeline.normalizers import derive_label_from_document
 from src.pipeline.table_evaluator import analyze_html_table_candidate_consensus
-from src.pipeline.table_utils import extract_best_html_table_candidate, is_html_table_like
+from src.pipeline.table_utils import extract_best_table_candidate, is_table_like
 from src.projection import (
     is_single_block_projection_document,
     project_document_for_single_block_view,
@@ -49,10 +49,10 @@ def analyze_html_table_bundles(
             continue
         if isinstance(output, ModelOutput) and not output.success:
             continue
-        if not is_html_table_like(document) and not is_html_table_like(label):
+        if not is_table_like(document) and not is_table_like(label):
             continue
         signaled_roles.append(role)
-        html_table_candidate = extract_best_html_table_candidate(document)
+        html_table_candidate = extract_best_table_candidate(document)
         if not isinstance(html_table_candidate, dict):
             continue
         candidate_bundle = {

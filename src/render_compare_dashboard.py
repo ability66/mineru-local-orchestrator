@@ -477,7 +477,7 @@ def build_dashboard_html(
   <div class="page">
     <section class="hero">
       <h1>输出对比总览</h1>
-      <p>原图、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格优先展示 HTML，其次兼容 Markdown，其它展示文字。</p>
+      <p>原图、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格优先展示 Markdown，其次兼容 HTML，其它展示文字。</p>
       <div class="controls">
         <label for="type-select">查看类型</label>
         <select id="type-select">{type_options_html}</select>
@@ -986,9 +986,9 @@ def _build_panel(
             note="；".join(
                 item
                 for item in [
-                    "表格内容以 HTML 展示"
-                    if render_kind == "html"
-                    else "表格内容以 Markdown 展示",
+                    "表格内容以 Markdown 展示"
+                    if render_kind == "markdown"
+                    else "表格内容以 HTML 展示",
                     extra_note,
                 ]
                 if item
@@ -1135,14 +1135,6 @@ def _extract_table_render_payload(
     label_payload: Any,
     prefer_label_semantics: bool = False,
 ) -> tuple[str, str] | None:
-    html_table = _extract_table_html(
-        blocks=blocks,
-        label_payload=label_payload,
-        prefer_label_semantics=prefer_label_semantics,
-    )
-    if html_table:
-        return "html", html_table
-
     markdown_table = _extract_table_markdown(
         blocks=blocks,
         label_payload=label_payload,
@@ -1150,6 +1142,14 @@ def _extract_table_render_payload(
     )
     if markdown_table:
         return "markdown", markdown_table
+
+    html_table = _extract_table_html(
+        blocks=blocks,
+        label_payload=label_payload,
+        prefer_label_semantics=prefer_label_semantics,
+    )
+    if html_table:
+        return "html", html_table
     return None
 
 
@@ -1215,9 +1215,7 @@ def _extract_table_markdown(
             ).strip().lower()
             content = str(structured.get("content", "") or "").strip()
             if content and (
-                structured_kind == "table"
-                or label_image_type == "table"
-                or structured_format == "markdown"
+                structured_format == "markdown"
                 or _looks_like_markdown_table(content)
             ):
                 return content
@@ -1240,28 +1238,22 @@ def _extract_table_markdown(
             table_body = str(content_payload.get("table_body", "") or "").strip()
 
         if table_body and (
-            block_type == "table"
-            or block_sub_type == "table"
-            or label_image_type == "table"
-            or structured_kind == "table"
-            or structured_format == "markdown"
+            structured_format == "markdown"
             or _looks_like_markdown_table(table_body)
         ):
             return table_body
         if structured_content and (
-            block_type == "table"
-            or block_sub_type == "table"
-            or label_image_type == "table"
-            or structured_kind == "table"
-            or structured_format == "markdown"
+            structured_format == "markdown"
             or _looks_like_markdown_table(structured_content)
         ):
             return structured_content
 
         block_text = str(block.get("text", "") or "").strip()
-        if block_text and label_image_type == "table" and _looks_like_markdown_table(
-            block_text
-        ):
+        if block_text and (
+            block_type == "table"
+            or block_sub_type == "table"
+            or label_image_type == "table"
+        ) and _looks_like_markdown_table(block_text):
             return block_text
     return ""
 

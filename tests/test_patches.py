@@ -188,7 +188,8 @@ def test_apply_patch_decisions_preserves_html_table_semantics_for_chart_block() 
     )
 
     block = patched.blocks[0]
-    assert block.sub_type == "html_table"
-    assert block.content["content"] == html_table
+    assert block.type == "table"
+    assert block.sub_type is None
+    assert block.content["table_body"] == html_table
     assert block.structured_label.kind == "table"
     assert block.structured_label.format == "html"

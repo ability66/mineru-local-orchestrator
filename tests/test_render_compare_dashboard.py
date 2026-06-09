@@ -524,7 +524,7 @@ def test_generate_compare_dashboard_renders_table_markdown_when_label_kind_is_te
             ]
         },
         "derived_label": {
-            "image_type": "table",
+            "image_type": "chart",
             "caption": "统计表",
             "structured_label": {
                 "kind": "text",
