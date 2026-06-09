@@ -699,3 +699,184 @@ def test_generate_compare_dashboard_hides_empty_qwen_adjudication_panel_for_non_
     html = html_path.read_text(encoding="utf-8")
     assert ">表格<" in html
     assert ">Qwen<" not in html
+
+
+def test_generate_compare_dashboard_reorders_flowchart_panels_and_hides_empty_provider_cards(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "paddle").mkdir(parents=True)
+    (output_dir / "normalized" / "glm").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "flowchart.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    mineru_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "flowchart",
+                    "content": {
+                        "content": 'flowchart TD\nA["开始"] --> B["结束"]',
+                        "img_path": str(data_dir / "flowchart.png"),
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "flowchart",
+            "caption": "MinerU 流程图",
+            "structured_label": {
+                "kind": "mermaid",
+                "content": 'flowchart TD\nA["开始"] --> B["结束"]',
+                "format": "mermaid",
+                "source": "model",
+            },
+        },
+    }
+    qwen_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "chart",
+                    "sub_type": "flowchart",
+                    "content": {
+                        "content": 'flowchart TD\nStart["开始"] --> End["结束"]',
+                        "img_path": str(data_dir / "flowchart.png"),
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "flowchart",
+            "caption": "Qwen 流程图",
+            "structured_label": {
+                "kind": "mermaid",
+                "content": 'flowchart TD\nStart["开始"] --> End["结束"]',
+                "format": "mermaid",
+                "source": "model",
+            },
+        },
+    }
+    artifact_payload = {
+        "final_document": qwen_payload["document"],
+        "final_label": {
+            "image_type": "flowchart",
+            "caption": "Final 流程图",
+            "structured_label": {
+                "kind": "mermaid",
+                "content": 'flowchart TD\nStart["开始"] --> End["结束"]',
+                "format": "mermaid",
+                "source": "model",
+            },
+        },
+        "consensus": {
+            "decision": "use_qwen_fields",
+            "reasons": ["Qwen 在冲突节点的结构更准确"],
+        },
+        "patch_decisions": [
+            {
+                "issue_id": "flowchart-1",
+                "decision": "use_qwen_fields",
+                "reason": "参考侧在冲突点上更合理",
+            }
+        ],
+        "issues": [],
+    }
+
+    (output_dir / "normalized" / "mineru" / "flowchart-demo.json").write_text(
+        json.dumps(mineru_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "flowchart-demo.json").write_text(
+        json.dumps(qwen_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "flowchart-demo_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">Paddle<" not in html
+    assert ">GLM<" not in html
+    assert ">Judge Reason<" in html
+    assert "裁决结果：use_qwen_fields" in html
+    assert "Qwen 在冲突节点的结构更准确" in html
+    assert html.index(">Qwen<") < html.index(">MinerU<")
+    assert html.index(">MinerU<") < html.index(">Final<")
+    assert html.index(">Final<") < html.index(">Judge Reason<")
+
+
+def test_generate_compare_dashboard_moves_metadata_below_rendered_content(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    image_path = data_dir / "table.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    html_table = (
+        "<table><thead><tr><th>指标</th><th>表达式</th></tr></thead>"
+        "<tbody><tr><td>面积</td><td>$x^2 + y^2$</td></tr></tbody></table>"
+    )
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": html_table,
+                        "img_path": str(image_path),
+                    },
+                    "structured_label": {
+                        "kind": "text",
+                        "content": html_table,
+                        "format": "html",
+                        "source": "model",
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "table",
+            "caption": "HTML 表格",
+            "structured_label": {
+                "kind": "text",
+                "content": html_table,
+                "format": "html",
+                "source": "model",
+            },
+        },
+    }
+
+    (output_dir / "normalized" / "mineru" / "metadata-demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert "Rendered HTML" in html
+    assert '<div class="card-meta">' in html
+    assert html.index("Rendered HTML") < html.index("Caption：HTML 表格")
+    assert html.index("Rendered HTML") < html.index("文件：normalized/mineru/metadata-demo.json")
+    assert html.index('<img src="data:image/png;base64,') < html.index(str(image_path))

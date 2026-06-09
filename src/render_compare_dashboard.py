@@ -218,6 +218,14 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
             source_path=f"final/{image_id}.json",
         )
     )
+    if str(record_type or "").strip().lower() == "flowchart":
+        judge_panel = _build_flowchart_judge_panel(
+            artifact_payload=artifact_payload,
+            artifact_source_path=f"final/{image_id}_artifact.json",
+        )
+        if judge_panel is not None:
+            panels.append(judge_panel)
+    panels = _finalize_panels(record_type=record_type, panels=panels)
 
     return {
         "image_id": image_id,
@@ -334,19 +342,31 @@ def build_dashboard_html(
       overflow: hidden;
     }}
     .card-head {{
-      padding: 18px 20px 14px;
-      border-bottom: 1px solid var(--line);
+      padding: 18px 20px 12px;
       background: linear-gradient(180deg, rgba(20, 83, 45, 0.06), rgba(255,255,255,0));
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
     }}
     .card-head h2 {{
-      margin: 0 0 8px;
+      margin: 0;
       font-size: 20px;
+    }}
+    .card-body {{
+      display: grid;
+      gap: 0;
     }}
     .meta {{
       display: grid;
       gap: 6px;
       font-size: 13px;
       color: var(--muted);
+    }}
+    .card-meta {{
+      padding: 14px 16px 16px;
+      border-top: 1px solid var(--line);
+      background: rgba(246, 240, 226, 0.32);
     }}
     .badge {{
       display: inline-block;
@@ -647,31 +667,24 @@ def _build_record_section(record: dict[str, Any]) -> str:
 
 def _build_original_image_card(snapshot: dict[str, Any] | None) -> str:
     if not snapshot:
-        return """
-      <article class="card">
-        <div class="card-head">
-          <h2>Original</h2>
-          <div class="meta">
-            <span class="badge">missing</span>
-            <span>未找到原始图像</span>
-          </div>
-        </div>
-        <div class="diagram-wrap"><div class="image-frame"><pre>当前没有可展示的原始图像。</pre></div></div>
-      </article>
-"""
+        return ""
     return f"""
       <article class="card">
         <div class="card-head">
           <h2>{escape(snapshot.get("title", "Original"))}</h2>
-          <div class="meta">
-            <span class="badge">image</span>
-            <span>文件：{escape(str(snapshot.get("source_path", "")))}</span>
-            <span>说明：{escape(str(snapshot.get("note", "") or "原始输入图像"))}</span>
-          </div>
+          <span class="badge">image</span>
         </div>
-        <div class="diagram-wrap">
-          <div class="image-frame">
-            <img src="{snapshot.get("data_url", "")}" alt="{escape(snapshot.get("title", "Original"))}" />
+        <div class="card-body">
+          <div class="diagram-wrap">
+            <div class="image-frame">
+              <img src="{snapshot.get("data_url", "")}" alt="{escape(snapshot.get("title", "Original"))}" />
+            </div>
+          </div>
+          <div class="card-meta">
+            <div class="meta">
+              <span>文件：{escape(str(snapshot.get("source_path", "")))}</span>
+              <span>说明：{escape(str(snapshot.get("note", "") or "原始输入图像"))}</span>
+            </div>
           </div>
         </div>
       </article>
@@ -680,21 +693,32 @@ def _build_original_image_card(snapshot: dict[str, Any] | None) -> str:
 
 def _build_panel_card(panel: ComparePanel) -> str:
     content_html = _build_panel_content(panel)
+    meta_html = _build_panel_meta(panel)
     return f"""
       <article class="card">
         <div class="card-head">
           <h2>{escape(panel.title)}</h2>
-          <div class="meta">
-            <span class="badge">{escape(panel.image_type or "unknown")}</span>
-            <span>文件：{escape(panel.source_path)}</span>
-            <span>Label：{escape(panel.image_type or "unknown")}</span>
-            <span>Caption：{escape(panel.caption or "(empty)")}</span>
-            <span>说明：{escape(panel.note or "无补充说明")}</span>
-          </div>
+          <span class="badge">{escape(panel.image_type or "unknown")}</span>
         </div>
-        {content_html}
+        <div class="card-body">
+          {content_html}
+          {meta_html}
+        </div>
       </article>
 """
+
+
+def _build_panel_meta(panel: ComparePanel) -> str:
+    lines = [
+        f"文件：{escape(panel.source_path)}" if panel.source_path else "",
+        f"Caption：{escape(panel.caption)}" if panel.caption else "",
+        f"说明：{escape(panel.note)}" if panel.note else "",
+    ]
+    visible_lines = [line for line in lines if line]
+    if not visible_lines:
+        return ""
+    items_html = "".join(f"<span>{line}</span>" for line in visible_lines)
+    return f'<div class="card-meta"><div class="meta">{items_html}</div></div>'
 
 
 def _build_panel_content(panel: ComparePanel) -> str:
@@ -827,6 +851,24 @@ def _build_qwen_panel(
         render_kind="text",
         render_text=adjudication_text,
         note="展示裁决结果与原因",
+    )
+
+
+def _build_flowchart_judge_panel(
+    artifact_payload: Any,
+    artifact_source_path: str,
+) -> ComparePanel | None:
+    render_text = _extract_qwen_adjudication_text(artifact_payload)
+    if not render_text:
+        return None
+    return ComparePanel(
+        title="Judge Reason",
+        source_path=artifact_source_path,
+        image_type="flowchart",
+        caption="",
+        render_kind="text",
+        render_text=render_text,
+        note="二阶段裁决原因",
     )
 
 
@@ -1299,6 +1341,27 @@ def _extract_qwen_adjudication_text(artifact_payload: Any) -> str:
                 add_line(f"- {entry}")
 
     return "\n".join(lines)
+
+
+def _finalize_panels(record_type: str, panels: list[ComparePanel]) -> list[ComparePanel]:
+    filtered = [
+        panel
+        for panel in panels
+        if panel is not None and panel.render_kind != "empty"
+    ]
+    if str(record_type or "").strip().lower() != "flowchart":
+        return filtered
+
+    priority = {
+        "Qwen": 0,
+        "MinerU": 1,
+        "Final": 2,
+        "Judge Reason": 3,
+    }
+    return sorted(
+        filtered,
+        key=lambda panel: (priority.get(panel.title, 99), panel.title),
+    )
 
 
 def _render_markdown_content(markdown_text: str) -> str:
