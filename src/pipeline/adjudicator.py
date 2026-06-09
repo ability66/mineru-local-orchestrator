@@ -39,6 +39,7 @@ def analyze_html_table_bundles(
     ordered_bundles = [{"role": "mineru", **mineru_bundle}] + list(auxiliary_bundles)
     candidate_bundles: list[dict[str, Any]] = []
     candidate_payloads: list[dict[str, Any]] = []
+    signaled_roles: list[str] = []
     for bundle in ordered_bundles:
         role = str(bundle.get("role", "") or "").strip().lower() or "candidate"
         document = bundle.get("document")
@@ -50,6 +51,7 @@ def analyze_html_table_bundles(
             continue
         if not is_html_table_like(document) and not is_html_table_like(label):
             continue
+        signaled_roles.append(role)
         html_table_candidate = extract_best_html_table_candidate(document)
         if not isinstance(html_table_candidate, dict):
             continue
@@ -68,6 +70,25 @@ def analyze_html_table_bundles(
 
     analysis = analyze_html_table_candidate_consensus(candidate_payloads)
     if analysis is None:
+        if signaled_roles:
+            return {
+                "fallback": True,
+                "reason": "html_table_candidate_extraction_failed",
+                "candidate_roles": list(dict.fromkeys(signaled_roles)),
+                "candidate_bundles": candidate_bundles,
+                "role_lookup": {
+                    str(bundle.get("role", "") or "").strip().lower(): bundle
+                    for bundle in candidate_bundles
+                },
+                "mineru_candidate": next(
+                    (
+                        bundle.get("html_table_candidate")
+                        for bundle in candidate_bundles
+                        if str(bundle.get("role", "") or "").strip().lower() == "mineru"
+                    ),
+                    None,
+                ),
+            }
         return None
     role_lookup = {
         str(bundle.get("role", "") or "").strip().lower(): bundle

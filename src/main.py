@@ -69,6 +69,27 @@ from src.writer import (
     write_image_result,
 )
 
+_HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS = {
+    "only one parsable label",
+    "single model result cannot be auto-accepted",
+    "overall consensus score below acceptance threshold",
+    "evidence score below acceptance threshold",
+    "validator score below acceptance threshold",
+    "hallucination risk above acceptance threshold",
+}
+_HTML_TABLE_ARTIFACT_PLACEHOLDER_ESCALATIONS = {
+    "single_model_result",
+    "low_consensus_score",
+    "low_evidence_score",
+    "low_validator_score",
+    "high_hallucination_risk",
+}
+_HTML_TABLE_REVIEW_REASON_MESSAGES = {
+    "severe_structure_or_formula_conflict": "html table severe structure or formula conflict",
+    "pairwise_similarity_matrix_empty": "html table pairwise similarity matrix is empty",
+    "no_stable_html_table_consensus": "html table candidates do not form stable consensus",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -490,6 +511,157 @@ def _ordered_unique_reference_texts(values: list[str]) -> list[str]:
         seen.add(signature)
         ordered.append(normalized)
     return ordered
+
+
+def _deduplicate_text_values(values: list[Any]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ordered
+
+
+def _build_html_table_analysis_summary(
+    html_table_analysis: dict[str, Any],
+    artifact_reference_bundle: dict[str, Any] | None,
+    html_table_issues: list[Any],
+    html_table_patch_decisions: list[PatchDecision],
+) -> dict[str, Any]:
+    candidate_roles = _deduplicate_text_values(
+        list(html_table_analysis.get("candidate_roles") or [])
+    )
+    artifact_reference_role = (
+        str(artifact_reference_bundle.get("role", "") or "").strip().lower()
+        if isinstance(artifact_reference_bundle, dict)
+        else ""
+    )
+    pairwise_scores: list[dict[str, Any]] = []
+    for item in list(html_table_analysis.get("pairwise") or []):
+        if not isinstance(item, dict):
+            continue
+        left = str(item.get("left", "") or "").strip().lower()
+        right = str(item.get("right", "") or "").strip().lower()
+        try:
+            score = round(float(item.get("score", 0.0)), 4)
+        except (TypeError, ValueError):
+            score = 0.0
+        if not left or not right:
+            continue
+        pairwise_scores.append({"left": left, "right": right, "score": score})
+
+    return {
+        "branch_used": True,
+        "candidate_count": len(candidate_roles),
+        "candidate_roles": candidate_roles,
+        "fallback": bool(html_table_analysis.get("fallback", False)),
+        "fallback_reason": str(html_table_analysis.get("reason", "") or "").strip(),
+        "stable_consensus": bool(html_table_analysis.get("stable_consensus", False)),
+        "consensus_kind": str(html_table_analysis.get("consensus_kind", "") or "").strip(),
+        "consensus_cluster": _deduplicate_text_values(
+            list(html_table_analysis.get("consensus_cluster") or [])
+        ),
+        "reference_role": str(html_table_analysis.get("reference_role", "") or "").strip().lower()
+        or None,
+        "requires_qwen": bool(html_table_analysis.get("requires_qwen", False)),
+        "review_reasons": _deduplicate_text_values(
+            list(html_table_analysis.get("review_reasons") or [])
+        ),
+        "severe_conflicts": _deduplicate_text_values(
+            list(html_table_analysis.get("severe_conflicts") or [])
+        ),
+        "pairwise_matrix": dict(html_table_analysis.get("matrix") or {}),
+        "pairwise_scores": pairwise_scores,
+        "artifact_reference_role": artifact_reference_role or None,
+        "artifact_reference_included": bool(artifact_reference_role),
+        "stage2_issue_count": len(html_table_issues),
+        "stage2_patch_decisions": _deduplicate_text_values(
+            [decision.decision for decision in html_table_patch_decisions]
+        ),
+    }
+
+
+def _build_html_table_artifact_reason_override(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if bool(summary.get("fallback", False)):
+        reasons.append("html table branch fell back before candidate consensus")
+        fallback_reason = str(summary.get("fallback_reason", "") or "").strip()
+        if fallback_reason:
+            reasons.append(f"html table fallback reason: {fallback_reason}")
+    else:
+        for review_reason in list(summary.get("review_reasons") or []):
+            mapped = _HTML_TABLE_REVIEW_REASON_MESSAGES.get(str(review_reason or "").strip())
+            if mapped:
+                reasons.append(mapped)
+        if bool(summary.get("requires_qwen", False)) and int(
+            summary.get("stage2_issue_count", 0) or 0
+        ) > 0:
+            reasons.append(
+                "html table second-stage adjudication did not produce an adoptable patch"
+            )
+    reasons.append("html table auxiliary candidates were analyzed outside artifact pairwise comparison")
+    return _deduplicate_text_values(reasons)
+
+
+def _annotate_html_table_artifact(
+    artifact: Any,
+    html_table_analysis: dict[str, Any] | None,
+    artifact_reference_bundle: dict[str, Any] | None,
+    html_table_issues: list[Any],
+    html_table_patch_decisions: list[PatchDecision],
+) -> None:
+    if not isinstance(html_table_analysis, dict):
+        return
+
+    summary = _build_html_table_analysis_summary(
+        html_table_analysis=html_table_analysis,
+        artifact_reference_bundle=artifact_reference_bundle,
+        html_table_issues=html_table_issues,
+        html_table_patch_decisions=html_table_patch_decisions,
+    )
+    artifact.final_document.raw_metadata["html_table_analysis"] = summary
+
+    if (
+        summary["candidate_count"] < 2
+        or summary["artifact_reference_included"]
+        or artifact.consensus is None
+    ):
+        return
+
+    override_reasons = _build_html_table_artifact_reason_override(summary)
+    artifact.consensus.reasons = _deduplicate_text_values(
+        override_reasons
+        + [
+            reason
+            for reason in artifact.consensus.reasons
+            if reason not in _HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS
+        ]
+    )
+    artifact.consensus.escalation_reasons = _deduplicate_text_values(
+        [
+            "html_table_auxiliary_candidates_not_reflected_in_artifact_pairwise_scores",
+        ]
+        + [
+            reason
+            for reason in artifact.consensus.escalation_reasons
+            if reason not in _HTML_TABLE_ARTIFACT_PLACEHOLDER_ESCALATIONS
+        ]
+    )
+    artifact.consensus.validation_warnings = _deduplicate_text_values(
+        ["html_table_consensus_uses_auxiliary_candidate_matrix"]
+        + list(artifact.consensus.validation_warnings)
+    )
+    artifact.reasons = _deduplicate_text_values(
+        override_reasons
+        + [
+            reason
+            for reason in artifact.reasons
+            if reason not in _HTML_TABLE_ARTIFACT_PLACEHOLDER_REASONS
+        ]
+    )
 
 
 def _extract_flowchart_ocr_reference(
@@ -1305,6 +1477,13 @@ def process_image_task(
             and isinstance(selected_seal_bundle.get("output"), ModelOutput)
             else None
         ),
+    )
+    _annotate_html_table_artifact(
+        artifact=artifact,
+        html_table_analysis=html_table_analysis,
+        artifact_reference_bundle=artifact_reference_bundle,
+        html_table_issues=html_table_issues,
+        html_table_patch_decisions=html_table_patch_decisions,
     )
     summary_record = write_image_result(
         output_dir=output_dir,

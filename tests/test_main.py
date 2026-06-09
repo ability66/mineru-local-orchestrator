@@ -741,6 +741,9 @@ def test_process_image_task_auto_accepts_high_consensus_html_table_branch(
     )
     assert len(qwen_client.calls) == 0
     assert artifact["consensus"]["decision"] == "accepted"
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["candidate_count"] >= 2
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stable_consensus"] is True
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["artifact_reference_included"] is True
 
 
 def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
@@ -816,6 +819,17 @@ def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
     assert len(qwen_client.calls) == 1
     assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
     assert "pairwise_matrix" in qwen_client.calls[0]["context"]["issue_payload"]
+    artifact = json.loads(
+        (tmp_path / "final" / "html-table-review_artifact.json").read_text(encoding="utf-8")
+    )
+    assert "only one parsable label" not in artifact["consensus"]["reasons"]
+    assert "single model result cannot be auto-accepted" not in artifact["consensus"]["reasons"]
+    assert (
+        "html table candidates do not form stable consensus"
+        in artifact["consensus"]["reasons"]
+    )
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["candidate_count"] >= 2
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
 
 
 def test_process_image_task_html_table_parse_fallback_keeps_existing_flow(
@@ -868,6 +882,12 @@ def test_process_image_task_html_table_parse_fallback_keeps_existing_flow(
     )
     assert len(qwen_client.calls) == 0
     assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == markdown_table
+    assert "only one parsable label" not in artifact["consensus"]["reasons"]
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is True
+    assert (
+        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback_reason"]
+        == "html_table_candidate_extraction_failed"
+    )
 
 
 def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(
@@ -931,3 +951,9 @@ def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(
     )
     assert len(qwen_client.calls) == 1
     assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == mineru_html
+    assert "only one parsable label" not in artifact["consensus"]["reasons"]
+    assert (
+        "html table second-stage adjudication did not produce an adoptable patch"
+        in artifact["consensus"]["reasons"]
+    )
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["artifact_reference_included"] is False
