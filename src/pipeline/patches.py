@@ -94,6 +94,7 @@ def _apply_patch_to_block(block: CanonicalBlock, patch: dict[str, Any]) -> None:
 
     _refresh_flowchart_payload(block)
     _refresh_block_semantics(block)
+    _refresh_block_text_and_caption(block)
 
     if block.type in {"image", "chart", "table"} and "img_path" not in block.content:
         block.content["img_path"] = ""
@@ -202,6 +203,25 @@ def _rewrite_chart_block_as_table(block: CanonicalBlock, table_body: str) -> Non
     block.type = "table"
     block.sub_type = None
     block.content = rewritten
+    block.caption_structured.visual_type = "table"
+
+
+def _refresh_block_text_and_caption(block: CanonicalBlock) -> None:
+    if block.type != "table":
+        return
+    captions = [
+        str(item or "").strip()
+        for item in block.content.get("table_caption", [])
+        if str(item or "").strip()
+    ]
+    table_body = str(block.content.get("table_body", "") or "").strip()
+    text_parts = captions + ([table_body] if table_body else [])
+    refreshed_text = " ".join(text_parts).strip()
+    if refreshed_text:
+        block.text = refreshed_text
+    brief = captions[0] if captions else block.text.strip()
+    block.caption_structured.brief = brief
+    block.caption_structured.main_subject = brief
     block.caption_structured.visual_type = "table"
 
 

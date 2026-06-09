@@ -375,6 +375,7 @@ def _block_from_v2_payload(
         warnings=[],
         provenance={
             "source_block_type": block.get("type"),
+            "source_sub_type": block.get("sub_type"),
             "source_angle": _coerce_float(block.get("angle")),
             "format": payload_format,
         },

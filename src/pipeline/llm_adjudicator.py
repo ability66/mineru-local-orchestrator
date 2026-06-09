@@ -271,10 +271,13 @@ def _build_html_table_prompt_payload(issue: Issue) -> dict[str, object]:
     pairwise_scores = candidate_payload.get("pairwise_scores")
     pairwise_matrix = candidate_payload.get("pairwise_matrix")
     consensus_diagnostics = candidate_payload.get("consensus_diagnostics")
+    review_mode = str(
+        candidate_payload.get("review_mode", "") or "html_table_disagreement"
+    ).strip() or "html_table_disagreement"
     payload = {
         "issue_id": issue.issue_id,
         "issue_type": issue.issue_type,
-        "review_mode": "html_table_disagreement",
+        "review_mode": review_mode,
         "target_block_id": issue.target_block_id,
         "page_idx": issue.page_idx,
         "reasons": list(issue.reasons or []),
@@ -290,6 +293,17 @@ def _build_html_table_prompt_payload(issue: Issue) -> dict[str, object]:
         ),
         "thinking_mode": "disabled_requested_for_html_table_adjudication",
     }
+    for key in (
+        "branch_mode",
+        "forced_second_pass",
+        "must_output_final_table",
+        "must_include_caption",
+        "final_table_target",
+        "task_instruction",
+    ):
+        value = candidate_payload.get(key)
+        if value not in (None, "", [], {}):
+            payload[key] = value
     reference_model_role = str(
         candidate_payload.get("reference_model_role", "") or ""
     ).strip()

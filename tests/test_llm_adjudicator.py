@@ -263,3 +263,43 @@ def test_build_issue_prompt_payload_for_html_table_contains_similarity_context()
     assert len(prompt_payload["candidates"]) == 2
     assert prompt_payload["pairwise_matrix"]["mineru"]["paddle"] == 0.97
     assert prompt_payload["consensus_diagnostics"]["consensus_kind"] == "none"
+
+
+def test_build_issue_prompt_payload_for_chart_table_second_pass_requires_final_table() -> None:
+    issue = Issue(
+        issue_id="html-table-m1",
+        issue_type="html_table_conflict",
+        page_idx=0,
+        target_block_id="m1",
+        candidate_payload={
+            "review_mode": "chart_table_second_pass",
+            "branch_mode": "chart_table",
+            "forced_second_pass": True,
+            "must_output_final_table": True,
+            "must_include_caption": True,
+            "final_table_target": {
+                "type": "table",
+                "content_key": "table_body",
+                "caption_key": "table_caption",
+            },
+            "task_instruction": "请直接输出最终表格与 caption。",
+            "candidates": [
+                {
+                    "candidate_id": "mineru",
+                    "table_format": "markdown",
+                    "table_content": "| A | B |\n| --- | --- |\n| 1 | 2 |",
+                    "caption": "候选表格",
+                }
+            ],
+        },
+        reasons=["chart_table_requires_qwen_second_pass"],
+    )
+
+    prompt_payload = build_issue_prompt_payload(issue, "html_table_adjudication")
+
+    assert prompt_payload["review_mode"] == "chart_table_second_pass"
+    assert prompt_payload["branch_mode"] == "chart_table"
+    assert prompt_payload["forced_second_pass"] is True
+    assert prompt_payload["must_output_final_table"] is True
+    assert prompt_payload["must_include_caption"] is True
+    assert prompt_payload["final_table_target"]["content_key"] == "table_body"

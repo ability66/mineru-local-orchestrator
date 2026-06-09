@@ -276,6 +276,13 @@ def build_html_table_issue(
     candidate_payloads: list[dict[str, Any]] = []
     reference_bundle: dict[str, Any] | None = None
     reference_role = str(consensus_analysis.get("reference_role", "") or "").strip().lower()
+    forced_second_pass = bool(consensus_analysis.get("forced_second_pass", False))
+    branch_mode = str(consensus_analysis.get("branch_mode", "") or "").strip().lower()
+    review_mode = (
+        "chart_table_second_pass"
+        if forced_second_pass and branch_mode == "chart_table"
+        else "html_table_disagreement"
+    )
     for bundle in candidate_bundles:
         role = str(bundle.get("role", "") or "").strip().lower()
         candidate = bundle.get("html_table_candidate")
@@ -323,7 +330,9 @@ def build_html_table_issue(
             else None
         ),
         candidate_payload={
-            "review_mode": "html_table_disagreement",
+            "review_mode": review_mode,
+            "branch_mode": branch_mode or "table",
+            "forced_second_pass": forced_second_pass,
             "candidates": candidate_payloads,
             "pairwise_matrix": deepcopy(consensus_analysis.get("matrix") or {}),
             "pairwise_scores": deepcopy(consensus_analysis.get("pairwise") or []),
@@ -342,6 +351,20 @@ def build_html_table_issue(
             or None,
             "reference_patch": reference_patch,
             "candidate_patch": reference_patch,
+            "must_output_final_table": forced_second_pass and branch_mode == "chart_table",
+            "must_include_caption": forced_second_pass and branch_mode == "chart_table",
+            "final_table_target": {
+                "type": "table",
+                "content_key": "table_body",
+                "caption_key": "table_caption",
+                "caption_format": "list[str]",
+            },
+            "task_instruction": (
+                "这是识别为 chart 但不是 flowchart 的分支。"
+                "请基于候选原始表格文本和 caption，直接输出你认为正确的最终表格与 caption。"
+            )
+            if forced_second_pass and branch_mode == "chart_table"
+            else "",
         },
         reasons=reasons,
     )

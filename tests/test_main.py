@@ -832,7 +832,7 @@ def test_process_image_task_triggers_qwen_for_divergent_html_table_branch(
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
 
 
-def test_process_image_task_auto_accepts_markdown_chart_table_branch(
+def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch(
     tmp_path,
 ) -> None:
     image_task = ImageTask(
@@ -859,7 +859,27 @@ def test_process_image_task_auto_accepts_markdown_chart_table_branch(
     )
     qwen_client = StubClient(
         model_name="qwen-local",
-        responses=[],
+        responses=[
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "issue_id": "html-table-m1",
+                        "target_block_id": "m1",
+                        "decision": "merge",
+                        "patch": {
+                            "type": "table",
+                            "content": {
+                                "table_body": "|指标|值|\n|---|---|\n|增长率|12%|\n|同比|8%|",
+                                "table_caption": ["Qwen 终裁表格"],
+                            },
+                        },
+                        "reason": "chart table second-pass adjudication",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
         config={"provider": "qwen_openai_compatible", "role": "judge"},
     )
 
@@ -880,12 +900,30 @@ def test_process_image_task_auto_accepts_markdown_chart_table_branch(
     artifact = json.loads(
         (tmp_path / "final" / "html-table-fallback_artifact.json").read_text(encoding="utf-8")
     )
-    assert len(qwen_client.calls) == 0
+    assert len(qwen_client.calls) == 1
+    assert qwen_client.calls[0]["context"]["mode"] == "html_table_adjudication"
+    assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
+    assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
     assert artifact["final_document"]["blocks"][0]["type"] == "table"
-    assert artifact["final_document"]["blocks"][0]["content"]["table_body"] == markdown_table
+    assert (
+        artifact["final_document"]["blocks"][0]["content"]["table_body"]
+        == "|指标|值|\n|---|---|\n|增长率|12%|\n|同比|8%|"
+    )
+    assert artifact["final_document"]["blocks"][0]["content"]["table_caption"] == [
+        "Qwen 终裁表格"
+    ]
     assert "only one parsable label" not in artifact["consensus"]["reasons"]
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["fallback"] is False
     assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["stable_consensus"] is True
+    assert (
+        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["forced_second_pass"]
+        is True
+    )
+    assert (
+        artifact["final_document"]["raw_metadata"]["html_table_analysis"]["branch_mode"]
+        == "chart_table"
+    )
+    assert artifact["final_document"]["raw_metadata"]["html_table_analysis"]["requires_qwen"] is True
 
 
 def test_process_image_task_falls_back_to_mineru_when_html_table_qwen_fails(
