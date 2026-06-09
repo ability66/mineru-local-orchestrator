@@ -1010,30 +1010,64 @@ def _extract_table_markdown(
     label_payload: Any,
     prefer_label_semantics: bool = False,
 ) -> str:
+    label_image_type = _label_image_type(label_payload).strip().lower()
     if isinstance(label_payload, dict):
         structured = label_payload.get("structured_label")
-        if (
-            isinstance(structured, dict)
-            and str(structured.get("kind", "") or "").strip() == "table"
-        ):
+        if isinstance(structured, dict):
+            structured_kind = str(structured.get("kind", "") or "").strip().lower()
+            structured_format = str(
+                structured.get("format", "") or ""
+            ).strip().lower()
             content = str(structured.get("content", "") or "").strip()
-            if content:
+            if content and (
+                structured_kind == "table"
+                or label_image_type == "table"
+                or structured_format == "markdown"
+                or _looks_like_markdown_table(content)
+            ):
                 return content
-        if prefer_label_semantics:
+        if prefer_label_semantics and label_image_type not in {"", "table"}:
             return ""
     for block in blocks:
-        if str(block.get("type", "") or "").strip().lower() != "table":
-            continue
+        block_type = str(block.get("type", "") or "").strip().lower()
+        block_sub_type = str(block.get("sub_type", "") or "").strip().lower()
         structured = block.get("structured_label")
+        structured_content = ""
+        structured_kind = ""
+        structured_format = ""
         if isinstance(structured, dict):
-            content = str(structured.get("content", "") or "").strip()
-            if content:
-                return content
+            structured_content = str(structured.get("content", "") or "").strip()
+            structured_kind = str(structured.get("kind", "") or "").strip().lower()
+            structured_format = str(structured.get("format", "") or "").strip().lower()
         content_payload = block.get("content")
+        table_body = ""
         if isinstance(content_payload, dict):
-            body = str(content_payload.get("table_body", "") or "").strip()
-            if body:
-                return body
+            table_body = str(content_payload.get("table_body", "") or "").strip()
+
+        if table_body and (
+            block_type == "table"
+            or block_sub_type == "table"
+            or label_image_type == "table"
+            or structured_kind == "table"
+            or structured_format == "markdown"
+            or _looks_like_markdown_table(table_body)
+        ):
+            return table_body
+        if structured_content and (
+            block_type == "table"
+            or block_sub_type == "table"
+            or label_image_type == "table"
+            or structured_kind == "table"
+            or structured_format == "markdown"
+            or _looks_like_markdown_table(structured_content)
+        ):
+            return structured_content
+
+        block_text = str(block.get("text", "") or "").strip()
+        if block_text and label_image_type == "table" and _looks_like_markdown_table(
+            block_text
+        ):
+            return block_text
     return ""
 
 
@@ -1153,6 +1187,13 @@ def _render_markdown_content(markdown_text: str) -> str:
         else:
             index += 1
     return "".join(fragments) or "<p>(empty)</p>"
+
+
+def _looks_like_markdown_table(text: str) -> bool:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    return _is_markdown_table_start(lines, 0)
 
 
 def _is_markdown_table_start(lines: list[str], index: int) -> bool:

@@ -437,6 +437,64 @@ def test_generate_compare_dashboard_renders_table_markdown_as_html_table(
     assert "<td>升高</td>" in html
 
 
+def test_generate_compare_dashboard_renders_table_markdown_when_label_kind_is_text(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+
+    table_markdown = (
+        "| 项目 | 数值 |\n"
+        "| --- | --- |\n"
+        "| A | 12 |\n"
+        "| B | 20 |"
+    )
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "chart",
+                    "sub_type": "table_like",
+                    "text": table_markdown,
+                    "structured_label": {
+                        "kind": "text",
+                        "content": table_markdown,
+                        "format": "markdown",
+                        "source": "model",
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "table",
+            "caption": "统计表",
+            "structured_label": {
+                "kind": "text",
+                "content": table_markdown,
+                "format": "markdown",
+                "source": "model",
+            },
+        },
+    }
+
+    (output_dir / "normalized" / "mineru" / "table-kind-text.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert "Rendered Markdown" in html
+    assert '<table class="markdown-table">' in html
+    assert "<th>项目</th>" in html
+    assert "<td>20</td>" in html
+
+
 def test_generate_compare_dashboard_shows_qwen_adjudication_for_non_flowchart(
     tmp_path,
 ) -> None:
