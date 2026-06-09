@@ -374,3 +374,212 @@ def test_generate_compare_dashboard_prefers_final_label_type_for_record_type(tmp
     html = html_path.read_text(encoding="utf-8")
     assert ">印章<" in html
     assert 'data-record-type="seal"' in html
+
+
+def test_generate_compare_dashboard_renders_table_markdown_as_html_table(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+
+    table_markdown = (
+        "| 检查项 | 结果 |\n"
+        "| --- | --- |\n"
+        "| CA19-9 | 升高 |\n"
+        "| CT | 可见病灶 |"
+    )
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {"table_body": table_markdown},
+                    "structured_label": {
+                        "kind": "table",
+                        "content": table_markdown,
+                        "format": "markdown",
+                        "source": "model",
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "table",
+            "caption": "检验结果",
+            "structured_label": {
+                "kind": "table",
+                "content": table_markdown,
+                "format": "markdown",
+                "source": "model",
+            },
+        },
+    }
+
+    (output_dir / "normalized" / "mineru" / "table-demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">表格<" in html
+    assert "Rendered Markdown" in html
+    assert '<table class="markdown-table">' in html
+    assert "<th>检查项</th>" in html
+    assert "<th>结果</th>" in html
+    assert "<td>CA19-9</td>" in html
+    assert "<td>升高</td>" in html
+
+
+def test_generate_compare_dashboard_shows_qwen_adjudication_for_non_flowchart(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    mineru_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "seal",
+                    "text": "上海木田电器电机有限公司",
+                }
+            ]
+        },
+        "derived_label": {"image_type": "seal", "caption": "印章"},
+    }
+    qwen_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "seal",
+                    "text": "QWEN原始文本不应显示",
+                }
+            ]
+        },
+        "derived_label": {"image_type": "seal", "caption": "Qwen 印章"},
+    }
+    artifact_payload = {
+        "final_document": mineru_payload["document"],
+        "final_label": {
+            "image_type": "seal",
+            "caption": "印章",
+            "structured_label": {
+                "kind": "text",
+                "content": "上海木田电器电机有限公司",
+                "format": "plain_text",
+                "source": "model",
+            },
+        },
+        "consensus": {
+            "decision": "accepted",
+            "reasons": ["seal issues resolved by second-stage adjudication"],
+        },
+        "reasons": ["seal issues resolved by second-stage adjudication"],
+        "seal_selection": {
+            "selected_candidate": "paddle",
+            "reason": "paddle text is more complete",
+            "confidence": "high",
+        },
+        "issues": [],
+        "patch_decisions": [],
+    }
+
+    (output_dir / "normalized" / "mineru" / "seal-demo.json").write_text(
+        json.dumps(mineru_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "seal-demo.json").write_text(
+        json.dumps(qwen_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "seal-demo_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">Qwen<" in html
+    assert "final/seal-demo_artifact.json" in html
+    assert "裁决结果：accepted" in html
+    assert "裁决原因：" in html
+    assert "seal issues resolved by second-stage adjudication" in html
+    assert "印章候选：paddle" in html
+    assert "选择原因：paddle text is more complete" in html
+    assert "QWEN原始文本不应显示" not in html
+
+
+def test_generate_compare_dashboard_hides_empty_qwen_adjudication_panel_for_non_flowchart(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {"table_body": "| A | B |\n| --- | --- |\n| 1 | 2 |"},
+                }
+            ]
+        },
+        "derived_label": {"image_type": "table", "caption": "表格"},
+    }
+    artifact_payload = {
+        "final_document": normalized_payload["document"],
+        "final_label": {
+            "image_type": "table",
+            "caption": "表格",
+            "structured_label": {
+                "kind": "table",
+                "content": "| A | B |\n| --- | --- |\n| 1 | 2 |",
+                "format": "markdown",
+                "source": "model",
+            },
+        },
+        "issues": [],
+        "patch_decisions": [],
+    }
+
+    (output_dir / "normalized" / "mineru" / "table-hide-qwen.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "table-hide-qwen.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "table-hide-qwen_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">表格<" in html
+    assert ">Qwen<" not in html

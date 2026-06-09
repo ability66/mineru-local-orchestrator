@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -127,17 +128,60 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
     original_image = collect_original_image_snapshot(
         image_id=image_id, output_dir=output_dir
     )
+    record_type = _infer_record_type(
+        artifact_payload=artifact_payload,
+        final_payload=final_payload,
+        qwen_payload=qwen_payload,
+        mineru_payload=mineru_payload,
+        paddle_payload=paddle_payload,
+        glm_payload=glm_payload,
+    )
+    panels = [
+        _build_panel_from_normalized_payload(
+            payload=mineru_payload,
+            artifact_payload=artifact_payload,
+            snapshot_lookup=snapshot_lookup,
+            title="MinerU",
+            source_path=f"normalized/mineru/{image_id}.json",
+        ),
+        _build_panel_from_normalized_payload(
+            payload=paddle_payload,
+            artifact_payload=artifact_payload,
+            snapshot_lookup=snapshot_lookup,
+            title="Paddle",
+            source_path=f"normalized/paddle/{image_id}.json",
+        ),
+        _build_panel_from_normalized_payload(
+            payload=glm_payload,
+            artifact_payload=artifact_payload,
+            snapshot_lookup=snapshot_lookup,
+            title="GLM",
+            source_path=f"normalized/glm/{image_id}.json",
+        ),
+    ]
+    qwen_panel = _build_qwen_panel(
+        record_type=record_type,
+        payload=qwen_payload,
+        artifact_payload=artifact_payload,
+        snapshot_lookup=snapshot_lookup,
+        source_path=f"normalized/qwen/{image_id}.json",
+        artifact_source_path=f"final/{image_id}_artifact.json",
+    )
+    if qwen_panel is not None:
+        panels.append(qwen_panel)
+    panels.append(
+        _build_panel_from_final_payload(
+            final_payload=final_payload,
+            artifact_payload=artifact_payload,
+            snapshot_lookup=snapshot_lookup,
+            title="Final",
+            source_path=f"final/{image_id}.json",
+        )
+    )
 
     return {
         "image_id": image_id,
-        "record_type": _infer_record_type(
-            artifact_payload=artifact_payload,
-            final_payload=final_payload,
-            qwen_payload=qwen_payload,
-            mineru_payload=mineru_payload,
-            paddle_payload=paddle_payload,
-            glm_payload=glm_payload,
-        ),
+        "record_type": record_type,
         "original_image": None
         if original_image is None
         else {
@@ -146,43 +190,7 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
             "data_url": original_image.data_url,
             "note": original_image.note,
         },
-        "panels": [
-            _build_panel_from_normalized_payload(
-                payload=mineru_payload,
-                artifact_payload=artifact_payload,
-                snapshot_lookup=snapshot_lookup,
-                title="MinerU",
-                source_path=f"normalized/mineru/{image_id}.json",
-            ),
-            _build_panel_from_normalized_payload(
-                payload=paddle_payload,
-                artifact_payload=artifact_payload,
-                snapshot_lookup=snapshot_lookup,
-                title="Paddle",
-                source_path=f"normalized/paddle/{image_id}.json",
-            ),
-            _build_panel_from_normalized_payload(
-                payload=glm_payload,
-                artifact_payload=artifact_payload,
-                snapshot_lookup=snapshot_lookup,
-                title="GLM",
-                source_path=f"normalized/glm/{image_id}.json",
-            ),
-            _build_panel_from_normalized_payload(
-                payload=qwen_payload,
-                artifact_payload=artifact_payload,
-                snapshot_lookup=snapshot_lookup,
-                title="Qwen",
-                source_path=f"normalized/qwen/{image_id}.json",
-            ),
-            _build_panel_from_final_payload(
-                final_payload=final_payload,
-                artifact_payload=artifact_payload,
-                snapshot_lookup=snapshot_lookup,
-                title="Final",
-                source_path=f"final/{image_id}.json",
-            ),
-        ],
+        "panels": panels,
     }
 
 
@@ -345,6 +353,40 @@ def build_dashboard_html(
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--muted);
+    }}
+    .markdown-body {{
+      display: grid;
+      gap: 12px;
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.65;
+    }}
+    .markdown-body p {{
+      margin: 0;
+    }}
+    .markdown-table-wrap {{
+      overflow: auto;
+      border: 1px solid rgba(213, 204, 184, 0.9);
+      background: rgba(255, 253, 248, 0.92);
+    }}
+    .markdown-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }}
+    .markdown-table th,
+    .markdown-table td {{
+      padding: 10px 12px;
+      border: 1px solid rgba(213, 204, 184, 0.9);
+      text-align: left;
+      vertical-align: top;
+    }}
+    .markdown-table thead th {{
+      background: var(--code-bg);
+      font-weight: 700;
+    }}
+    .markdown-table tbody tr:nth-child(even) {{
+      background: rgba(246, 240, 226, 0.42);
     }}
     pre {{
       margin: 0;
@@ -604,11 +646,22 @@ def _build_panel_content(panel: ComparePanel) -> str:
           <pre>{escape(panel.render_text)}</pre>
         </div>
 """
-    if panel.render_kind in {"markdown", "text"}:
-        label = "Markdown" if panel.render_kind == "markdown" else "Text"
+    if panel.render_kind == "markdown":
+        rendered_html = _render_markdown_content(panel.render_text)
         return f"""
         <div class="code-wrap">
-          <h3>{escape(label)}</h3>
+          <h3>Rendered Markdown</h3>
+          <div class="markdown-body">{rendered_html}</div>
+        </div>
+        <div class="code-wrap">
+          <h3>Markdown Source</h3>
+          <pre>{escape(panel.render_text or "(empty)")}</pre>
+        </div>
+"""
+    if panel.render_kind == "text":
+        return f"""
+        <div class="code-wrap">
+          <h3>Text</h3>
           <pre>{escape(panel.render_text or "(empty)")}</pre>
         </div>
 """
@@ -648,6 +701,57 @@ def _build_panel_from_normalized_payload(
         label_payload=label_payload,
         mermaid_snapshot=snapshot_lookup.get(title),
         extra_note=note_suffix,
+    )
+
+
+def _build_qwen_panel(
+    record_type: str,
+    payload: Any,
+    artifact_payload: Any,
+    snapshot_lookup: dict[str, Any],
+    source_path: str,
+    artifact_source_path: str,
+) -> ComparePanel | None:
+    if str(record_type or "").strip().lower() == "flowchart":
+        return _build_panel_from_normalized_payload(
+            payload=payload,
+            artifact_payload=artifact_payload,
+            snapshot_lookup=snapshot_lookup,
+            title="Qwen",
+            source_path=source_path,
+        )
+
+    adjudication_text = _extract_qwen_adjudication_text(artifact_payload)
+    if not adjudication_text:
+        return None
+
+    blocks = _safe_blocks_from_document(
+        (payload or {}).get("document") if isinstance(payload, dict) else None
+    )
+    artifact_label = (
+        artifact_payload.get("final_label")
+        if isinstance(artifact_payload, dict)
+        else None
+    )
+    label_payload = (
+        artifact_label
+        if isinstance(artifact_label, dict)
+        else (payload or {}).get("derived_label") if isinstance(payload, dict) else None
+    )
+    image_type = _infer_image_type(
+        label_payload=label_payload,
+        blocks=blocks,
+        prefer_label_semantics=True,
+    )
+    caption = _infer_caption(label_payload=label_payload, blocks=blocks)
+    return ComparePanel(
+        title="Qwen",
+        source_path=artifact_source_path,
+        image_type=image_type or record_type or "unknown",
+        caption=caption,
+        render_kind="text",
+        render_text=adjudication_text,
+        note="展示裁决结果与原因",
     )
 
 
@@ -931,6 +1035,183 @@ def _extract_table_markdown(
             if body:
                 return body
     return ""
+
+
+def _extract_qwen_adjudication_text(artifact_payload: Any) -> str:
+    if not isinstance(artifact_payload, dict):
+        return ""
+
+    lines: list[str] = []
+    seen_lines: set[str] = set()
+
+    def add_line(text: str) -> None:
+        line = str(text or "").strip()
+        if not line:
+            return
+        normalized = " ".join(line.split()).lower()
+        if normalized in seen_lines:
+            return
+        seen_lines.add(normalized)
+        lines.append(line)
+
+    consensus = artifact_payload.get("consensus")
+    if isinstance(consensus, dict):
+        decision = str(consensus.get("decision", "") or "").strip()
+        if decision:
+            add_line(f"裁决结果：{decision}")
+        reasons = consensus.get("reasons")
+        if isinstance(reasons, list):
+            reason_texts = [str(item).strip() for item in reasons if str(item).strip()]
+            if reason_texts:
+                add_line("裁决原因：")
+                for item in reason_texts:
+                    add_line(f"- {item}")
+
+    top_level_reasons = artifact_payload.get("reasons")
+    if isinstance(top_level_reasons, list):
+        reason_texts = [
+            str(item).strip() for item in top_level_reasons if str(item).strip()
+        ]
+        if reason_texts:
+            if not any(line == "裁决原因：" for line in lines):
+                add_line("裁决原因：")
+            for item in reason_texts:
+                add_line(f"- {item}")
+
+    seal_selection = artifact_payload.get("seal_selection")
+    if isinstance(seal_selection, dict):
+        selected_candidate = str(
+            seal_selection.get("selected_candidate", "") or ""
+        ).strip()
+        if selected_candidate:
+            add_line(f"印章候选：{selected_candidate}")
+        selection_reason = str(seal_selection.get("reason", "") or "").strip()
+        if selection_reason:
+            add_line(f"选择原因：{selection_reason}")
+
+    patch_decisions = artifact_payload.get("patch_decisions")
+    if isinstance(patch_decisions, list):
+        entries: list[str] = []
+        for item in patch_decisions:
+            if not isinstance(item, dict):
+                continue
+            issue_id = str(item.get("issue_id", "") or "").strip()
+            decision = str(item.get("decision", "") or "").strip()
+            reason = str(item.get("reason", "") or "").strip()
+            if not decision and not reason:
+                continue
+            detail = decision or "unknown"
+            if issue_id:
+                detail = f"{issue_id}: {detail}"
+            if reason:
+                detail = f"{detail} ({reason})"
+            entries.append(detail)
+        if entries:
+            add_line("补丁决策：")
+            for entry in entries:
+                add_line(f"- {entry}")
+
+    return "\n".join(lines)
+
+
+def _render_markdown_content(markdown_text: str) -> str:
+    text = str(markdown_text or "").strip()
+    if not text:
+        return "<p>(empty)</p>"
+
+    lines = [line.rstrip() for line in text.splitlines()]
+    fragments: list[str] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].strip():
+            index += 1
+            continue
+        if _is_markdown_table_start(lines, index):
+            end_index = index + 2
+            while end_index < len(lines):
+                row = _split_markdown_table_row(lines[end_index])
+                if not lines[end_index].strip() or row is None:
+                    break
+                end_index += 1
+            fragments.append(_render_markdown_table(lines[index:end_index]))
+            index = end_index
+            continue
+
+        paragraph_lines: list[str] = []
+        while index < len(lines):
+            if not lines[index].strip():
+                break
+            if _is_markdown_table_start(lines, index):
+                break
+            paragraph_lines.append(lines[index].strip())
+            index += 1
+        if paragraph_lines:
+            paragraph_html = "<br />".join(
+                escape(line) for line in paragraph_lines if line
+            )
+            fragments.append(f"<p>{paragraph_html}</p>")
+        else:
+            index += 1
+    return "".join(fragments) or "<p>(empty)</p>"
+
+
+def _is_markdown_table_start(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    header_cells = _split_markdown_table_row(lines[index])
+    if header_cells is None:
+        return False
+    return _is_markdown_table_separator(
+        lines[index + 1], expected_columns=len(header_cells)
+    )
+
+
+def _split_markdown_table_row(line: str) -> list[str] | None:
+    stripped = str(line or "").strip()
+    if "|" not in stripped:
+        return None
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [cell.strip() for cell in stripped.split("|")]
+    if not cells or all(not cell for cell in cells):
+        return None
+    return cells
+
+
+def _is_markdown_table_separator(line: str, expected_columns: int) -> bool:
+    cells = _split_markdown_table_row(line)
+    if cells is None or len(cells) != expected_columns:
+        return False
+    separator_pattern = re.compile(r"^:?-{1,}:?$")
+    return all(separator_pattern.fullmatch(cell) for cell in cells)
+
+
+def _render_markdown_table(lines: list[str]) -> str:
+    if len(lines) < 2:
+        return f"<p>{escape(chr(10).join(lines))}</p>"
+    header_cells = _split_markdown_table_row(lines[0]) or []
+    body_rows = [
+        _split_markdown_table_row(line) or []
+        for line in lines[2:]
+        if str(line).strip()
+    ]
+    column_count = len(header_cells)
+
+    thead_html = "".join(f"<th>{escape(cell)}</th>" for cell in header_cells)
+    tbody_html_rows: list[str] = []
+    for row in body_rows:
+        normalized_row = row[:column_count] + [""] * max(0, column_count - len(row))
+        cells_html = "".join(f"<td>{escape(cell)}</td>" for cell in normalized_row)
+        tbody_html_rows.append(f"<tr>{cells_html}</tr>")
+    tbody_html = "".join(tbody_html_rows)
+    return (
+        '<div class="markdown-table-wrap"><table class="markdown-table">'
+        f"<thead><tr>{thead_html}</tr></thead>"
+        f"<tbody>{tbody_html}</tbody>"
+        "</table></div>"
+    )
 
 
 def _extract_mermaid_text(
