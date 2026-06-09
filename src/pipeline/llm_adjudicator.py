@@ -7,6 +7,7 @@ from typing import Any
 from src.clients import BaseLocalClient
 from src.normalizer import _extract_first_json_object, _strip_code_fences
 from src.pipeline.flowchart_utils import (
+    diff_flowchart_graphs,
     flowchart_graph_from_mermaid,
     looks_like_mermaid,
     normalize_mermaid_text,
@@ -127,6 +128,12 @@ def _parse_patch_decision(issue: Issue, output: ModelOutput | None) -> PatchDeci
     patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else {}
     reason = str(payload.get("reason", "") or "").strip()
     decision, patch, reason = _validate_patch_decision(
+        issue=issue,
+        decision=decision,
+        patch=patch,
+        reason=reason,
+    )
+    decision, patch, reason = _enforce_disagreement_qwen_preference(
         issue=issue,
         decision=decision,
         patch=patch,
@@ -447,6 +454,39 @@ def _validate_patch_decision(
     if len(novel_nodes) > 1 or len(novel_edges) > 2:
         return "keep_mineru", {}, "llm_patch_overreach_on_disagreement"
     return decision, patch, reason
+
+
+def _enforce_disagreement_qwen_preference(
+    issue: Issue,
+    decision: str,
+    patch: dict[str, Any],
+    reason: str,
+) -> tuple[str, dict[str, Any], str]:
+    if issue.issue_type != "flowchart_graph_conflict":
+        return decision, patch, reason
+
+    candidate_payload = (
+        issue.candidate_payload if isinstance(issue.candidate_payload, dict) else {}
+    )
+    review_mode = str(candidate_payload.get("review_mode", "") or "disagreement")
+    if review_mode.strip().lower() != "disagreement":
+        return decision, patch, reason
+
+    reference_mermaid = normalize_mermaid_text(
+        str(candidate_payload.get("reference_mermaid", "") or "")
+    )
+    if not looks_like_mermaid(reference_mermaid):
+        return "keep_mineru", {}, "qwen_flowchart_reference_invalid"
+
+    current_mermaid = normalize_mermaid_text(
+        str(candidate_payload.get("current_mermaid", "") or "")
+    )
+    current_graph = flowchart_graph_from_mermaid(current_mermaid)
+    reference_graph = flowchart_graph_from_mermaid(reference_mermaid)
+    if diff_flowchart_graphs(current_graph, reference_graph) == []:
+        return "reject_issue", {}, "flowchart_conflict_false_positive"
+
+    return "use_qwen_fields", {}, "qwen_flowchart_preferred_on_conflict"
 
 
 def _merge_flowchart_signatures(*mermaid_texts: str) -> tuple[set[str], set[str]]:

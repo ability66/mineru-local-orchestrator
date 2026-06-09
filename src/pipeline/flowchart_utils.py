@@ -396,7 +396,18 @@ def _is_auxiliary_flowchart_node(node_payload: dict[str, Any]) -> bool:
     node_id = str(node_payload.get("node_id", "") or "").strip()
     text = str(node_payload.get("text", "") or "").strip()
     shape = str(node_payload.get("shape", "") or "unknown").strip().lower()
-    if not node_id or not text or shape not in {"", "unknown"}:
+    class_names = [
+        str(item).strip().lower()
+        for item in node_payload.get("class_names", [])
+        if str(item).strip()
+    ] if isinstance(node_payload.get("class_names"), list) else []
+    if bool(node_payload.get("hidden")) or "hidden" in class_names:
+        return True
+    if not node_id:
+        return False
+    if not text.strip():
+        return True
+    if shape not in {"", "unknown"}:
         return False
     normalized_text = _normalize_graph_text(text)
     return bool(

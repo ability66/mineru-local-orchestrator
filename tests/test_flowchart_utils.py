@@ -75,3 +75,21 @@ Split --> LocalAlias["Local"]"""
     )
 
     assert diffs == []
+
+
+def test_diff_flowchart_graphs_ignores_hidden_helper_nodes() -> None:
+    current = """flowchart TD
+CT["CT"] --> Other["其他发现或鉴别诊断"]
+CT --> Resectable["无转移，肿瘤可切除或临界可切除"]"""
+    reference = """flowchart TD
+CTAlias["CT"] --> H[]:::hidden
+H --> OtherAlias["其他发现或鉴别诊断"]
+H --> ResectableAlias["无转移，肿瘤可切除或临界可切除"]
+classDef hidden display:none;"""
+
+    diffs = diff_flowchart_graphs(
+        flowchart_graph_from_mermaid(current),
+        flowchart_graph_from_mermaid(reference),
+    )
+
+    assert diffs == []

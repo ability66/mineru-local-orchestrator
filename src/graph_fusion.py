@@ -24,6 +24,7 @@ DOTTED_ARROW_RE = re.compile(r"\s*-\.->")
 THICK_ARROW_RE = re.compile(r"\s*==>")
 PLAIN_ARROW_RE = re.compile(r"\s*-->")
 DUPLICATE_CLASS_RE = re.compile(r":::[A-Za-z0-9_-]+")
+NODE_CLASS_RE = re.compile(r"\s*:::(?P<class_name>[A-Za-z0-9_-]+)")
 VALID_SHAPES = {"rectangle", "diamond", "ellipse", "rounded", "unknown"}
 
 
@@ -1383,7 +1384,7 @@ def _clean_mermaid_line(line: str) -> str:
     lowered = stripped.lower()
     if any(lowered.startswith(prefix) for prefix in STYLE_PREFIXES):
         return ""
-    return DUPLICATE_CLASS_RE.sub("", stripped).strip()
+    return stripped
 
 
 def _split_mermaid_segments(line: str) -> list[str]:
@@ -1433,20 +1434,22 @@ def _split_mermaid_segments(line: str) -> list[str]:
 
 def _parse_segment_edges(
     segment: str,
-    node_lookup: dict[str, dict[str, str]],
+    node_lookup: dict[str, dict[str, Any]],
     node_order: list[str],
 ) -> list[tuple[str, str, str]]:
     first = _parse_node_token(segment, 0)
     if first is None:
         return []
 
-    source_id, source_text, source_shape, position = first
+    source_id, source_text, source_shape, source_classes, source_preserve_empty, position = first
     _register_mermaid_node(
         node_lookup=node_lookup,
         node_order=node_order,
         raw_id=source_id,
         text=source_text,
         shape=source_shape,
+        class_names=source_classes,
+        preserve_empty_text=source_preserve_empty,
     )
     previous_id = source_id
     edges: list[tuple[str, str, str]] = []
@@ -1459,13 +1462,22 @@ def _parse_segment_edges(
         next_node = _parse_node_token(segment, position)
         if next_node is None:
             return edges
-        target_id, target_text, target_shape, position = next_node
+        (
+            target_id,
+            target_text,
+            target_shape,
+            target_classes,
+            target_preserve_empty,
+            position,
+        ) = next_node
         _register_mermaid_node(
             node_lookup=node_lookup,
             node_order=node_order,
             raw_id=target_id,
             text=target_text,
             shape=target_shape,
+            class_names=target_classes,
+            preserve_empty_text=target_preserve_empty,
         )
         edges.append((previous_id, target_id, label))
         previous_id = target_id
@@ -1475,7 +1487,7 @@ def _parse_segment_edges(
 def _parse_node_token(
     segment: str,
     position: int,
-) -> tuple[str, str, str, int] | None:
+) -> tuple[str, str, str, list[str], bool, int] | None:
     while position < len(segment) and segment[position].isspace():
         position += 1
     match = NODE_TOKEN_RE.match(segment, position)
@@ -1483,28 +1495,54 @@ def _parse_node_token(
         return None
 
     raw_id = match.group("id")
+    class_names: list[str] = []
+    preserve_empty_text = False
     wrapper_match = _consume_node_wrapper(segment, match.end("id"))
     if wrapper_match is not None:
         raw_text, shape, end_position = wrapper_match
+        class_names, end_position = _consume_node_classes(segment, end_position)
     elif match.group("square") is not None:
         raw_text = match.group("square")
         shape = "rectangle"
         end_position = match.end()
+        class_names, end_position = _consume_node_classes(segment, end_position)
     elif match.group("round") is not None:
         raw_text = match.group("round")
         shape = "ellipse"
         end_position = match.end()
+        class_names, end_position = _consume_node_classes(segment, end_position)
     elif match.group("curly") is not None:
         raw_text = match.group("curly")
         shape = "diamond"
         end_position = match.end()
+        class_names, end_position = _consume_node_classes(segment, end_position)
     else:
         raw_text = raw_id
         shape = "unknown"
         end_position = match.end()
+        class_names, end_position = _consume_node_classes(segment, end_position)
 
-    text = _strip_mermaid_wrappers(str(raw_text or "").strip()) or raw_id
-    return raw_id, text, shape, end_position
+    normalized_text = _strip_mermaid_wrappers(str(raw_text or "").strip())
+    if wrapper_match is not None and not normalized_text:
+        preserve_empty_text = True
+        text = ""
+    else:
+        text = normalized_text or raw_id
+    return raw_id, text, shape, class_names, preserve_empty_text, end_position
+
+
+def _consume_node_classes(segment: str, position: int) -> tuple[list[str], int]:
+    classes: list[str] = []
+    cursor = position
+    while True:
+        match = NODE_CLASS_RE.match(segment, cursor)
+        if match is None:
+            break
+        class_name = str(match.group("class_name") or "").strip()
+        if class_name:
+            classes.append(class_name)
+        cursor = match.end()
+    return classes, cursor
 
 
 def _consume_node_wrapper(
@@ -1590,38 +1628,60 @@ def _parse_arrow(segment: str, position: int) -> tuple[str, int] | None:
 
 
 def _register_mermaid_node(
-    node_lookup: dict[str, dict[str, str]],
+    node_lookup: dict[str, dict[str, Any]],
     node_order: list[str],
     raw_id: str,
     text: str,
     shape: str,
+    class_names: list[str],
+    preserve_empty_text: bool,
 ) -> None:
+    normalized_classes = [
+        str(item).strip() for item in class_names if str(item).strip()
+    ]
+    hidden = any(item.lower() == "hidden" for item in normalized_classes)
     if raw_id not in node_lookup:
         node_lookup[raw_id] = {
-            "text": text or raw_id,
+            "text": text,
             "shape": shape or "unknown",
+            "class_names": normalized_classes,
+            "hidden": hidden,
+            "preserve_empty_text": preserve_empty_text,
         }
         node_order.append(raw_id)
         return
 
     existing = node_lookup[raw_id]
     incoming_text = text or raw_id
+    if normalized_classes:
+        existing_classes = {
+            str(item).strip() for item in existing.get("class_names", []) if str(item).strip()
+        }
+        for class_name in normalized_classes:
+            if class_name not in existing_classes:
+                existing.setdefault("class_names", []).append(class_name)
+                existing_classes.add(class_name)
+    existing["hidden"] = bool(existing.get("hidden")) or hidden
     if (
         incoming_text != raw_id
         and (
             existing["text"] == raw_id
+            or not str(existing.get("text", "")).strip()
             or _visible_text_score(incoming_text) > _visible_text_score(existing["text"])
         )
     ):
         existing["text"] = incoming_text
+        existing["preserve_empty_text"] = False
     elif (
         incoming_text == raw_id
         and not existing["text"].strip()
         and raw_id.strip()
+        and not bool(existing.get("preserve_empty_text"))
     ):
         existing["text"] = text or raw_id
     if existing["shape"] == "unknown" and shape != "unknown":
         existing["shape"] = shape
+    existing["preserve_empty_text"] = bool(existing.get("preserve_empty_text")) or preserve_empty_text
 
 
 def _strip_mermaid_wrappers(text: str) -> str:

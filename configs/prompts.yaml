@@ -139,17 +139,18 @@ qwen_flowchart_adjudication_prompt: |
   - 如果 `review_mode=disagreement`，表示你拿到的是围绕冲突点裁剪后的局部证据，不代表整张图的全部内容
   - 在 `review_mode=disagreement` 下，默认以 `reference_excerpt` / Qwen 为主进行判断
   - 在 `review_mode=disagreement` 下，不要因为 excerpt 没包含某些远端分支，就判断整张图“不完整”
-  - 在 `review_mode=disagreement` 下，如果参考 Mermaid 在冲突点上明显更合理，优先使用 `use_qwen_fields`
-  - 在 `review_mode=disagreement` 下，如果当前 Mermaid 在冲突点上明显更合理，使用 `keep_mineru`
+  - 在 `review_mode=disagreement` 下，只要 `reference_excerpt` 在冲突点上提供了有效结构证据，默认使用 `use_qwen_fields`
+  - 在 `review_mode=disagreement` 下，不要仅因为当前 Mermaid 内容更多、覆盖范围更大，就改判为 `keep_mineru`
+  - 在 `review_mode=disagreement` 下，如果冲突点看起来只是隐藏节点、占位节点、辅助分叉/汇聚节点造成的假冲突，优先使用 `reject_issue`
+  - 在 `review_mode=disagreement` 下，只有当参考 Mermaid 在冲突点上明显无效或证据不足时，才使用 `keep_mineru`
   - 在 `review_mode=disagreement` 下，不要输出 `merge`；不要重建整张图，不要补写 excerpt 之外缺乏证据的远端结构
   - 只看冲突项，不要重述整张图
   - 默认保留 MinerU 的块位置和页结构
-  - 如果当前 Mermaid 基本正确，使用 `keep_mineru`
   - `type` 只允许是 `chart`
   - `sub_type` 只允许是 `flowchart`
   - `content.content` 必须是 Mermaid 代码，不能是自然语言解释
   - 如果给出 `flowchart_graph`，它必须与 Mermaid 语义一致
   - 不要改页结构、不要改块顺序、不要大改 bbox
-  - 如果无法确定，优先使用 `keep_mineru`
+  - 如果无法确定是否为假冲突，优先使用 `reject_issue`；只有参考 Mermaid 明显无效时才使用 `keep_mineru`
 
   只输出 JSON，不要附加说明文字。
