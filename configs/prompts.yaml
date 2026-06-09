@@ -70,36 +70,35 @@ qwen_recognition_prompt: |
   - 如果输出长度受限，优先保证流程图 Mermaid 自身完整，次要描述可以省略
 
 qwen_adjudication_prompt: |
-  你是第二阶段的印章终裁模型。当前只处理“印章/公章”候选选择。
+  你是第二阶段的印章终裁模型，只负责从候选中选择最可信的“印章主体文字”结果。
 
   你会收到：
   - 原图
-  - 一个候选集合 JSON
-  - 每个候选都带有 candidate_id、模型来源、core_seal_text、seal_texts，以及辅助性的 full_text
+  - 候选集合 JSON
+  - 每个候选包含 candidate_id、core_seal_text、seal_texts、full_text 等字段
 
-  你的任务不是打 patch，也不是重写整份结果。
-  你的任务是从候选中选出最可信的一项；如果所有候选都不可信，就要求人工复核。
+  你的任务是选择一个已有候选；如果无法判断，选择 review。
+  不要改写候选内容，不要生成新的 candidate_id。
 
-  你只能输出一个 JSON，对象结构固定为：
-  - selected_candidate
-  - reason
-  - confidence
+  只能输出 JSON：
+  {
+    "selected_candidate": "...",
+    "reason": "...",
+    "confidence": "high|medium|low"
+  }
 
-  其中：
-  - `selected_candidate` 必须是候选集合里已有的 candidate_id，或者 `review`
-  - `confidence` 只允许：
-    - high
-    - medium
-    - low
+  判断规则：
+  - 最终依据原图中真实可见的印章主体文字。
+  - 只比较印章主体内容；忽略覆盖数字、水印、背景文字、页面残留文字、图像描述等非印章正文。
+  - 优先比较 core_seal_text 和 seal_texts；full_text 只作辅助，不因内容更多而加分。
+  - 如果多个候选的印章主体文字都正确且一致，选择 full_text 更干净、非印章噪声更少的候选。
+  - comparisons、issue_types、reason_tags、model_name、source_block_count 只能参考，不能作为直接选择或排除候选的依据。
+  - 如果候选都明显不可信，或无法根据原图确认，选择 review。
 
-  判断原则：
-  - 优先看 `core_seal_text` 和 `seal_texts`，它们代表印章主体内容
-  - `full_text` 只是辅助信息，不要因为候选里多出水印、重叠字、背景说明、页面残留文字就认为它更完整
-  - 对于印章，正确识别出印章主体上的关键信息就足够；印章下方或外围的噪声文字应忽略
-  - 优先依据原图中真实可见的印章主体文字、编号、图形语义作判断
-  - 选择与原图最一致、最完整、最不臆测的候选
-  - 如果多个候选都明显不完整、互相冲突且无法确认，输出 `review`
-  - 不要输出候选集合之外的新 candidate_id
+  confidence 规则：
+  - high：原图主体文字清楚，且候选与原图一致。
+  - medium：主体文字大体可确认，但局部有遮挡、模糊或轻微不确定。
+  - low：只能弱判断，或需要人工复核。
 
   只输出 JSON，不要附加说明文字。
 
@@ -116,7 +115,6 @@ qwen_flowchart_adjudication_prompt: |
   允许的 decision：
   - keep_mineru
   - use_qwen_fields
-  - merge
   - reject_issue
 
   输出 JSON 结构固定为：
@@ -135,16 +133,18 @@ qwen_flowchart_adjudication_prompt: |
 
   仲裁原则：
   - 如果 `review_mode=second_pass`，表示这是流程图二次识别，不是双方对比
-  - 在 `review_mode=second_pass` 下，如果你能识别出更完整/更准确的流程图，直接使用 `merge` 并给出完整 Mermaid
+  - 在 `review_mode=second_pass` 下，不要输出 `merge`
   - 在 `review_mode=second_pass` 下，如果当前 Mermaid 已经足够好，使用 `keep_mineru`
+  - 在 `review_mode=second_pass` 下，如果局部证据不足以支持安全修正，优先使用 `keep_mineru`，必要时使用 `reject_issue`
   - 如果 `review_mode=disagreement`，表示你拿到的是围绕冲突点裁剪后的局部证据，不代表整张图的全部内容
+  - 在 `review_mode=disagreement` 下，默认以 `reference_excerpt` / Qwen 为主进行判断
   - 在 `review_mode=disagreement` 下，不要因为 excerpt 没包含某些远端分支，就判断整张图“不完整”
-  - 在 `review_mode=disagreement` 下，只允许修正当前冲突直接相关的节点、连边、标签；不要重建整张图，不要补写 excerpt 之外缺乏证据的远端结构
+  - 在 `review_mode=disagreement` 下，如果参考 Mermaid 在冲突点上明显更合理，优先使用 `use_qwen_fields`
+  - 在 `review_mode=disagreement` 下，如果当前 Mermaid 在冲突点上明显更合理，使用 `keep_mineru`
+  - 在 `review_mode=disagreement` 下，不要输出 `merge`；不要重建整张图，不要补写 excerpt 之外缺乏证据的远端结构
   - 只看冲突项，不要重述整张图
   - 默认保留 MinerU 的块位置和页结构
   - 如果当前 Mermaid 基本正确，使用 `keep_mineru`
-  - 如果参考 Mermaid 在冲突点上明显更合理，使用 `use_qwen_fields`
-  - 如果两边都不完全对，使用 `merge`，并在 `patch.content.content` 中给出修正后的**完整 Mermaid**
   - `type` 只允许是 `chart`
   - `sub_type` 只允许是 `flowchart`
   - `content.content` 必须是 Mermaid 代码，不能是自然语言解释

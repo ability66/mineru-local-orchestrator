@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.pipeline.flowchart_utils import (
+    diff_flowchart_graphs,
     flowchart_graph_from_mermaid,
     looks_like_mermaid,
     normalize_mermaid_text,
@@ -43,3 +44,34 @@ def test_flowchart_graph_from_mermaid_preserves_visible_text_for_quoted_nodes() 
     node_texts = {node["text"] for node in graph["nodes"]}
     assert "遗传咨询" in node_texts
     assert "是否可以进行增强CT?" in node_texts
+
+
+def test_diff_flowchart_graphs_ignores_ct_node_formatting_only_differences() -> None:
+    current = """flowchart TD
+Question["是否可以进行增强CT?"] -->|是| E["CT（多相对比增强，包括动脉晚期和门静脉期）"]"""
+    reference = """flowchart TD
+Decision1{"是否可以进行增强CT?"} -->|是| CT["CT<br/>多相对比增强,包括动脉晚期和门静脉期"]"""
+
+    diffs = diff_flowchart_graphs(
+        flowchart_graph_from_mermaid(current),
+        flowchart_graph_from_mermaid(reference),
+    )
+
+    assert diffs == []
+
+
+def test_diff_flowchart_graphs_collapses_split_placeholder_nodes() -> None:
+    current = """flowchart TD
+Start["A"] --> Other["Other"]
+Start --> Local["Local"]"""
+    reference = """flowchart TD
+StartAlias["A"] --> Split
+Split --> OtherAlias["Other"]
+Split --> LocalAlias["Local"]"""
+
+    diffs = diff_flowchart_graphs(
+        flowchart_graph_from_mermaid(current),
+        flowchart_graph_from_mermaid(reference),
+    )
+
+    assert diffs == []

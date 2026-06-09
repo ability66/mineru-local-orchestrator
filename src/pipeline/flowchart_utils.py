@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from html import escape
+import unicodedata
+from html import escape, unescape
 from typing import Any
 
 _BR_TAG_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
@@ -10,6 +11,11 @@ _FLOWCHART_HEADER_RE = re.compile(
     r"(?im)^\s*(flowchart|graph)\s+(TD|TB|BT|RL|LR)\b"
 )
 _FLOWCHART_EDGE_RE = re.compile(r"(-->|-\.->|==>)")
+_GRAPH_SIGNATURE_DROP_RE = re.compile(r"[\s\-_.,，、;；:：!?？！\"'`“”‘’·•()\[\]{}<>/\\|]+")
+_AUXILIARY_FLOWCHART_NODE_RE = re.compile(
+    r"^(split|merge|junction|join|branch|router|connector|hub)(\d+)?$",
+    re.IGNORECASE,
+)
 
 
 def normalize_mermaid_text(text: str) -> str:
@@ -265,14 +271,12 @@ def mermaid_from_flowchart_graph(graph_payload: dict[str, Any] | None) -> str:
 
 
 def _node_signatures(graph_payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    if not isinstance(graph_payload, dict):
-        return {}
-    raw_nodes = graph_payload.get("nodes")
-    if not isinstance(raw_nodes, list):
+    comparison_nodes, _comparison_edges = _comparison_graph_components(graph_payload)
+    if not comparison_nodes:
         return {}
 
     nodes: dict[str, dict[str, Any]] = {}
-    for index, item in enumerate(raw_nodes, start=1):
+    for index, item in enumerate(comparison_nodes, start=1):
         if not isinstance(item, dict):
             continue
         text = str(item.get("text", "") or "").strip()
@@ -291,10 +295,8 @@ def _edge_signatures(
     graph_payload: dict[str, Any] | None,
     node_lookup: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    if not isinstance(graph_payload, dict):
-        return {}
-    raw_edges = graph_payload.get("edges")
-    if not isinstance(raw_edges, list):
+    _comparison_nodes, comparison_edges = _comparison_graph_components(graph_payload)
+    if not comparison_edges:
         return {}
 
     id_to_key = {
@@ -302,7 +304,7 @@ def _edge_signatures(
         for node_key, node in node_lookup.items()
     }
     edges: dict[str, dict[str, Any]] = {}
-    for item in raw_edges:
+    for item in comparison_edges:
         if not isinstance(item, dict):
             continue
         source_id = str(item.get("source", "") or "").strip()
@@ -334,7 +336,178 @@ def _edge_key_without_label(edge_key: str) -> str:
 
 
 def _normalize_graph_text(value: Any) -> str:
-    return "".join(str(value or "").split()).lower()
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = unescape(text)
+    text = _BR_TAG_RE.sub("", text)
+    text = unicodedata.normalize("NFKC", text).lower()
+    text = (
+        text.replace("（", "(")
+        .replace("）", ")")
+        .replace("，", ",")
+        .replace("、", ",")
+        .replace("：", ":")
+        .replace("；", ";")
+        .replace("？", "?")
+        .replace("！", "!")
+        .replace("／", "/")
+        .replace("－", "-")
+        .replace("—", "-")
+        .replace("–", "-")
+    )
+    return _GRAPH_SIGNATURE_DROP_RE.sub("", text)
+
+
+def _comparison_graph_components(
+    graph_payload: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not isinstance(graph_payload, dict):
+        return [], []
+    raw_nodes = graph_payload.get("nodes")
+    raw_edges = graph_payload.get("edges")
+    if not isinstance(raw_nodes, list):
+        return [], []
+
+    normalized_nodes = [
+        item for item in raw_nodes if isinstance(item, dict)
+    ]
+    normalized_edges = [
+        item for item in raw_edges if isinstance(item, dict)
+    ] if isinstance(raw_edges, list) else []
+    auxiliary_node_ids = {
+        str(node.get("node_id", "") or "").strip()
+        for node in normalized_nodes
+        if _is_auxiliary_flowchart_node(node)
+    }
+    comparison_nodes = [
+        node
+        for node in normalized_nodes
+        if str(node.get("node_id", "") or "").strip() not in auxiliary_node_ids
+    ]
+    comparison_edges = _collapse_auxiliary_flowchart_edges(
+        normalized_edges,
+        auxiliary_node_ids,
+    )
+    return comparison_nodes, comparison_edges
+
+
+def _is_auxiliary_flowchart_node(node_payload: dict[str, Any]) -> bool:
+    node_id = str(node_payload.get("node_id", "") or "").strip()
+    text = str(node_payload.get("text", "") or "").strip()
+    shape = str(node_payload.get("shape", "") or "unknown").strip().lower()
+    if not node_id or not text or shape not in {"", "unknown"}:
+        return False
+    normalized_text = _normalize_graph_text(text)
+    return bool(
+        normalized_text
+        and _AUXILIARY_FLOWCHART_NODE_RE.fullmatch(normalized_text)
+    )
+
+
+def _collapse_auxiliary_flowchart_edges(
+    raw_edges: list[dict[str, Any]],
+    auxiliary_node_ids: set[str],
+) -> list[dict[str, Any]]:
+    edges = [
+        {
+            "source": str(item.get("source", "") or "").strip(),
+            "target": str(item.get("target", "") or "").strip(),
+            "label": str(item.get("label", "") or "").strip(),
+        }
+        for item in raw_edges
+        if str(item.get("source", "") or "").strip()
+        and str(item.get("target", "") or "").strip()
+    ]
+    if not auxiliary_node_ids:
+        return _deduplicate_flowchart_edges(edges)
+
+    collapsed_edges = list(edges)
+    for auxiliary_node_id in sorted(auxiliary_node_ids):
+        incoming_edges = [
+            edge for edge in collapsed_edges if edge["target"] == auxiliary_node_id
+        ]
+        outgoing_edges = [
+            edge for edge in collapsed_edges if edge["source"] == auxiliary_node_id
+        ]
+        collapsed_edges = [
+            edge
+            for edge in collapsed_edges
+            if edge["source"] != auxiliary_node_id and edge["target"] != auxiliary_node_id
+        ]
+        if not incoming_edges or not outgoing_edges:
+            continue
+        for incoming_edge in incoming_edges:
+            for outgoing_edge in outgoing_edges:
+                source = incoming_edge["source"]
+                target = outgoing_edge["target"]
+                if (
+                    not source
+                    or not target
+                    or source == target
+                    or source in auxiliary_node_ids
+                    or target in auxiliary_node_ids
+                ):
+                    continue
+                collapsed_edges.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "label": _merge_collapsed_edge_labels(
+                            incoming_edge["label"],
+                            outgoing_edge["label"],
+                        ),
+                    }
+                )
+    return _deduplicate_flowchart_edges(
+        [
+            edge
+            for edge in collapsed_edges
+            if edge["source"] not in auxiliary_node_ids
+            and edge["target"] not in auxiliary_node_ids
+        ]
+    )
+
+
+def _merge_collapsed_edge_labels(left: str, right: str) -> str:
+    left_label = str(left or "").strip()
+    right_label = str(right or "").strip()
+    if left_label and right_label:
+        if _normalize_graph_text(left_label) == _normalize_graph_text(right_label):
+            return right_label
+        return f"{left_label} / {right_label}"
+    return right_label or left_label
+
+
+def _deduplicate_flowchart_edges(
+    edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    ordered: list[dict[str, Any]] = []
+    for edge in edges:
+        source = str(edge.get("source", "") or "").strip()
+        target = str(edge.get("target", "") or "").strip()
+        label = str(edge.get("label", "") or "").strip()
+        if not source or not target:
+            continue
+        key = "|".join(
+            (
+                _normalize_graph_text(source),
+                _normalize_graph_text(label),
+                _normalize_graph_text(target),
+            )
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(
+            {
+                "source": source,
+                "target": target,
+                "label": label,
+            }
+        )
+    return ordered
 
 
 def _first_vote(values: Any) -> int | None:

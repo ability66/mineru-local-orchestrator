@@ -480,3 +480,116 @@ def test_detect_flowchart_issue_ignores_node_id_alias_when_visible_text_matches(
     )
 
     assert issues == []
+
+
+def test_detect_flowchart_issue_ignores_format_only_ct_and_split_differences() -> None:
+    image_task = ImageTask(
+        image_id="img-flow-format-only",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_mermaid = """graph TD
+Start["怀疑PC或发现胰腺占位"] --> Risk["家族史和/或高危因素"]
+Risk -->|无| Question["是否可以进行增强CT?"]
+Risk -->|有| GeneticCN["遗传咨询"]
+GeneticCN --> Question
+Question -->|是| CTCN["CT（多相对比增强，包括动脉晚期和门静脉期）"]
+Question -->|否| MRI["MRI"]
+CTCN -->|无囊性病变或CT确诊| Other["其他发现或鉴别诊断"]
+CTCN --> Chest["胸腹部CT"]
+Chest --> Local["局部进展期"]
+Chest --> Met["合并转移"]"""
+    qwen_mermaid = """flowchart TD
+StartAlias["怀疑PC或发现胰腺占位"] --> RiskAlias["家族史和/或高危因素"]
+RiskAlias -->|无| Decision1{"是否可以进行增强CT?"}
+RiskAlias -->|有| Genetic["遗传咨询"]
+Genetic --> Decision1
+Decision1 -->|是| CT["CT<br/>多相对比增强,包括动脉晚期和门静脉期"]
+Decision1 -->|否| MRIAlias["MRI"]
+CT -->|无囊性病变或CT确诊| Split
+CT --> ChestAlias["胸腹部CT"]
+Split --> OtherAlias["其他发现或鉴别诊断"]
+ChestAlias --> Split2
+Split2 --> LocalAlias["局部进展期"]
+Split2 --> MetAlias["合并转移"]"""
+    mineru_document = CanonicalDocument(
+        document_id="img-flow-format-only",
+        source="mineru",
+        blocks=[
+            CanonicalBlock(
+                block_id="m1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": mineru_mermaid},
+                source="mineru",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content=mineru_mermaid,
+                    format="mermaid",
+                    source="mineru",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    qwen_document = CanonicalDocument(
+        document_id="img-flow-format-only",
+        source="qwen",
+        blocks=[
+            CanonicalBlock(
+                block_id="q1",
+                page_idx=0,
+                order_index=1,
+                type="chart",
+                sub_type="flowchart",
+                bbox=[0, 0, 1000, 1000],
+                text="流程图",
+                content={"img_path": "data/demo.png", "content": qwen_mermaid},
+                source="qwen",
+                structured_label=StructuredLabel(
+                    kind="mermaid",
+                    content=qwen_mermaid,
+                    format="mermaid",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="流程图"),
+            )
+        ],
+    )
+    mineru_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content=mineru_mermaid,
+            format="mermaid",
+            source="mineru",
+        ),
+    )
+    qwen_label = ParsedLabel(
+        image_type="flowchart",
+        caption="流程图",
+        caption_structured=CaptionStructured(brief="流程图"),
+        structured_label=StructuredLabel(
+            kind="mermaid",
+            content=qwen_mermaid,
+            format="mermaid",
+            source="model",
+        ),
+    )
+
+    issues = detect_flowchart_issues(
+        image_task=image_task,
+        mineru_document=mineru_document,
+        qwen_document=qwen_document,
+        mineru_label=mineru_label,
+        qwen_label=qwen_label,
+    )
+
+    assert issues == []
