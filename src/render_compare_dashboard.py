@@ -1104,10 +1104,27 @@ def _extract_table_markdown(
     prefer_label_semantics: bool = False,
 ) -> str:
     label_image_type = _label_image_type(label_payload).strip().lower()
+    if prefer_label_semantics and label_image_type not in {"", "table"}:
+        return ""
+
+    markdown_sections: list[str] = []
+    for block in blocks:
+        markdown_table = _extract_block_markdown_table(
+            block=block, label_image_type=label_image_type
+        )
+        if not markdown_table:
+            continue
+        caption = _extract_caption_from_block(block)
+        if caption and caption not in markdown_table:
+            markdown_sections.append(f"{caption}\n\n{markdown_table}")
+        else:
+            markdown_sections.append(markdown_table)
+    if markdown_sections:
+        return "\n\n".join(markdown_sections)
+
     if isinstance(label_payload, dict):
         structured = label_payload.get("structured_label")
         if isinstance(structured, dict):
-            structured_kind = str(structured.get("kind", "") or "").strip().lower()
             structured_format = str(
                 structured.get("format", "") or ""
             ).strip().lower()
@@ -1117,42 +1134,40 @@ def _extract_table_markdown(
                 or _looks_like_markdown_table(content)
             ):
                 return content
-        if prefer_label_semantics and label_image_type not in {"", "table"}:
-            return ""
-    for block in blocks:
-        block_type = str(block.get("type", "") or "").strip().lower()
-        block_sub_type = str(block.get("sub_type", "") or "").strip().lower()
-        structured = block.get("structured_label")
-        structured_content = ""
-        structured_kind = ""
-        structured_format = ""
-        if isinstance(structured, dict):
-            structured_content = str(structured.get("content", "") or "").strip()
-            structured_kind = str(structured.get("kind", "") or "").strip().lower()
-            structured_format = str(structured.get("format", "") or "").strip().lower()
-        content_payload = block.get("content")
-        table_body = ""
-        if isinstance(content_payload, dict):
-            table_body = str(content_payload.get("table_body", "") or "").strip()
+    return ""
 
-        if table_body and (
-            structured_format == "markdown"
-            or _looks_like_markdown_table(table_body)
-        ):
-            return table_body
-        if structured_content and (
-            structured_format == "markdown"
-            or _looks_like_markdown_table(structured_content)
-        ):
-            return structured_content
 
-        block_text = str(block.get("text", "") or "").strip()
-        if block_text and (
-            block_type == "table"
-            or block_sub_type == "table"
-            or label_image_type == "table"
-        ) and _looks_like_markdown_table(block_text):
-            return block_text
+def _extract_block_markdown_table(block: dict[str, Any], label_image_type: str) -> str:
+    block_type = str(block.get("type", "") or "").strip().lower()
+    block_sub_type = str(block.get("sub_type", "") or "").strip().lower()
+    structured = block.get("structured_label")
+    structured_content = ""
+    structured_format = ""
+    if isinstance(structured, dict):
+        structured_content = str(structured.get("content", "") or "").strip()
+        structured_format = str(structured.get("format", "") or "").strip().lower()
+
+    content_payload = block.get("content")
+    table_body = ""
+    if isinstance(content_payload, dict):
+        table_body = str(content_payload.get("table_body", "") or "").strip()
+
+    if table_body and (
+        structured_format == "markdown" or _looks_like_markdown_table(table_body)
+    ):
+        return table_body
+    if structured_content and (
+        structured_format == "markdown" or _looks_like_markdown_table(structured_content)
+    ):
+        return structured_content
+
+    block_text = str(block.get("text", "") or "").strip()
+    if block_text and (
+        block_type == "table"
+        or block_sub_type == "table"
+        or label_image_type == "table"
+    ) and _looks_like_markdown_table(block_text):
+        return block_text
     return ""
 
 

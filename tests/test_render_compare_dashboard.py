@@ -758,6 +758,163 @@ def test_generate_compare_dashboard_shows_qwen_chart_second_pass_table_for_non_f
     assert "Qwen 原始识别文本不应显示" not in html
 
 
+def test_generate_compare_dashboard_renders_multiple_chart_tables_from_artifact(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    mineru_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "block_id": "m1",
+                    "type": "chart",
+                    "sub_type": "chart",
+                    "content": {"chart_caption": ["(a) 5-way 10-shot"]},
+                },
+                {
+                    "block_id": "m2",
+                    "type": "chart",
+                    "sub_type": "chart",
+                    "content": {"chart_caption": ["(b) 5-way full-shot"]},
+                },
+            ]
+        },
+        "derived_label": {"image_type": "chart", "caption": "MinerU 图表"},
+    }
+    qwen_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "block_id": "q1",
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": "| Sessions | Left |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |",
+                        "table_caption": ["(a) 5-way 10-shot"],
+                    },
+                },
+                {
+                    "block_id": "q2",
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": "| Sessions | Right |\n| --- | --- |\n| 1 | 61 |\n| 2 | 59 |",
+                        "table_caption": ["(b) 5-way full-shot"],
+                    },
+                },
+            ]
+        },
+        "derived_label": {"image_type": "chart", "caption": "Qwen 图表"},
+    }
+    artifact_payload = {
+        "final_document": {
+            "blocks": [
+                {
+                    "block_id": "m1",
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": "| Sessions | Left |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |",
+                        "table_caption": ["(a) 5-way 10-shot"],
+                    },
+                },
+                {
+                    "block_id": "m2",
+                    "type": "table",
+                    "sub_type": "table",
+                    "content": {
+                        "table_body": "| Sessions | Right |\n| --- | --- |\n| 1 | 61 |\n| 2 | 59 |",
+                        "table_caption": ["(b) 5-way full-shot"],
+                    },
+                },
+            ]
+        },
+        "final_label": {
+            "image_type": "table",
+            "caption": "(a) 5-way 10-shot",
+            "structured_label": {
+                "kind": "table",
+                "content": "| Sessions | Left |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |",
+                "format": "markdown",
+                "source": "model",
+            },
+        },
+        "issues": [
+            {
+                "issue_id": "table-m1",
+                "candidate_payload": {
+                    "review_mode": "chart_table_second_pass",
+                    "branch_mode": "chart_table",
+                },
+            },
+            {
+                "issue_id": "table-m2",
+                "candidate_payload": {
+                    "review_mode": "chart_table_second_pass",
+                    "branch_mode": "chart_table",
+                },
+            },
+        ],
+        "patch_decisions": [
+            {
+                "issue_id": "table-m1",
+                "decision": "merge",
+                "reason": "left chart reconstructed",
+                "patch": {
+                    "type": "table",
+                    "content": {
+                        "table_body": "| Sessions | Left |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |",
+                        "table_caption": ["(a) 5-way 10-shot"],
+                    },
+                },
+            },
+            {
+                "issue_id": "table-m2",
+                "decision": "merge",
+                "reason": "right chart reconstructed",
+                "patch": {
+                    "type": "table",
+                    "content": {
+                        "table_body": "| Sessions | Right |\n| --- | --- |\n| 1 | 61 |\n| 2 | 59 |",
+                        "table_caption": ["(b) 5-way full-shot"],
+                    },
+                },
+            },
+        ],
+    }
+
+    (output_dir / "normalized" / "mineru" / "multi-chart.json").write_text(
+        json.dumps(mineru_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "multi-chart.json").write_text(
+        json.dumps(qwen_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "multi-chart_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert "展示二阶段 Qwen 终裁表格" in html
+    assert "(a) 5-way 10-shot" in html
+    assert "(b) 5-way full-shot" in html
+    assert "<td>62</td>" in html
+    assert "<td>59</td>" in html
+    assert "| Sessions | Right |" in html
+
+
 def test_generate_compare_dashboard_hides_empty_qwen_adjudication_panel_for_non_flowchart(
     tmp_path,
 ) -> None:
