@@ -763,13 +763,20 @@ def _build_qwen_panel(
     qwen_table_payload = _extract_qwen_chart_table_render_payload(artifact_payload)
     if qwen_table_payload is not None:
         blocks, label_payload = qwen_table_payload
+        extra_notes = ["展示二阶段 Qwen 终裁表格"]
+        candidate_roles = _extract_table_candidate_roles(artifact_payload)
+        reference_role = _extract_table_reference_role(artifact_payload)
+        if candidate_roles:
+            extra_notes.append(f"候选来源：{', '.join(candidate_roles)}")
+        if reference_role:
+            extra_notes.append(f"参考候选：{reference_role}")
         return _build_panel(
             title="Qwen",
             source_path=artifact_source_path,
             blocks=blocks,
             label_payload=label_payload,
             mermaid_snapshot=snapshot_lookup.get("Qwen"),
-            extra_note="展示二阶段 Qwen 终裁表格",
+            extra_note="；".join(extra_notes),
             prefer_label_semantics=True,
         )
 
@@ -1216,6 +1223,44 @@ def _extract_qwen_chart_table_render_payload(
     return blocks, label_payload
 
 
+def _extract_table_analysis_payload(artifact_payload: Any) -> dict[str, Any] | None:
+    if not isinstance(artifact_payload, dict):
+        return None
+    final_document = artifact_payload.get("final_document")
+    if not isinstance(final_document, dict):
+        return None
+    raw_metadata = final_document.get("raw_metadata")
+    if not isinstance(raw_metadata, dict):
+        return None
+    table_analysis = raw_metadata.get("table_analysis")
+    return table_analysis if isinstance(table_analysis, dict) else None
+
+
+def _extract_table_candidate_roles(artifact_payload: Any) -> list[str]:
+    table_analysis = _extract_table_analysis_payload(artifact_payload)
+    if not isinstance(table_analysis, dict):
+        return []
+    roles = table_analysis.get("candidate_roles")
+    if not isinstance(roles, list):
+        return []
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for role in roles:
+        normalized = str(role or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _extract_table_reference_role(artifact_payload: Any) -> str:
+    table_analysis = _extract_table_analysis_payload(artifact_payload)
+    if not isinstance(table_analysis, dict):
+        return ""
+    return str(table_analysis.get("reference_role", "") or "").strip().lower()
+
+
 def _is_chart_table_second_pass_issue(issue_payload: Any) -> bool:
     if not isinstance(issue_payload, dict):
         return False
@@ -1315,6 +1360,27 @@ def _extract_qwen_adjudication_text(artifact_payload: Any) -> str:
         if selection_reason:
             add_line(f"选择原因：{selection_reason}")
 
+    candidate_roles = _extract_table_candidate_roles(artifact_payload)
+    if candidate_roles:
+        add_line(f"候选来源：{', '.join(candidate_roles)}")
+    reference_role = _extract_table_reference_role(artifact_payload)
+    if reference_role:
+        add_line(f"参考候选：{reference_role}")
+
+    flowchart_reference_sources = _extract_flowchart_reference_sources(artifact_payload)
+    if flowchart_reference_sources:
+        add_line("流程图文字参考：")
+        for source in flowchart_reference_sources:
+            model_name = str(source.get("reference_model_name", "") or "").strip()
+            role = str(source.get("reference_model_role", "") or "").strip()
+            source_name = model_name or role or "candidate"
+            preview = " / ".join(
+                str(text or "").strip()
+                for text in list(source.get("ocr_reference_texts") or [])[:3]
+                if str(text or "").strip()
+            )
+            add_line(f"- {source_name}: {preview or '(empty)'}")
+
     patch_decisions = artifact_payload.get("patch_decisions")
     if isinstance(patch_decisions, list):
         entries: list[str] = []
@@ -1338,6 +1404,50 @@ def _extract_qwen_adjudication_text(artifact_payload: Any) -> str:
                 add_line(f"- {entry}")
 
     return "\n".join(lines)
+
+
+def _extract_flowchart_reference_sources(
+    artifact_payload: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(artifact_payload, dict):
+        return []
+    issues = artifact_payload.get("issues")
+    if not isinstance(issues, list):
+        return []
+
+    ordered_sources: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        candidate_payload = issue.get("candidate_payload")
+        if not isinstance(candidate_payload, dict):
+            continue
+        sources = candidate_payload.get("ocr_reference_sources")
+        if not isinstance(sources, list):
+            continue
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            role = str(source.get("reference_model_role", "") or "").strip().lower()
+            model_name = str(source.get("reference_model_name", "") or "").strip()
+            texts = [
+                str(text or "").strip()
+                for text in list(source.get("ocr_reference_texts") or [])
+                if str(text or "").strip()
+            ]
+            signature = (role, model_name, tuple(texts))
+            if not texts or signature in seen:
+                continue
+            seen.add(signature)
+            ordered_sources.append(
+                {
+                    "reference_model_role": role,
+                    "reference_model_name": model_name,
+                    "ocr_reference_texts": texts,
+                }
+            )
+    return ordered_sources
 
 
 def _finalize_panels(record_type: str, panels: list[ComparePanel]) -> list[ComparePanel]:

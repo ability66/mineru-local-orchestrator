@@ -580,7 +580,22 @@ def test_process_image_task_runs_qwen_first_pass_for_flowchart_branch(tmp_path) 
     )
     glm_client = StubClient(
         model_name="glm-local",
-        responses=[{"success": True, "parsed": _single_page_payload([mineru_block])}],
+        responses=[
+            {
+                "success": True,
+                "raw_text": _qwen_raw_payload(
+                    [
+                        {
+                            "block_id": "g1",
+                            "type": "paragraph",
+                            "bbox": [0, 220, 1000, 420],
+                            "text": "人工复核",
+                            "content": "人工复核",
+                        }
+                    ]
+                ),
+            }
+        ],
         config={"provider": "glm_openai_compatible", "role": "glm"},
     )
     qwen_client = StubClient(
@@ -636,10 +651,27 @@ def test_process_image_task_runs_qwen_first_pass_for_flowchart_branch(tmp_path) 
     )
     assert summary["qwen_success"] is True
     assert raw_qwen["model_name"] == "qwen-local"
-    assert raw_glm["error"] == "skipped_for_flowchart_branch"
+    assert raw_glm["model_name"] == "glm-local"
     assert len(qwen_client.calls) == 2
-    assert len(glm_client.calls) == 0
+    assert len(glm_client.calls) == 1
     assert "审批通过" in qwen_client.calls[1]["context"]["issue_payload"]["ocr_reference_texts"]
+    assert "人工复核" in qwen_client.calls[1]["context"]["issue_payload"]["ocr_reference_texts"]
+    assert (
+        qwen_client.calls[1]["context"]["issue_payload"]["ocr_reference_models"]
+        == ["paddle-local", "glm-local"]
+    )
+    assert (
+        qwen_client.calls[1]["context"]["issue_payload"]["ocr_reference_sources"][0][
+            "reference_model_role"
+        ]
+        == "paddle"
+    )
+    assert (
+        qwen_client.calls[1]["context"]["issue_payload"]["ocr_reference_sources"][1][
+            "reference_model_role"
+        ]
+        == "glm"
+    )
     assert stage2_payload["records"][0]["thinking_mode"] == "disabled_requested"
 
 

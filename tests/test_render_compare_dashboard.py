@@ -690,7 +690,13 @@ def test_generate_compare_dashboard_shows_qwen_chart_second_pass_table_for_non_f
                         "table_caption": ["Qwen 终裁表格"],
                     },
                 }
-            ]
+            ],
+            "raw_metadata": {
+                "table_analysis": {
+                    "candidate_roles": ["mineru", "qwen", "glm", "paddle"],
+                    "reference_role": "glm",
+                }
+            },
         },
         "final_label": {
             "image_type": "table",
@@ -750,6 +756,8 @@ def test_generate_compare_dashboard_shows_qwen_chart_second_pass_table_for_non_f
     assert ">Qwen<" in html
     assert "final/chart-qwen-table_artifact.json" in html
     assert "展示二阶段 Qwen 终裁表格" in html
+    assert "候选来源：mineru, qwen, glm, paddle" in html
+    assert "参考候选：glm" in html
     assert "展示裁决结果与原因" not in html
     assert "Rendered Markdown" in html
     assert "<th>指标</th>" in html
@@ -1060,7 +1068,25 @@ def test_generate_compare_dashboard_reorders_flowchart_panels_and_hides_empty_pr
                 "reason": "参考侧在冲突点上更合理",
             }
         ],
-        "issues": [],
+        "issues": [
+            {
+                "issue_id": "flowchart-1",
+                "candidate_payload": {
+                    "ocr_reference_sources": [
+                        {
+                            "reference_model_role": "paddle",
+                            "reference_model_name": "paddle-local",
+                            "ocr_reference_texts": ["审批通过"],
+                        },
+                        {
+                            "reference_model_role": "glm",
+                            "reference_model_name": "glm-local",
+                            "ocr_reference_texts": ["人工复核"],
+                        },
+                    ]
+                },
+            }
+        ],
     }
 
     (output_dir / "normalized" / "mineru" / "flowchart-demo.json").write_text(
@@ -1088,6 +1114,9 @@ def test_generate_compare_dashboard_reorders_flowchart_panels_and_hides_empty_pr
     assert ">Judge Reason<" in html
     assert "裁决结果：use_qwen_fields" in html
     assert "Qwen 在冲突节点的结构更准确" in html
+    assert "流程图文字参考：" in html
+    assert "paddle-local: 审批通过" in html
+    assert "glm-local: 人工复核" in html
     assert html.index(">Qwen<") < html.index(">MinerU<")
     assert html.index(">MinerU<") < html.index(">Final<")
     assert html.index(">Final<") < html.index(">Judge Reason<")

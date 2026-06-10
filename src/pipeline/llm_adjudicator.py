@@ -234,10 +234,27 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
         str(candidate_payload.get("reference_mermaid", "") or "")
     )
     focus_terms = _collect_flowchart_focus_terms(graph_diff)
-    ocr_reference_texts = _as_text_list(candidate_payload.get("ocr_reference_texts"))
+    ocr_reference_sources = _normalize_ocr_reference_sources(
+        candidate_payload.get("ocr_reference_sources")
+    )
+    ocr_reference_texts = _deduplicate_texts(
+        _as_text_list(candidate_payload.get("ocr_reference_texts"))
+        + [
+            text
+            for source in ocr_reference_sources
+            for text in list(source.get("ocr_reference_texts") or [])
+        ]
+    )
     ocr_reference_model = str(
         candidate_payload.get("ocr_reference_model", "") or ""
     ).strip()
+    ocr_reference_models = _deduplicate_texts(
+        [
+            str(source.get("reference_model_name", "") or "").strip()
+            or str(source.get("reference_model_role", "") or "").strip()
+            for source in ocr_reference_sources
+        ]
+    )
 
     payload = {
         "issue_id": issue.issue_id,
@@ -255,11 +272,23 @@ def _build_flowchart_prompt_payload(issue: Issue) -> dict[str, object]:
         "thinking_mode": "disabled_requested_for_flowchart_adjudication",
     }
     if ocr_reference_texts:
-        payload["ocr_reference_model"] = ocr_reference_model or "paddle"
+        if ocr_reference_sources:
+            payload["ocr_reference_sources"] = ocr_reference_sources
+        if ocr_reference_models:
+            payload["ocr_reference_models"] = ocr_reference_models
+        payload["ocr_reference_model"] = (
+            ocr_reference_model
+            or (
+                ocr_reference_models[0]
+                if len(ocr_reference_models) == 1
+                else "multi_source"
+            )
+            or "auxiliary"
+        )
         payload["ocr_reference_usage"] = (
             "仅用于节点/连线文字校对，不可用于结构推断、节点增删或边关系改写"
         )
-        payload["ocr_reference_texts"] = ocr_reference_texts[:20]
+        payload["ocr_reference_texts"] = ocr_reference_texts[:40]
     return payload
 
 
@@ -608,6 +637,28 @@ def _as_text_list(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _normalize_ocr_reference_sources(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    normalized_sources: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        texts = _as_text_list(item.get("ocr_reference_texts"))
+        if not texts:
+            continue
+        role = str(item.get("reference_model_role", "") or "").strip()
+        model_name = str(item.get("reference_model_name", "") or "").strip()
+        normalized_sources.append(
+            {
+                "reference_model_role": role or "candidate",
+                "reference_model_name": model_name or role or "candidate",
+                "ocr_reference_texts": _deduplicate_texts(texts)[:20],
+            }
+        )
+    return normalized_sources
 
 
 def _extract_raw_text_from_parsed(payload: object) -> str:

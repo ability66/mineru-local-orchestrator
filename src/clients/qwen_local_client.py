@@ -237,7 +237,8 @@ class QwenLocalClient(BaseLocalClient):
             serialized = json.dumps(issue_payload, ensure_ascii=False, indent=2)
             return (
                 "以下是一个需要局部仲裁的流程图 issue，请重点检查冲突项并输出 patch 决策 JSON。"
-                "如果提供了 ocr_reference_texts，它们只可用于文字校对，不可用于结构推断。"
+                "如果提供了 ocr_reference_texts 或 ocr_reference_sources，"
+                "它们只可用于文字校对，不可用于结构推断。"
                 "请只输出 patch 决策 JSON，不要输出解释性正文：\n"
                 f"{serialized}"
             )

@@ -277,10 +277,13 @@ def _best_reference_role(roles: list[str], role_scores: dict[str, list[float]]) 
     scored_roles = sorted(
         roles,
         key=lambda role: (
-            sum(role_scores.get(role, [])) / max(len(role_scores.get(role, [])), 1),
-            role == "paddle",
+            -(
+                sum(role_scores.get(role, []))
+                / max(len(role_scores.get(role, [])), 1)
+            ),
+            0 if role == "qwen" else 1,
+            role,
         ),
-        reverse=True,
     )
     return scored_roles[0]
 

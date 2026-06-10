@@ -771,12 +771,42 @@ def _extract_flowchart_ocr_reference(
     return references[:20], model_name
 
 
+def _collect_flowchart_ocr_references(
+    bundles: list[dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    reference_sources: list[dict[str, Any]] = []
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            continue
+        reference_texts, reference_model = _extract_flowchart_ocr_reference(bundle)
+        if not reference_texts:
+            continue
+        role = str(bundle.get("role", "") or "").strip().lower() or "candidate"
+        reference_sources.append(
+            {
+                "reference_model_role": role,
+                "reference_model_name": reference_model or role,
+                "ocr_reference_texts": reference_texts[:20],
+            }
+        )
+    return reference_sources
+
+
 def _attach_flowchart_ocr_reference(
     issues: list[Any],
-    reference_texts: list[str],
-    reference_model: str | None,
+    reference_sources: list[dict[str, Any]],
 ) -> list[Any]:
-    if not issues or not reference_texts:
+    if not issues or not reference_sources:
+        return issues
+    combined_texts = _ordered_unique_reference_texts(
+        [
+            str(text or "")
+            for source in reference_sources
+            if isinstance(source, dict)
+            for text in list(source.get("ocr_reference_texts") or [])
+        ]
+    )
+    if not combined_texts:
         return issues
     for issue in issues:
         payload = (
@@ -784,9 +814,28 @@ def _attach_flowchart_ocr_reference(
             if isinstance(issue.candidate_payload, dict)
             else {}
         )
-        payload["ocr_reference_texts"] = list(reference_texts)
-        if reference_model:
-            payload["ocr_reference_model"] = reference_model
+        payload["ocr_reference_texts"] = combined_texts[:40]
+        payload["ocr_reference_sources"] = [
+            {
+                "reference_model_role": str(
+                    source.get("reference_model_role", "") or ""
+                ).strip()
+                or "candidate",
+                "reference_model_name": str(
+                    source.get("reference_model_name", "") or ""
+                ).strip()
+                or str(source.get("reference_model_role", "") or "").strip()
+                or "candidate",
+                "ocr_reference_texts": _ordered_unique_reference_texts(
+                    [
+                        str(text or "")
+                        for text in list(source.get("ocr_reference_texts") or [])
+                    ]
+                )[:20],
+            }
+            for source in reference_sources
+            if isinstance(source, dict)
+        ]
         issue.candidate_payload = payload
     return issues
 
@@ -1178,9 +1227,11 @@ def _pick_seal_reference_bundle(
     mineru_document: CanonicalDocument,
     auxiliary_bundles: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[Any]]:
-    candidates: list[tuple[int, tuple[int, int, int, int], int, dict[str, Any], list[Any]]] = []
-    role_priority = {"glm": 2, "paddle": 1}
-    for bundle in auxiliary_bundles:
+    candidates: list[
+        tuple[int, tuple[int, int, int, int], int, dict[str, Any], list[Any]]
+    ] = []
+    bundle_count = len(auxiliary_bundles)
+    for bundle_index, bundle in enumerate(auxiliary_bundles):
         output = bundle.get("output")
         document = bundle.get("document")
         label = bundle.get("label")
@@ -1214,7 +1265,7 @@ def _pick_seal_reference_bundle(
             (
                 1 if issues else 0,
                 _seal_signal_score(document=document, label=label),
-                role_priority.get(reference_role, 0),
+                bundle_count - bundle_index,
                 bundle,
                 issues,
             )
@@ -1222,7 +1273,7 @@ def _pick_seal_reference_bundle(
     if not candidates:
         return None, []
     candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    _has_issues, _score, _priority, bundle, issues = candidates[0]
+    _has_issues, _score, _order, bundle, issues = candidates[0]
     return bundle, issues
 
 
@@ -1285,20 +1336,11 @@ def process_image_task(
         prompt=recognition_prompt,
         retry=args.retry,
     )
-    glm_bundle = (
-        _build_skipped_first_pass_bundle(
-            image_task=image_task,
-            client=glm_client,
-            role="glm",
-            reason="skipped_for_flowchart_branch",
-        )
-        if use_flowchart_branch
-        else _run_first_pass_model(
-            image_task=image_task,
-            client=glm_client,
-            prompt=recognition_prompt,
-            retry=args.retry,
-        )
+    glm_bundle = _run_first_pass_model(
+        image_task=image_task,
+        client=glm_client,
+        prompt=recognition_prompt,
+        retry=args.retry,
     )
 
     qwen_output: ModelOutput | None = None
@@ -1383,10 +1425,10 @@ def process_image_task(
     table_patch_decisions: list[PatchDecision] = []
     table_patch_outputs: list[ModelOutput] = []
     table_analysis: dict[str, Any] | None = None
-    paddle_ocr_reference_texts, paddle_ocr_reference_model = (
-        _extract_flowchart_ocr_reference(paddle_bundle)
+    flowchart_ocr_reference_sources = (
+        _collect_flowchart_ocr_references([paddle_bundle, glm_bundle])
         if use_flowchart_branch
-        else ([], None)
+        else []
     )
 
     if seal_selection_payload is not None:
@@ -1510,8 +1552,7 @@ def process_image_task(
             )
         flowchart_issues = _attach_flowchart_ocr_reference(
             issues=flowchart_issues,
-            reference_texts=paddle_ocr_reference_texts,
-            reference_model=paddle_ocr_reference_model,
+            reference_sources=flowchart_ocr_reference_sources,
         )
         if flowchart_issues and qwen_client is not None:
             flowchart_patch_decisions, flowchart_patch_outputs = adjudicate_issues_with_llm(

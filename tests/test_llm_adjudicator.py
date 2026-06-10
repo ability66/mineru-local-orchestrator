@@ -42,6 +42,45 @@ Biopsy --> Adv["进展期或转移性PC的治疗（图3）"]"""
     assert prompt_payload["reference_mermaid"] == small_mermaid
 
 
+def test_build_issue_prompt_payload_for_flowchart_supports_multi_source_ocr_reference() -> None:
+    issue = Issue(
+        issue_id="flowchart-diff-m1-missing-label-1",
+        issue_type="flowchart_graph_conflict",
+        page_idx=0,
+        target_block_id="m1",
+        candidate_payload={
+            "review_mode": "disagreement",
+            "current_mermaid": 'flowchart TD\nA["开始"] --> B["结束"]',
+            "reference_mermaid": 'flowchart TD\nA["开始"] --> B["复核"]',
+            "graph_diff": {
+                "diff_kind": "node_text_conflict",
+                "reference_node": {"text": "复核"},
+            },
+            "ocr_reference_sources": [
+                {
+                    "reference_model_role": "paddle",
+                    "reference_model_name": "paddle-local",
+                    "ocr_reference_texts": ["审批通过"],
+                },
+                {
+                    "reference_model_role": "glm",
+                    "reference_model_name": "glm-local",
+                    "ocr_reference_texts": ["人工复核"],
+                },
+            ],
+        },
+        reasons=["flowchart_graph_conflict_detected"],
+    )
+
+    prompt_payload = build_issue_prompt_payload(issue, "flowchart_adjudication")
+
+    assert prompt_payload["ocr_reference_model"] == "multi_source"
+    assert prompt_payload["ocr_reference_models"] == ["paddle-local", "glm-local"]
+    assert prompt_payload["ocr_reference_texts"] == ["审批通过", "人工复核"]
+    assert prompt_payload["ocr_reference_sources"][0]["reference_model_role"] == "paddle"
+    assert prompt_payload["ocr_reference_sources"][1]["reference_model_role"] == "glm"
+
+
 def test_parse_patch_decision_rejects_overreaching_flowchart_merge_on_disagreement() -> None:
     issue = Issue(
         issue_id="flowchart-diff-m1-missing-node-1",

@@ -771,12 +771,11 @@ def _pick_issue_reference_bundle(
             enriched = dict(bundle)
             enriched["table_candidate"] = candidate
             return enriched
-    for preferred_role in ("qwen", "paddle", "glm"):
-        for role, bundle, candidate in matched_bundles:
-            if role == preferred_role:
-                enriched = dict(bundle)
-                enriched["table_candidate"] = candidate
-                return enriched
+    for role, bundle, candidate in matched_bundles:
+        if role == "qwen":
+            enriched = dict(bundle)
+            enriched["table_candidate"] = candidate
+            return enriched
     for role, bundle, candidate in matched_bundles:
         if role != "mineru":
             enriched = dict(bundle)
