@@ -1304,6 +1304,14 @@ def process_image_task(
     qwen_document = empty_document(image_task=image_task, source="qwen_judge_not_triggered")
     qwen_label = None
     qwen_first_pass_bundle: dict[str, Any] | None = None
+    force_chart_table_second_pass = (
+        _should_force_chart_table_second_pass(
+            mineru_document=mineru_document,
+            mineru_label=mineru_label,
+        )
+        if not use_flowchart_branch
+        else False
+    )
 
     if use_flowchart_branch and qwen_client is not None:
         qwen_first_pass_bundle = _run_first_pass_model(
@@ -1316,29 +1324,36 @@ def process_image_task(
         qwen_output = qwen_first_pass_bundle["output"]
         qwen_document = qwen_first_pass_bundle["document"]
         qwen_label = qwen_first_pass_bundle["label"]
+    elif force_chart_table_second_pass and qwen_client is not None:
+        qwen_first_pass_bundle = _run_first_pass_model(
+            image_task=image_task,
+            client=qwen_client,
+            prompt=recognition_prompt,
+            retry=args.retry,
+        )
+        qwen_first_pass_bundle["role"] = "qwen"
+        qwen_output = qwen_first_pass_bundle["output"]
 
     seal_selection_decision: SealSelectionDecision | None = None
     seal_selection_output: ModelOutput | None = None
     seal_stage2_record: dict[str, Any] | None = None
     selected_seal_bundle: dict[str, Any] | None = None
 
-    auxiliary_bundles = (
-        [
-            bundle
-            for bundle in (glm_bundle, paddle_bundle)
-            if bundle.get("client") is not None
-        ]
-        if not use_flowchart_branch
-        else []
-    )
-    force_chart_table_second_pass = (
-        _should_force_chart_table_second_pass(
-            mineru_document=mineru_document,
-            mineru_label=mineru_label,
+    auxiliary_bundles = []
+    if not use_flowchart_branch:
+        if (
+            force_chart_table_second_pass
+            and isinstance(qwen_first_pass_bundle, dict)
+            and qwen_first_pass_bundle.get("client") is not None
+        ):
+            auxiliary_bundles.append(qwen_first_pass_bundle)
+        auxiliary_bundles.extend(
+            [
+                bundle
+                for bundle in (glm_bundle, paddle_bundle)
+                if bundle.get("client") is not None
+            ]
         )
-        if not use_flowchart_branch
-        else False
-    )
     use_table_branch = (
         (
             force_chart_table_second_pass

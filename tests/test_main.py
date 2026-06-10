@@ -882,6 +882,12 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
         responses=[
             {
                 "success": True,
+                "raw_text": _qwen_raw_payload(
+                    [_table_block("q1", markdown_table, block_type="table")]
+                ),
+            },
+            {
+                "success": True,
                 "raw_text": json.dumps(
                     {
                         "issue_id": "table-m1",
@@ -923,10 +929,14 @@ def test_process_image_task_always_triggers_qwen_for_markdown_chart_table_branch
     final_output = json.loads(
         (tmp_path / "final" / "table-fallback.json").read_text(encoding="utf-8")
     )
-    assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
-    assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
-    assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
+    assert len(qwen_client.calls) == 2
+    assert qwen_client.calls[1]["context"]["mode"] == "table_adjudication"
+    assert qwen_client.calls[1]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
+    assert qwen_client.calls[1]["context"]["issue_payload"]["must_output_final_table"] is True
+    assert any(
+        candidate["candidate_id"] == "qwen"
+        for candidate in qwen_client.calls[1]["context"]["issue_payload"]["candidates"]
+    )
     assert final_output["model_name"] == "qwen-local"
     assert artifact["final_document"]["blocks"][0]["type"] == "table"
     assert (
@@ -991,6 +1001,18 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
         responses=[
             {
                 "success": True,
+                "raw_text": _qwen_raw_payload(
+                    [
+                        _table_block(
+                            "q1",
+                            "| 地区 | 数值 |\n| --- | --- |\n| 华东 | 10 |\n| 华南 | 20 |\n| 华北 | 15 |",
+                            block_type="table",
+                        )
+                    ]
+                ),
+            },
+            {
+                "success": True,
                 "raw_text": json.dumps(
                     {
                         "issue_id": "table-m1",
@@ -1036,12 +1058,17 @@ def test_process_image_task_always_triggers_qwen_for_plain_chart_branch(
             encoding="utf-8"
         )
     )
-    assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
-    assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
-    assert qwen_client.calls[0]["context"]["issue_payload"]["must_output_final_table"] is True
-    assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_format"] == "none"
-    assert qwen_client.calls[0]["context"]["issue_payload"]["candidates"][0]["table_content"] == chart_text
+    assert len(qwen_client.calls) == 2
+    assert qwen_client.calls[1]["context"]["mode"] == "table_adjudication"
+    assert qwen_client.calls[1]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
+    assert qwen_client.calls[1]["context"]["issue_payload"]["must_output_final_table"] is True
+    assert qwen_client.calls[1]["context"]["issue_payload"]["candidates"][0]["table_format"] == "none"
+    assert qwen_client.calls[1]["context"]["issue_payload"]["candidates"][0]["table_content"] == chart_text
+    assert any(
+        candidate["candidate_id"] == "qwen"
+        and candidate["table_format"] == "markdown"
+        for candidate in qwen_client.calls[1]["context"]["issue_payload"]["candidates"]
+    )
     assert final_output["model_name"] == "qwen-local"
     assert artifact["final_document"]["blocks"][0]["type"] == "table"
     assert (
@@ -1120,7 +1147,21 @@ def test_process_image_task_reviews_plain_chart_when_qwen_patch_is_invalid(
     )
     qwen_client = StubClient(
         model_name="qwen-local",
-        responses=[{"success": True, "raw_text": "not-json"}],
+        responses=[
+            {
+                "success": True,
+                "raw_text": _qwen_raw_payload(
+                    [
+                        _table_block(
+                            "q1",
+                            "| 地区 | 数值 |\n| --- | --- |\n| 华东 | 10 |\n| 华南 | 20 |\n| 华北 | 15 |",
+                            block_type="table",
+                        )
+                    ]
+                ),
+            },
+            {"success": True, "raw_text": "not-json"},
+        ],
         config={"provider": "qwen_openai_compatible", "role": "judge"},
     )
 
@@ -1148,8 +1189,12 @@ def test_process_image_task_reviews_plain_chart_when_qwen_patch_is_invalid(
             encoding="utf-8"
         )
     )
-    assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
+    assert len(qwen_client.calls) == 2
+    assert qwen_client.calls[1]["context"]["mode"] == "table_adjudication"
+    assert any(
+        candidate["candidate_id"] == "qwen"
+        for candidate in qwen_client.calls[1]["context"]["issue_payload"]["candidates"]
+    )
     assert artifact["consensus"]["decision"] == "review"
     assert artifact["review_required"] is True
     assert (
@@ -1193,6 +1238,18 @@ def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
     qwen_client = StubClient(
         model_name="qwen-local",
         responses=[
+            {
+                "success": True,
+                "raw_text": _qwen_raw_payload(
+                    [
+                        _table_block(
+                            "q1",
+                            "| 地区 | 数值 |\n| --- | --- |\n| 华东 | 10 |\n| 华南 | 20 |\n| 华北 | 15 |",
+                            block_type="table",
+                        )
+                    ]
+                ),
+            },
             {
                 "success": True,
                 "raw_text": json.dumps(
@@ -1245,12 +1302,16 @@ def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
             encoding="utf-8"
         )
     )
-    assert len(qwen_client.calls) == 1
-    assert qwen_client.calls[0]["context"]["mode"] == "table_adjudication"
-    assert qwen_client.calls[0]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
+    assert len(qwen_client.calls) == 2
+    assert qwen_client.calls[1]["context"]["mode"] == "table_adjudication"
+    assert qwen_client.calls[1]["context"]["issue_payload"]["review_mode"] == "chart_table_second_pass"
     assert any(
         candidate["candidate_id"] == "mineru"
-        for candidate in qwen_client.calls[0]["context"]["issue_payload"]["candidates"]
+        for candidate in qwen_client.calls[1]["context"]["issue_payload"]["candidates"]
+    )
+    assert any(
+        candidate["candidate_id"] == "qwen"
+        for candidate in qwen_client.calls[1]["context"]["issue_payload"]["candidates"]
     )
     assert final_output["model_name"] == "qwen-local"
     assert artifact["issues"]
