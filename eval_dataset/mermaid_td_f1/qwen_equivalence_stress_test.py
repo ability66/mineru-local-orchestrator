@@ -90,6 +90,8 @@ def build_qwen_prompt(iteration: int, self_check: bool = False) -> str:
 8. 必须包含至少一个失败路径。
 9. 必须包含至少一个成功路径。
 10. 必须包含至少一个多父节点汇聚。
+11. 对于 gold_mermaid 和 pred_mermaid，业务头节点都必须是 Mermaid 源码里第一个真实出现的流程节点。
+12. 头节点必须直接首先出现，不允许先写虚拟空节点、布局节点、style 节点、或其他业务节点再回连到头节点。
 
 你必须主动制造这些评测挑战：
 - 节点 ID 全部重命名
@@ -111,11 +113,15 @@ def build_qwen_prompt(iteration: int, self_check: bool = False) -> str:
 5. 不要改变 yes/no、成功/失败、通过/拒绝 等条件含义。
 6. 不要把不等价图伪装成等价图。
 7. 不要输出任何 Markdown 解释性正文。
+8. 不要把头节点放在第二个或更靠后的位置。
+9. 不要先定义其他节点，再在后面补一条边把头节点连进去。
+10. 不要在头节点前插入虚拟 routing node。
 
 业务文字要求：
 1. 业务节点的显示文字必须保持一致，便于对齐。
 2. pred_mermaid 中可以重命名节点 ID，但业务节点文字必须与 gold_mermaid 对应一致。
 3. yes/no、成功/失败等关键条件文字必须语义一致。
+4. 业务头节点的显示文字在两张图中必须一致，并且都应当最先出现。
 
 输出格式：
 你只能输出一个 JSON object，不要输出任何额外说明，不要输出 Markdown 标题。
