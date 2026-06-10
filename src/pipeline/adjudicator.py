@@ -10,6 +10,7 @@ from src.pipeline.normalizers import derive_label_from_document
 from src.pipeline.table_evaluator import analyze_table_candidate_consensus
 from src.pipeline.table_utils import (
     detect_table_format,
+    extract_table_candidates,
     extract_best_table_candidate,
     is_table_like,
 )
@@ -64,16 +65,21 @@ def analyze_table_bundles(
         if not is_table_like(document) and not is_table_like(label) and not has_chart_fallback_signal:
             continue
         signaled_roles.append(role)
-        table_candidate = extract_best_table_candidate(
-            document,
+        table_candidates = extract_table_candidates(
+            document=document,
             allow_non_table_chart_fallback=has_chart_fallback_signal,
         )
-        if not isinstance(table_candidate, dict):
+        table_candidate = extract_best_table_candidate(
+            document=document,
+            allow_non_table_chart_fallback=has_chart_fallback_signal,
+        )
+        if not isinstance(table_candidate, dict) or not table_candidates:
             continue
         candidate_bundle = {
             **bundle,
             "role": role,
             "table_candidate": table_candidate,
+            "table_candidates": table_candidates,
         }
         candidate_bundles.append(candidate_bundle)
         candidate_payloads.append(

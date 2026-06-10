@@ -223,11 +223,23 @@ def extract_best_table_candidate(
     document: CanonicalDocument | None,
     allow_non_table_chart_fallback: bool = False,
 ) -> dict[str, Any] | None:
-    if not isinstance(document, CanonicalDocument):
+    candidates = extract_table_candidates(
+        document=document,
+        allow_non_table_chart_fallback=allow_non_table_chart_fallback,
+    )
+    if not candidates:
         return None
+    return _pick_best_table_candidate(candidates)
 
-    best_candidate: dict[str, Any] | None = None
-    fallback_candidate: dict[str, Any] | None = None
+
+def extract_table_candidates(
+    document: CanonicalDocument | None,
+    allow_non_table_chart_fallback: bool = False,
+) -> list[dict[str, Any]]:
+    if not isinstance(document, CanonicalDocument):
+        return []
+
+    candidates: list[dict[str, Any]] = []
     for block in sorted(
         document.blocks,
         key=lambda item: (item.page_idx, item.order_index, item.block_id),
@@ -245,10 +257,7 @@ def extract_best_table_candidate(
                 table_ir=table_ir,
                 table_format=table_format,
             )
-            if best_candidate is None or _candidate_cell_count(
-                candidate
-            ) > _candidate_cell_count(best_candidate):
-                best_candidate = candidate
+            candidates.append(candidate)
             continue
 
         if not allow_non_table_chart_fallback:
@@ -258,11 +267,8 @@ def extract_best_table_candidate(
         candidate = _build_chart_fallback_candidate(block)
         if candidate is None:
             continue
-        if fallback_candidate is None or len(
-            str(candidate.get("table_text", "") or "")
-        ) > len(str(fallback_candidate.get("table_text", "") or "")):
-            fallback_candidate = candidate
-    return best_candidate or fallback_candidate
+        candidates.append(candidate)
+    return candidates
 
 
 def normalize_cell_text(text: str) -> str:
@@ -369,6 +375,24 @@ def _candidate_cell_count(candidate: dict[str, Any]) -> int:
     if not isinstance(table_ir, MarkdownTableIR):
         return 0
     return len(table_ir.cells)
+
+
+def _pick_best_table_candidate(
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    markdown_candidates = [
+        candidate
+        for candidate in candidates
+        if str(candidate.get("table_format", "") or "").strip().lower() == "markdown"
+    ]
+    if markdown_candidates:
+        return max(markdown_candidates, key=_candidate_cell_count)
+    return max(
+        candidates,
+        key=lambda candidate: len(str(candidate.get("table_text", "") or "")),
+    )
 
 
 def _is_flowchart_block(block: CanonicalBlock) -> bool:

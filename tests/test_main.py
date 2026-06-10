@@ -1210,6 +1210,184 @@ def test_process_image_task_reviews_plain_chart_when_qwen_patch_is_invalid(
     assert final_output["model_name"] == "mineru-local"
 
 
+def test_process_image_task_builds_multiple_chart_table_issues_for_multi_chart_page(
+    tmp_path,
+) -> None:
+    image_task = ImageTask(
+        image_id="multi-chart-page",
+        image_path="data/demo.png",
+        file_name="multi-chart-page.png",
+        file_ext=".png",
+    )
+    left_chart = _plain_chart_block("m1", "left chart raw text")
+    left_chart["bbox"] = [0, 0, 480, 840]
+    left_chart["content"]["chart_caption"] = ["(a) 5-way 10-shot"]
+    right_chart = _plain_chart_block("m2", "right chart raw text")
+    right_chart["bbox"] = [520, 0, 1000, 840]
+    right_chart["content"]["chart_caption"] = ["(b) 5-way full-shot"]
+
+    qwen_left = _table_block(
+        "q1",
+        "| Sessions | A |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |",
+        block_type="table",
+    )
+    qwen_left["bbox"] = [0, 0, 480, 840]
+    qwen_right = _table_block(
+        "q2",
+        "| Sessions | B |\n| --- | --- |\n| 1 | 61 |\n| 2 | 59 |",
+        block_type="table",
+    )
+    qwen_right["bbox"] = [520, 0, 1000, 840]
+
+    mineru_client = StubClient(
+        model_name="mineru-local",
+        responses=[
+            {"success": True, "parsed": _single_page_payload([left_chart, right_chart])}
+        ],
+        config={"provider": "minerupro_local", "role": "mineru"},
+    )
+    paddle_client = StubClient(
+        model_name="paddle-local",
+        responses=[
+            {
+                "success": True,
+                "parsed": _single_page_payload(
+                    [
+                        {
+                            "block_id": "p1",
+                            "type": "paragraph",
+                            "bbox": [0, 860, 1000, 920],
+                            "text": "legend text",
+                            "content": {"paragraph_content": [{"type": "text", "content": "legend text"}]},
+                        }
+                    ]
+                ),
+            }
+        ],
+        config={"provider": "paddle_local", "role": "paddle"},
+    )
+    glm_client = StubClient(
+        model_name="glm-local",
+        responses=[
+            {
+                "success": True,
+                "parsed": _single_page_payload(
+                    [
+                        {
+                            "block_id": "g1",
+                            "type": "paragraph",
+                            "bbox": [0, 930, 1000, 980],
+                            "text": "extra note",
+                            "content": {"paragraph_content": [{"type": "text", "content": "extra note"}]},
+                        }
+                    ]
+                ),
+            }
+        ],
+        config={"provider": "glm_openai_compatible", "role": "glm"},
+    )
+    qwen_client = StubClient(
+        model_name="qwen-local",
+        responses=[
+            {"success": True, "raw_text": _qwen_raw_payload([qwen_left, qwen_right])},
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "issue_id": "table-m1",
+                        "target_block_id": "m1",
+                        "decision": "merge",
+                        "patch": {
+                            "type": "table",
+                            "content": {
+                                "table_body": "| Sessions | Left |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |",
+                                "table_caption": ["(a) 5-way 10-shot"],
+                            },
+                        },
+                        "reason": "left chart reconstructed",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            {
+                "success": True,
+                "raw_text": json.dumps(
+                    {
+                        "issue_id": "table-m2",
+                        "target_block_id": "m2",
+                        "decision": "merge",
+                        "patch": {
+                            "type": "table",
+                            "content": {
+                                "table_body": "| Sessions | Right |\n| --- | --- |\n| 1 | 61 |\n| 2 | 59 |",
+                                "table_caption": ["(b) 5-way full-shot"],
+                            },
+                        },
+                        "reason": "right chart reconstructed",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        config={"provider": "qwen_openai_compatible", "role": "judge"},
+    )
+
+    process_image_task(
+        image_task=image_task,
+        args=_build_args(),
+        mineru_client=mineru_client,
+        paddle_client=paddle_client,
+        glm_client=glm_client,
+        qwen_client=qwen_client,
+        recognition_prompt="recognition prompt",
+        seal_adjudication_prompt="seal prompt",
+        flowchart_adjudication_prompt="flow prompt",
+        output_dir=tmp_path,
+        table_adjudication_prompt="table prompt",
+    )
+
+    artifact = json.loads(
+        (tmp_path / "final" / "multi-chart-page_artifact.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    stage2_payload = json.loads(
+        (tmp_path / "judge_stage2" / "multi-chart-page.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert len(qwen_client.calls) == 3
+    assert qwen_client.calls[1]["context"]["mode"] == "table_adjudication"
+    assert qwen_client.calls[2]["context"]["mode"] == "table_adjudication"
+    assert {
+        qwen_client.calls[1]["context"]["issue_payload"]["target_block_id"],
+        qwen_client.calls[2]["context"]["issue_payload"]["target_block_id"],
+    } == {"m1", "m2"}
+    assert all(
+        any(
+            candidate["candidate_id"] == "qwen"
+            for candidate in call["context"]["issue_payload"]["candidates"]
+        )
+        for call in qwen_client.calls[1:]
+    )
+    assert stage2_payload["record_count"] == 2
+    assert artifact["final_document"]["raw_metadata"]["table_analysis"]["stage2_issue_count"] == 2
+    assert len(artifact["patch_decisions"]) == 2
+
+    blocks = {
+        block["block_id"]: block
+        for block in artifact["final_document"]["blocks"]
+        if block["block_id"] in {"m1", "m2"}
+    }
+    assert blocks["m1"]["content"]["table_body"] == (
+        "| Sessions | Left |\n| --- | --- |\n| 1 | 62 |\n| 2 | 57 |"
+    )
+    assert blocks["m2"]["content"]["table_body"] == (
+        "| Sessions | Right |\n| --- | --- |\n| 1 | 61 |\n| 2 | 59 |"
+    )
+
+
 def test_process_image_task_triggers_qwen_when_mineru_chart_candidate_is_empty(
     tmp_path,
 ) -> None:

@@ -28,6 +28,7 @@ from src.pipeline.adjudicator import (
     pick_table_reference_bundle,
 )
 from src.pipeline.issues import (
+    build_chart_table_second_pass_issues,
     build_table_issue,
     detect_flowchart_second_pass_issues,
     detect_flowchart_issues,
@@ -1438,12 +1439,21 @@ def process_image_task(
                 table_analysis["reference_role"] = str(
                     reference_bundle.get("role", "") or ""
                 ).strip().lower()
-            table_issue = build_table_issue(
-                image_task=image_task,
-                mineru_candidate=table_analysis.get("mineru_candidate"),
-                candidate_bundles=table_analysis.get("candidate_bundles") or [],
-                consensus_analysis=table_analysis,
-            )
+            if force_chart_table_second_pass:
+                table_issues = build_chart_table_second_pass_issues(
+                    image_task=image_task,
+                    mineru_document=mineru_document,
+                    candidate_bundles=table_analysis.get("candidate_bundles") or [],
+                    consensus_analysis=table_analysis,
+                )
+            else:
+                table_issue = build_table_issue(
+                    image_task=image_task,
+                    mineru_candidate=table_analysis.get("mineru_candidate"),
+                    candidate_bundles=table_analysis.get("candidate_bundles") or [],
+                    consensus_analysis=table_analysis,
+                )
+                table_issues = []
             if (
                 (
                     force_chart_table_second_pass
@@ -1452,9 +1462,14 @@ def process_image_task(
                         and bool(table_analysis.get("requires_qwen"))
                     )
                 )
-                and table_issue is not None
+                and (
+                    table_issues
+                    if force_chart_table_second_pass
+                    else table_issue is not None
+                )
             ):
-                table_issues = [table_issue]
+                if not force_chart_table_second_pass and table_issue is not None:
+                    table_issues = [table_issue]
                 if qwen_client is not None:
                     table_patch_decisions, table_patch_outputs = adjudicate_issues_with_llm(
                         client=qwen_client,

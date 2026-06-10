@@ -13,6 +13,7 @@ from src.pipeline.flowchart_utils import (
     normalize_mermaid_text,
 )
 from src.pipeline.normalizers import derive_label_from_document
+from src.pipeline.table_utils import detect_table_format, extract_table_candidates
 from src.projection import (
     is_single_block_projection_block,
     project_document_for_single_block_view,
@@ -377,6 +378,186 @@ def build_table_issue(
     )
 
 
+def build_chart_table_second_pass_issues(
+    image_task: ImageTask,
+    mineru_document: CanonicalDocument,
+    candidate_bundles: list[dict[str, Any]],
+    consensus_analysis: dict[str, Any],
+) -> list[Issue]:
+    del image_task
+    target_candidates = extract_table_candidates(
+        document=mineru_document,
+        allow_non_table_chart_fallback=True,
+    )
+    if not target_candidates:
+        target_candidates = [
+            _build_loose_table_candidate_from_block(block)
+            for block in sorted(
+                mineru_document.blocks,
+                key=lambda item: (item.page_idx, item.order_index, item.block_id),
+            )
+            if _is_chart_table_target_block(block)
+        ]
+    if not target_candidates:
+        return []
+
+    bundle_matches: list[tuple[dict[str, Any], dict[str, dict[str, Any]]]] = []
+    for bundle in candidate_bundles:
+        bundle_candidates = _bundle_table_candidates(bundle)
+        role = str(bundle.get("role", "") or "").strip().lower()
+        if role == "mineru":
+            bundle_matches.append(
+                (
+                    bundle,
+                    {
+                        str(candidate["block"].block_id): candidate
+                        for candidate in bundle_candidates
+                        if isinstance(candidate.get("block"), CanonicalBlock)
+                    },
+                )
+            )
+            continue
+        bundle_matches.append(
+            (
+                bundle,
+                _match_bundle_candidates_to_targets(
+                    target_candidates=target_candidates,
+                    bundle_candidates=bundle_candidates,
+                ),
+            )
+        )
+
+    issues: list[Issue] = []
+    reasons = list(consensus_analysis.get("review_reasons") or [])
+    if not reasons:
+        reasons = ["table_candidates_diverge"]
+    preferred_reference_role = str(
+        consensus_analysis.get("reference_role", "") or ""
+    ).strip().lower()
+    branch_mode = str(consensus_analysis.get("branch_mode", "") or "").strip().lower()
+    forced_second_pass = bool(consensus_analysis.get("forced_second_pass", False))
+
+    for target_candidate in target_candidates:
+        block = target_candidate.get("block")
+        if not isinstance(block, CanonicalBlock):
+            continue
+
+        candidate_payloads: list[dict[str, Any]] = [
+            {
+                "candidate_id": "mineru",
+                "model_name": "mineru",
+                "block_id": target_candidate.get("block_id") or block.block_id,
+                "block_type": target_candidate.get("block_type") or block.type,
+                "sub_type": target_candidate.get("sub_type") or block.sub_type,
+                "caption": target_candidate.get("caption"),
+                "visible_text": list(target_candidate.get("visible_text") or [])[:10],
+                "ocr_texts": list(target_candidate.get("ocr_texts") or [])[:10],
+                "table_format": str(target_candidate.get("table_format", "") or ""),
+                "table_content": str(target_candidate.get("table_text", "") or ""),
+                "cell_count": len(getattr(target_candidate.get("table_ir"), "cells", []) or []),
+                "row_count": getattr(target_candidate.get("table_ir"), "row_count", 0),
+                "col_count": getattr(target_candidate.get("table_ir"), "col_count", 0),
+            }
+        ]
+        matched_bundles: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        for bundle, match_map in bundle_matches:
+            role = str(bundle.get("role", "") or "").strip().lower()
+            if role == "mineru":
+                continue
+            matched_candidate = match_map.get(block.block_id)
+            if not isinstance(matched_candidate, dict):
+                continue
+            candidate_payloads.append(
+                _build_table_issue_candidate_payload(
+                    bundle=bundle,
+                    candidate=matched_candidate,
+                )
+            )
+            matched_bundles.append(
+                (
+                    role,
+                    bundle,
+                    matched_candidate,
+                )
+            )
+
+        reference_bundle = _pick_issue_reference_bundle(
+            matched_bundles=matched_bundles,
+            preferred_reference_role=preferred_reference_role,
+        )
+        reference_patch = _build_table_reference_patch(reference_bundle)
+
+        issues.append(
+            Issue(
+                issue_id=f"table-{block.block_id}",
+                issue_type="table_conflict",
+                page_idx=block.page_idx,
+                target_block_id=block.block_id,
+                mineru_block=block.model_dump(),
+                qwen_block=(
+                    reference_bundle["table_candidate"]["block"].model_dump()
+                    if isinstance(reference_bundle, dict)
+                    and isinstance(reference_bundle.get("table_candidate"), dict)
+                    and isinstance(
+                        reference_bundle["table_candidate"].get("block"),
+                        CanonicalBlock,
+                    )
+                    else None
+                ),
+                candidate_payload={
+                    "review_mode": "chart_table_second_pass",
+                    "branch_mode": branch_mode or "chart_table",
+                    "forced_second_pass": forced_second_pass,
+                    "candidates": candidate_payloads,
+                    "pairwise_matrix": deepcopy(consensus_analysis.get("matrix") or {}),
+                    "pairwise_scores": deepcopy(consensus_analysis.get("pairwise") or []),
+                    "consensus_diagnostics": {
+                        "stable_consensus": bool(
+                            consensus_analysis.get("stable_consensus", False)
+                        ),
+                        "consensus_kind": str(
+                            consensus_analysis.get("consensus_kind", "") or ""
+                        ),
+                        "consensus_cluster": list(
+                            consensus_analysis.get("consensus_cluster") or []
+                        ),
+                        "severe_conflicts": list(
+                            consensus_analysis.get("severe_conflicts") or []
+                        ),
+                    },
+                    "reference_model_role": (
+                        str(reference_bundle.get("role", "") or "").strip().lower()
+                        if isinstance(reference_bundle, dict)
+                        else None
+                    ),
+                    "reference_model_name": (
+                        getattr(reference_bundle.get("output"), "model_name", "")
+                        if isinstance(reference_bundle, dict)
+                        else ""
+                    )
+                    or None,
+                    "reference_patch": reference_patch,
+                    "candidate_patch": reference_patch,
+                    "must_output_final_table": True,
+                    "must_include_caption": True,
+                    "final_table_target": {
+                        "type": "table",
+                        "content_key": "table_body",
+                        "caption_key": "table_caption",
+                        "caption_format": "list[str]",
+                    },
+                    "task_instruction": (
+                        "这是识别为 chart 但不是 flowchart 的分支。"
+                        "请只处理当前 target block 对应的目标图，并输出该目标图的最终表格与 caption。"
+                    ),
+                },
+                reasons=reasons,
+            )
+        )
+
+    return issues
+
+
 def _build_issue_candidate_from_block(
     block: CanonicalBlock,
     role: str,
@@ -438,6 +619,170 @@ def _build_issue_candidate_from_block(
         "row_count": 0,
         "col_count": 0,
     }
+
+
+def _bundle_table_candidates(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = bundle.get("table_candidates")
+    if isinstance(candidates, list):
+        return [candidate for candidate in candidates if isinstance(candidate, dict)]
+    candidate = bundle.get("table_candidate")
+    if isinstance(candidate, dict):
+        return [candidate]
+    document = bundle.get("document")
+    if isinstance(document, CanonicalDocument):
+        return extract_table_candidates(
+            document=document,
+            allow_non_table_chart_fallback=True,
+        )
+    return []
+
+
+def _is_chart_table_target_block(block: CanonicalBlock) -> bool:
+    if str(block.sub_type or "").strip().lower() == "flowchart":
+        return False
+    if block.structured_label.kind == "mermaid" or block.flowchart_graph:
+        return False
+    source_block_type = str(
+        block.provenance.get("source_block_type", "") or ""
+    ).strip().lower()
+    return block.type in {"table", "chart"} or source_block_type == "chart"
+
+
+def _build_loose_table_candidate_from_block(block: CanonicalBlock) -> dict[str, Any]:
+    content = block.content if isinstance(block.content, dict) else {}
+    table_text = next(
+        (
+            candidate
+            for candidate in (
+                str(content.get("table_body", "") or "").strip(),
+                str(content.get("content", "") or "").strip(),
+                str(block.structured_label.content or "").strip(),
+                str(block.text or "").strip(),
+                next(
+                    (
+                        str(item or "").strip()
+                        for item in block.visible_text
+                        if str(item or "").strip()
+                    ),
+                    "",
+                ),
+            )
+            if candidate
+        ),
+        "",
+    )
+    return {
+        "block": block,
+        "table_text": table_text,
+        "table_ir": None,
+        "table_format": detect_table_format(table_text),
+        "block_id": block.block_id,
+        "block_type": block.type,
+        "sub_type": block.sub_type,
+        "caption": block.caption_structured.brief or block.text,
+        "visible_text": list(block.visible_text),
+        "ocr_texts": [
+            str(region.text or "").strip()
+            for region in block.ocr_regions
+            if str(region.text or "").strip()
+        ],
+    }
+
+
+def _match_bundle_candidates_to_targets(
+    target_candidates: list[dict[str, Any]],
+    bundle_candidates: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    target_blocks = [
+        candidate.get("block")
+        for candidate in target_candidates
+        if isinstance(candidate.get("block"), CanonicalBlock)
+    ]
+    candidate_blocks = [
+        candidate.get("block")
+        for candidate in bundle_candidates
+        if isinstance(candidate.get("block"), CanonicalBlock)
+    ]
+    if not target_blocks or not candidate_blocks:
+        return {}
+
+    matches = align_blocks(target_blocks, candidate_blocks, min_score=0.1)
+    match_map: dict[str, dict[str, Any]] = {}
+    matched_target_indexes: set[int] = set()
+    matched_candidate_indexes: set[int] = set()
+    for match in matches:
+        matched_target_indexes.add(match.base_index)
+        matched_candidate_indexes.add(match.candidate_index)
+        target_block = target_blocks[match.base_index]
+        match_map[target_block.block_id] = bundle_candidates[match.candidate_index]
+
+    remaining_target_indexes = [
+        index for index in range(len(target_blocks)) if index not in matched_target_indexes
+    ]
+    remaining_candidate_indexes = [
+        index
+        for index in range(len(candidate_blocks))
+        if index not in matched_candidate_indexes
+    ]
+    if (
+        remaining_target_indexes
+        and remaining_candidate_indexes
+        and len(remaining_target_indexes) == len(remaining_candidate_indexes)
+    ):
+        for target_index, candidate_index in zip(
+            remaining_target_indexes, remaining_candidate_indexes
+        ):
+            target_block = target_blocks[target_index]
+            match_map[target_block.block_id] = bundle_candidates[candidate_index]
+    return match_map
+
+
+def _build_table_issue_candidate_payload(
+    bundle: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    role = str(bundle.get("role", "") or "").strip().lower() or "candidate"
+    output = bundle.get("output")
+    return {
+        "candidate_id": role,
+        "model_name": getattr(output, "model_name", "") or bundle.get("role", ""),
+        "block_id": candidate.get("block_id"),
+        "block_type": candidate.get("block_type"),
+        "sub_type": candidate.get("sub_type"),
+        "caption": candidate.get("caption"),
+        "visible_text": list(candidate.get("visible_text") or [])[:10],
+        "ocr_texts": list(candidate.get("ocr_texts") or [])[:10],
+        "table_format": str(candidate.get("table_format", "") or ""),
+        "table_content": str(candidate.get("table_text", "") or ""),
+        "cell_count": len(getattr(candidate.get("table_ir"), "cells", []) or []),
+        "row_count": getattr(candidate.get("table_ir"), "row_count", 0),
+        "col_count": getattr(candidate.get("table_ir"), "col_count", 0),
+    }
+
+
+def _pick_issue_reference_bundle(
+    matched_bundles: list[tuple[str, dict[str, Any], dict[str, Any]]],
+    preferred_reference_role: str,
+) -> dict[str, Any] | None:
+    if not matched_bundles:
+        return None
+    for role, bundle, candidate in matched_bundles:
+        if role == preferred_reference_role:
+            enriched = dict(bundle)
+            enriched["table_candidate"] = candidate
+            return enriched
+    for preferred_role in ("qwen", "paddle", "glm"):
+        for role, bundle, candidate in matched_bundles:
+            if role == preferred_role:
+                enriched = dict(bundle)
+                enriched["table_candidate"] = candidate
+                return enriched
+    for role, bundle, candidate in matched_bundles:
+        if role != "mineru":
+            enriched = dict(bundle)
+            enriched["table_candidate"] = candidate
+            return enriched
+    return None
 
 
 def _detect_pair_issue(
