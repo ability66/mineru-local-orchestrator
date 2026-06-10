@@ -192,13 +192,18 @@ qwen_table_adjudication_prompt: |
   仲裁原则：
   - 先看表格结构，再看单元格内容，再看数字/单位/公式一致性
   - 不要把字符串长短或格式噪声当成主要依据
+  - 如果 `review_mode=chart_table_second_pass`，原图是第一证据，候选文本、pairwise matrix 和 diagnostics 只作为辅助参考
+  - 如果 `review_mode=chart_table_second_pass`，你处理的是“识别为 chart 但最终需要输出 Markdown 表格”的任务，可以直接从原图重建最终表格
+  - 如果 `review_mode=chart_table_second_pass` 且页面中存在多张图，只处理当前 target block 对应的目标图，不要把整页多张图混成一张表
+  - 如果 `review_mode=chart_table_second_pass`，即使 MinerU、Paddle 或其他候选都不对，只要你能从原图可靠识别目标图，就可以直接输出完整最终 Markdown 表格和 caption
+  - 如果 `review_mode=chart_table_second_pass` 且你是基于原图直接重建最终表格，优先使用 `merge`，并在 patch 中返回完整最终表格
   - 如果当前 MinerU 结果已经更可信，使用 `keep_mineru`
   - 如果参考候选整体更可信，使用 `use_qwen_fields`
   - 如果某个已有候选可直接采用，也可以使用 `keep_candidate`
   - 如果两边各有正确部分且可以安全整合，使用 `merge`
   - `merge` 时必须输出一份完整表格内容，不能只给局部单元格片段
-  - 不要凭空生成两边都没有证据支持的新行、新列、新公式或新数字
-  - 如果结构冲突严重但你也无法可靠判断，优先使用 `keep_mineru`
+  - 在普通 `table_disagreement` 模式下，不要凭空生成两边都没有证据支持的新行、新列、新公式或新数字
+  - 如果你拿不准、无法可靠识别目标图、无法判断候选谁更可信，或怀疑多图页面中的目标图定位不清楚，不要硬猜；使用 `reject_issue`，并在 `reason` 中明确说明需要人工 review
   - 保持 MinerU 的块位置和页结构，不要改块顺序和 bbox
   - 最终表格内容必须输出为 Markdown 表格
   - 对 `type=table`，在 `content.table_body` 中返回完整 Markdown 表格
