@@ -12,51 +12,6 @@
 - 最终输出统一到 MinerU 风格
 - 保留图表、流程图、印章识别相关能力
 
-## 设计原则
-
-- `MinerU` 负责页面结构、块级 bbox、阅读顺序、基础内容块切分
-- `Paddle / GLM` 负责一阶段辅助视觉识别
-- `Qwen` 只在发现分歧时作为二阶段 judge 介入
-- 由于当前只有两路上游，不做伪“多数投票”，而是做字段级双源仲裁
-- 最终交付以 MinerU 风格 JSON 为主，同时额外保存 debug 产物
-
-## 当前输出约定
-
-当前仓库默认写出：
-
-- `outputs/raw/mineru/{image_id}.json`
-- `outputs/raw/paddle/{image_id}.json`
-- `outputs/raw/glm/{image_id}.json`
-- `outputs/raw/qwen/{image_id}.json`
-- `outputs/normalized/mineru/{image_id}.json`
-- `outputs/normalized/paddle/{image_id}.json`
-- `outputs/normalized/glm/{image_id}.json`
-- `outputs/normalized/qwen/{image_id}.json`
-- `outputs/final/{image_id}.json`
-- `outputs/final/{image_id}_artifact.json`
-- `outputs/summary.jsonl`
-
-说明：
-
-- `final/{image_id}.json` 是主产物，外层对齐 `tmp.json` 风格，核心结果在 `parsed.extraction_results[].json_res`
-- `Paddle / GLM` 只作为一阶段辅助来源，不作为并列最终结果格式暴露
-- `Qwen` 只作为分歧 judge，不再作为并列最终结果格式暴露
-- `artifact.json` 保存双源仲裁、graph fusion、review 原因等 debug 信息
-
-## 关于 MinerU 输出兼容
-
-当前实现参考了 MinerU 官方输出文件说明中的 `content_list.json` 与 `content_list_v2.json` 字段命名和块类型约定，但你还没有提供本地 `MinerUPro 2.5` 的真实响应样例。
-
-因此本仓库现在的状态是：
-
-- 字段命名和块类型尽量对齐官方约定
-- 接口层和 writer 已经预留可调位置
-- 等你提供本地接口返回样例后，再把兼容性收敛到 1:1
-
-官方参考：
-
-- https://opendatalab.github.io/MinerU/zh/reference/output_files/
-
 ## 运行
 
 初始化依赖：
@@ -76,41 +31,6 @@ uv run python -m src.main --help
 ```bash
 git pull --rebase
 uv sync
-```
-
-预处理整页图片并裁出视觉块：
-
-离线读取已存在的 layout json：
-
-```bash
-uv run python -m src.preprocess.main \
-  --data-dir data/pages \
-  --layout-source json \
-  --layout-dir data/layouts \
-  --output-dir data/preprocess \
-  --workers 8 \
-  --overwrite
-```
-
-在线调用 `mineru_vl_utils` 的 layout client：
-
-```bash
-uv run python -m src.preprocess.main \
-  --data-dir data/pages \
-  --layout-source mineru_vl \
-  --server-url http://80.11.138.9:30000 \
-  --output-dir data/preprocess \
-  --workers 8 \
-  --overwrite
-```
-
-输出目录结构示例：
-
-```text
-data/preprocess/<page_stem>/
-  layout.json
-  <page_stem>_001_chart_bar_line.png
-  manifest.json
 ```
 
 生成可视化对比页：
@@ -148,20 +68,55 @@ uv run python -m src.main \
   --prompts-config configs/prompts.yaml
 ```
 
-如果前面已经做了 preprocess，后续主流程可以直接吃裁好的图：
+## 评测接口
 
-```bash
-uv run python -m src.main \
-  --data-dir data/preprocess \
-  --output-dir outputs \
-  --models-config configs/models.local.yaml \
-  --prompts-config configs/prompts.yaml
+数值型图表 / chart-to-table 评测接口位于 `eval_dataset/chart_td_f1`。
+
+直接比较两个表格字符串：
+
+```python
+from eval_dataset.chart_td_f1 import evaluate_chart_table
+
+prediction = """| year | revenue | profit |
+| --- | ---: | ---: |
+| 2023 | 100 | 20 |
+| 2024 | 120 | 30 |"""
+
+ground_truth = """| metric | 2023 | 2024 |
+| --- | ---: | ---: |
+| revenue | 100 | 120 |
+| profit | 20 | 30 |"""
+
+result = evaluate_chart_table(
+    prediction=prediction,
+    ground_truth=ground_truth,
+    tolerance="slight",
+    allow_transpose=True,
+)
+
+print(result["triple_f1"])
+print(result["map_slight"])
 ```
 
-## 待补信息
+直接读取 `outputs/final/0.json` 的真实结构：
 
-你后续需要提供：
+```python
+import json
+from pathlib import Path
 
-- `MinerUPro 2.5` 本地端口、路径、请求示例、返回示例
-- `qwen 122b` 本地端口、协议、模型名、是否视觉输入
-- 一份你认可的 MinerU 标准输出样例
+from eval_dataset.chart_td_f1 import evaluate_from_record
+
+record = json.loads(Path("outputs/final/0.json").read_text(encoding="utf-8"))
+
+result = evaluate_from_record(
+    record,
+    chart_index=0,
+    tolerance="slight",
+)
+
+print(result["prediction_field_path"])
+print(result["groundtruth_field_path"])
+print(result["triple_f1"])
+```
+
+当前 `evaluate_from_record()` 会从 record 中自动提取 `type == "chart"` 的 block，并读取其中的 `content` 作为输入。
