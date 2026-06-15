@@ -68,6 +68,72 @@ uv run python -m src.main \
   --prompts-config configs/prompts.yaml
 ```
 
+## FlowVQA 用法
+
+如果你已经把 `https://github.com/flowvqa/flowvqa` 完整克隆到本地，可以直接把主图片目录接进当前流程图识别工作流。
+
+注意：
+
+- `--data-dir` 请指向 `Data/A. Main Set Flowchart Images`
+- 不要直接把整个 `Data` 目录传给 `--data-dir`
+- `B. Directional Bias Bottom Top Set Images` 不是主识别集，且文件名 stem 会与主集冲突
+
+推荐命令：
+
+```bash
+uv run python -m src.main \
+  --data-dir "/path/to/flowvqa/Data/A. Main Set Flowchart Images" \
+  --flowvqa-root "/path/to/flowvqa" \
+  --output-dir outputs/flowvqa_main \
+  --models-config configs/models.local.yaml \
+  --prompts-config configs/prompts.yaml \
+  --manual-compare-mode \
+  --workers 8 \
+  --limit 100
+```
+
+说明：
+
+- `--flowvqa-root` 指向你本地克隆的 `flowvqa` 仓库根目录
+- 设置后，系统会自动按图片文件名（例如 `code00294.png`）去 `train_full.json` / `test_full.json` 匹配对应的 gold Mermaid
+- `--manual-compare-mode` 会在每张图完成后更新 compare 页面，适合边跑边看
+- `--workers 8` 可用于提高吞吐；如果远端服务吃不消，再降到 `4`
+- `--limit 100` 只是示例；想全量跑就去掉这个参数
+
+运行后再开静态服务：
+
+```bash
+uv run python -m src.serve_dashboard \
+  --root-dir outputs/flowvqa_main \
+  --host 0.0.0.0 \
+  --port 18743
+```
+
+访问：
+
+```text
+http://<server-ip>:18743/compare_dashboard/index.html
+http://<server-ip>:18743/compare_mermaid/code00294.html
+```
+
+当 `--flowvqa-root` 生效后，前端页面会额外展示：
+
+- `Gold Mermaid` 面板
+- Ground Truth Mermaid 的源码与渲染结果
+- `MinerU / Qwen / Final` 相对 Ground Truth 的评测指标
+- 关键指标包括 `final_td_f1`、`structure_f1`、`semantic_f1`
+
+输出目录中与 FlowVQA 相关的关键文件：
+
+- `outputs/flowvqa_main/final/<image_id>_artifact.json`
+  - 包含 `final_document.raw_metadata.flowvqa_eval`
+- `outputs/flowvqa_main/compare_dashboard/index.html`
+  - 总览页，会在运行过程中持续刷新
+- `outputs/flowvqa_main/compare_mermaid/<image_id>.html`
+  - 单图 Mermaid 对比页，适合实时查看
+
+如果你只想先抽样验证，可保留 `--limit`；如果想看某张图的细节，优先打开单图页，因为它比总览页更接近实时。
+
 ## 评测接口
 
 数值型图表 / chart-to-table 评测接口位于 `eval_dataset/chart_td_f1`。

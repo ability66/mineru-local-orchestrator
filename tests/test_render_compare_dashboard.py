@@ -101,6 +101,108 @@ def test_generate_compare_dashboard_builds_dropdown_page(tmp_path) -> None:
     assert "normalized/glm/demo.json" in html
 
 
+def test_generate_compare_dashboard_shows_flowvqa_gold_and_metrics(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "demo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    normalized_payload = {
+        "document": {
+            "blocks": [
+                {
+                    "type": "image",
+                    "sub_type": "flowchart",
+                    "content": {
+                        "content": "flowchart TD\nA-->B",
+                        "img_path": str(data_dir / "demo.png"),
+                    },
+                }
+            ]
+        },
+        "derived_label": {
+            "image_type": "flowchart",
+            "caption": "flowchart TD\nA-->B",
+            "structured_label": {
+                "kind": "mermaid",
+                "content": "flowchart TD\nA-->B",
+                "format": "mermaid",
+                "source": "model",
+            },
+        },
+    }
+    artifact_payload = {
+        "final_document": {
+            **normalized_payload["document"],
+            "raw_metadata": {
+                "flowvqa_eval": {
+                    "dataset": "flowvqa",
+                    "sample_id": "demo",
+                    "split": "test",
+                    "source_path": "Data/test_full.json",
+                    "question_count": 8,
+                    "ground_truth_mermaid": "flowchart TD\nG1-->G2",
+                    "ground_truth_render_code": "flowchart TD\nG1-->G2",
+                    "metrics_by_source": {
+                        "mineru": {
+                            "parse_valid": True,
+                            "final_td_f1": 0.875,
+                            "structure_f1": 0.82,
+                            "semantic_f1": 0.91,
+                            "debug_errors": [],
+                        },
+                        "qwen": {
+                            "parse_valid": False,
+                            "final_td_f1": 0.0,
+                            "structure_f1": 0.0,
+                            "semantic_f1": 0.0,
+                            "debug_errors": ["pred_parse_error: empty_mermaid"],
+                        },
+                        "final": {
+                            "parse_valid": True,
+                            "final_td_f1": 0.93,
+                            "structure_f1": 0.9,
+                            "semantic_f1": 0.95,
+                            "debug_errors": [],
+                        },
+                    },
+                }
+            },
+        },
+        "final_label": normalized_payload["derived_label"],
+        "issues": [],
+        "patch_decisions": [],
+    }
+
+    (output_dir / "normalized" / "mineru" / "demo.json").write_text(
+        json.dumps(normalized_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "demo.json").write_text(
+        json.dumps({"document": {"blocks": []}, "derived_label": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "demo_artifact.json").write_text(
+        json.dumps(artifact_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    html_path = generate_compare_dashboard(
+        output_dir=output_dir,
+        dashboard_dir=output_dir / "compare_dashboard",
+    )
+
+    assert html_path is not None
+    html = html_path.read_text(encoding="utf-8")
+    assert ">Gold Mermaid<" in html
+    assert "FlowVQA test split" in html
+    assert "评测：TD-F1=0.8750 | Structure=0.8200 | Semantic=0.9100" in html
+    assert "评测错误：pred_parse_error: empty_mermaid" in html
+
+
 def test_generate_compare_dashboard_uses_final_payload_subtype_for_seal_records(tmp_path) -> None:
     output_dir = tmp_path / "outputs"
     (output_dir / "normalized" / "mineru").mkdir(parents=True)

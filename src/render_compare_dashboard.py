@@ -30,6 +30,7 @@ class ComparePanel:
     render_kind: str
     render_text: str
     note: str = ""
+    metrics: dict[str, Any] | None = None
 
 
 TYPE_LABELS = {
@@ -127,6 +128,7 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
     original_image = collect_original_image_snapshot(
         image_id=image_id, output_dir=output_dir
     )
+    flowvqa_eval = _extract_flowvqa_eval_payload(artifact_payload)
     record_type = _infer_record_type(
         artifact_payload=artifact_payload,
         final_payload=final_payload,
@@ -135,13 +137,18 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
         paddle_payload=paddle_payload,
         glm_payload=glm_payload,
     )
-    panels = [
+    panels: list[ComparePanel] = []
+    gold_panel = _build_flowvqa_gold_panel(flowvqa_eval=flowvqa_eval)
+    if gold_panel is not None:
+        panels.append(gold_panel)
+    panels.extend([
         _build_panel_from_normalized_payload(
             payload=mineru_payload,
             artifact_payload=artifact_payload,
             snapshot_lookup=snapshot_lookup,
             title="MinerU",
             source_path=f"normalized/mineru/{image_id}.json",
+            metrics=_flowvqa_metrics_for_title(flowvqa_eval, "MinerU"),
         ),
         _build_panel_from_normalized_payload(
             payload=paddle_payload,
@@ -149,6 +156,7 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
             snapshot_lookup=snapshot_lookup,
             title="Paddle",
             source_path=f"normalized/paddle/{image_id}.json",
+            metrics=_flowvqa_metrics_for_title(flowvqa_eval, "Paddle"),
         ),
         _build_panel_from_normalized_payload(
             payload=glm_payload,
@@ -156,8 +164,9 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
             snapshot_lookup=snapshot_lookup,
             title="GLM",
             source_path=f"normalized/glm/{image_id}.json",
+            metrics=_flowvqa_metrics_for_title(flowvqa_eval, "GLM"),
         ),
-    ]
+    ])
     qwen_panel = _build_qwen_panel(
         record_type=record_type,
         payload=qwen_payload,
@@ -165,6 +174,7 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
         snapshot_lookup=snapshot_lookup,
         source_path=f"normalized/qwen/{image_id}.json",
         artifact_source_path=f"final/{image_id}_artifact.json",
+        metrics=_flowvqa_metrics_for_title(flowvqa_eval, "Qwen"),
     )
     if qwen_panel is not None:
         panels.append(qwen_panel)
@@ -175,6 +185,7 @@ def collect_compare_record(image_id: str, output_dir: Path) -> dict[str, Any]:
             snapshot_lookup=snapshot_lookup,
             title="Final",
             source_path=f"final/{image_id}.json",
+            metrics=_flowvqa_metrics_for_title(flowvqa_eval, "Final"),
         )
     )
     if str(record_type or "").strip().lower() == "flowchart":
@@ -428,7 +439,7 @@ def build_dashboard_html(
   <div class="page">
     <section class="hero">
       <h1>输出对比总览</h1>
-      <p>原图、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图渲染 Mermaid，表格优先展示 Markdown，其次兼容 HTML，其它展示文字。</p>
+      <p>原图、Ground Truth、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图会渲染 Mermaid，并展示对 Ground Truth 的评测指标；表格优先展示 Markdown，其次兼容 HTML，其它展示文字。</p>
       <div class="controls">
         <label for="type-select">查看类型</label>
         <select id="type-select">{type_options_html}</select>
@@ -664,6 +675,7 @@ def _build_panel_meta(panel: ComparePanel) -> str:
     lines = [
         f"文件：{escape(panel.source_path)}" if panel.source_path else "",
         f"Caption：{escape(panel.caption)}" if panel.caption else "",
+        _format_panel_metrics(panel.metrics),
         f"说明：{escape(panel.note)}" if panel.note else "",
     ]
     visible_lines = [line for line in lines if line]
@@ -671,6 +683,32 @@ def _build_panel_meta(panel: ComparePanel) -> str:
         return ""
     items_html = "".join(f"<span>{line}</span>" for line in visible_lines)
     return f'<div class="card-meta"><div class="meta">{items_html}</div></div>'
+
+
+def _format_panel_metrics(metrics: dict[str, Any] | None) -> str:
+    if not isinstance(metrics, dict):
+        return ""
+    numeric_parts = []
+    for label, key in (
+        ("TD-F1", "final_td_f1"),
+        ("Structure", "structure_f1"),
+        ("Semantic", "semantic_f1"),
+    ):
+        if key in metrics:
+            numeric_parts.append(f"{label}={float(metrics.get(key, 0.0) or 0.0):.4f}")
+    lines = [f"评测：{' | '.join(numeric_parts)}"] if numeric_parts else []
+
+    parse_valid = metrics.get("parse_valid")
+    if parse_valid is not None:
+        lines.append(f"解析有效：{'yes' if bool(parse_valid) else 'no'}")
+
+    errors = metrics.get("debug_errors")
+    if isinstance(errors, list) and errors:
+        error_text = ", ".join(str(item).strip() for item in errors if str(item).strip())
+        if error_text:
+            lines.append(f"评测错误：{escape(error_text)}")
+
+    return "；".join(line for line in lines if line)
 
 
 def _build_panel_content(panel: ComparePanel) -> str:
@@ -718,6 +756,7 @@ def _build_panel_from_normalized_payload(
     snapshot_lookup: dict[str, Any],
     title: str,
     source_path: str,
+    metrics: dict[str, Any] | None = None,
 ) -> ComparePanel:
     blocks = _safe_blocks_from_document(
         (payload or {}).get("document") if isinstance(payload, dict) else None
@@ -740,6 +779,7 @@ def _build_panel_from_normalized_payload(
         label_payload=label_payload,
         mermaid_snapshot=snapshot_lookup.get(title),
         extra_note=note_suffix,
+        metrics=metrics,
     )
 
 
@@ -750,6 +790,7 @@ def _build_qwen_panel(
     snapshot_lookup: dict[str, Any],
     source_path: str,
     artifact_source_path: str,
+    metrics: dict[str, Any] | None = None,
 ) -> ComparePanel | None:
     if str(record_type or "").strip().lower() == "flowchart":
         return _build_panel_from_normalized_payload(
@@ -758,6 +799,7 @@ def _build_qwen_panel(
             snapshot_lookup=snapshot_lookup,
             title="Qwen",
             source_path=source_path,
+            metrics=metrics,
         )
 
     qwen_table_payload = _extract_qwen_chart_table_render_payload(artifact_payload)
@@ -778,6 +820,7 @@ def _build_qwen_panel(
             mermaid_snapshot=snapshot_lookup.get("Qwen"),
             extra_note="；".join(extra_notes),
             prefer_label_semantics=True,
+            metrics=metrics,
         )
 
     adjudication_text = _extract_qwen_adjudication_text(artifact_payload)
@@ -811,6 +854,7 @@ def _build_qwen_panel(
         render_kind="text",
         render_text=adjudication_text,
         note="展示裁决结果与原因",
+        metrics=metrics,
     )
 
 
@@ -832,12 +876,76 @@ def _build_flowchart_judge_panel(
     )
 
 
+def _extract_flowvqa_eval_payload(artifact_payload: Any) -> dict[str, Any] | None:
+    if not isinstance(artifact_payload, dict):
+        return None
+    final_document = artifact_payload.get("final_document")
+    if not isinstance(final_document, dict):
+        return None
+    raw_metadata = final_document.get("raw_metadata")
+    if not isinstance(raw_metadata, dict):
+        return None
+    payload = raw_metadata.get("flowvqa_eval")
+    return payload if isinstance(payload, dict) else None
+
+
+def _build_flowvqa_gold_panel(flowvqa_eval: dict[str, Any] | None) -> ComparePanel | None:
+    if not isinstance(flowvqa_eval, dict):
+        return None
+    render_text = normalize_mermaid_text(
+        str(
+            flowvqa_eval.get("ground_truth_render_code")
+            or flowvqa_eval.get("ground_truth_mermaid")
+            or ""
+        )
+    )
+    if not looks_like_mermaid(render_text):
+        return None
+    split_name = str(flowvqa_eval.get("split", "") or "").strip()
+    question_count = int(flowvqa_eval.get("question_count", 0) or 0)
+    note_parts = [f"FlowVQA {split_name} split"] if split_name else ["FlowVQA gold Mermaid"]
+    if question_count > 0:
+        note_parts.append(f"question_count={question_count}")
+    return ComparePanel(
+        title="Gold Mermaid",
+        source_path=str(flowvqa_eval.get("source_path", "") or "flowvqa"),
+        image_type="flowchart",
+        caption="",
+        render_kind="mermaid",
+        render_text=render_text,
+        note="；".join(note_parts),
+    )
+
+
+def _flowvqa_metrics_for_title(
+    flowvqa_eval: dict[str, Any] | None,
+    title: str,
+) -> dict[str, Any] | None:
+    if not isinstance(flowvqa_eval, dict):
+        return None
+    metrics_by_source = flowvqa_eval.get("metrics_by_source")
+    if not isinstance(metrics_by_source, dict):
+        return None
+    source_key = {
+        "MinerU": "mineru",
+        "Qwen": "qwen",
+        "Final": "final",
+        "Paddle": "paddle",
+        "GLM": "glm",
+    }.get(title)
+    if not source_key:
+        return None
+    metrics = metrics_by_source.get(source_key)
+    return metrics if isinstance(metrics, dict) else None
+
+
 def _build_panel_from_final_payload(
     final_payload: Any,
     artifact_payload: Any,
     snapshot_lookup: dict[str, Any],
     title: str,
     source_path: str,
+    metrics: dict[str, Any] | None = None,
 ) -> ComparePanel:
     if isinstance(artifact_payload, dict):
         blocks = _safe_blocks_from_document(artifact_payload.get("final_document"))
@@ -850,6 +958,7 @@ def _build_panel_from_final_payload(
                 label_payload=label_payload,
                 mermaid_snapshot=snapshot_lookup.get(title),
                 prefer_label_semantics=True,
+                metrics=metrics,
             )
 
     blocks: list[dict[str, Any]] = []
@@ -862,6 +971,7 @@ def _build_panel_from_final_payload(
         blocks=blocks,
         label_payload=None,
         mermaid_snapshot=snapshot_lookup.get(title),
+        metrics=metrics,
     )
 
 
@@ -873,6 +983,7 @@ def _build_panel(
     mermaid_snapshot: Any,
     extra_note: str = "",
     prefer_label_semantics: bool = False,
+    metrics: dict[str, Any] | None = None,
 ) -> ComparePanel:
     image_type = _infer_image_type(
         label_payload=label_payload,
@@ -906,6 +1017,7 @@ def _build_panel(
                 ]
                 if item
             ),
+            metrics=metrics,
         )
 
     if flowchart_signal:
@@ -927,6 +1039,7 @@ def _build_panel(
                     for item in ["直接从结构化内容提取 Mermaid", extra_note]
                     if item
                 ),
+                metrics=metrics,
             )
 
     table_render = _extract_table_render_payload(
@@ -953,6 +1066,7 @@ def _build_panel(
                 ]
                 if item
             ),
+            metrics=metrics,
         )
 
     text_content = _extract_textual_content(
@@ -968,6 +1082,7 @@ def _build_panel(
         render_kind="text" if text_content else "empty",
         render_text=text_content,
         note="；".join(item for item in ["标签与文本摘要", extra_note] if item),
+        metrics=metrics,
     )
 
 
@@ -1454,16 +1569,18 @@ def _finalize_panels(record_type: str, panels: list[ComparePanel]) -> list[Compa
     filtered = [
         panel
         for panel in panels
-        if panel is not None and panel.render_kind != "empty"
+        if panel is not None
+        and (panel.render_kind != "empty" or isinstance(panel.metrics, dict))
     ]
     if str(record_type or "").strip().lower() != "flowchart":
         return filtered
 
     priority = {
-        "Qwen": 0,
-        "MinerU": 1,
-        "Final": 2,
-        "Judge Reason": 3,
+        "Gold Mermaid": 0,
+        "Qwen": 1,
+        "MinerU": 2,
+        "Final": 3,
+        "Judge Reason": 4,
     }
     return sorted(
         filtered,

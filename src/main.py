@@ -21,6 +21,12 @@ except ImportError:
 
 
 from src.clients import CLIENT_REGISTRY, BaseLocalClient
+from src.flowvqa_eval import (
+    build_flowvqa_eval_payload,
+    extract_mermaid_from_document,
+    find_flowvqa_reference,
+    validate_flowvqa_root,
+)
 from src.image_loader import load_image_tasks
 from src.pipeline.adjudicator import (
     adjudicate_documents,
@@ -110,6 +116,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry", type=int, default=0)
     parser.add_argument("--request-timeout", type=int, default=180)
     parser.add_argument("--manual-compare-mode", action="store_true")
+    parser.add_argument(
+        "--flowvqa-root",
+        type=Path,
+        default=None,
+        help="Local clone root of the FlowVQA repository. When set, matching image_ids will attach gold Mermaid and evaluation metrics.",
+    )
     parser.add_argument("--workers", type=int, default=1)
     return parser.parse_args()
 
@@ -733,6 +745,53 @@ def _annotate_table_artifact(
             if reason not in _TABLE_ARTIFACT_PLACEHOLDER_REASONS
         ]
     )
+
+
+def _annotate_flowvqa_artifact(
+    image_task: ImageTask,
+    flowvqa_root: Path | None,
+    artifact: Any,
+    mineru_document: CanonicalDocument,
+    mineru_label: ParsedLabel | None,
+    qwen_document: CanonicalDocument,
+    qwen_label: ParsedLabel | None,
+    paddle_bundle: dict[str, Any] | None,
+    glm_bundle: dict[str, Any] | None,
+) -> None:
+    reference = find_flowvqa_reference(
+        flowvqa_root=flowvqa_root,
+        image_id=image_task.image_id,
+    )
+    if reference is None:
+        return
+
+    predictions_by_source: dict[str, str] = {
+        "mineru": extract_mermaid_from_document(mineru_document, mineru_label),
+        "qwen": extract_mermaid_from_document(qwen_document, qwen_label),
+        "final": extract_mermaid_from_document(
+            artifact.final_document,
+            artifact.final_label if isinstance(artifact.final_label, ParsedLabel) else None,
+        ),
+    }
+
+    for source_name, bundle in (("paddle", paddle_bundle), ("glm", glm_bundle)):
+        if not isinstance(bundle, dict):
+            continue
+        bundle_document = bundle.get("document")
+        bundle_label = bundle.get("label")
+        if not isinstance(bundle_document, CanonicalDocument):
+            continue
+        predictions_by_source[source_name] = extract_mermaid_from_document(
+            bundle_document,
+            bundle_label if isinstance(bundle_label, ParsedLabel) else None,
+        )
+
+    flowvqa_eval = build_flowvqa_eval_payload(
+        reference=reference,
+        predictions_by_source=predictions_by_source,
+    )
+    if flowvqa_eval is not None:
+        artifact.final_document.raw_metadata["flowvqa_eval"] = flowvqa_eval
 
 
 def _extract_flowchart_ocr_reference(
@@ -1659,6 +1718,17 @@ def process_image_task(
             else None
         ),
     )
+    _annotate_flowvqa_artifact(
+        image_task=image_task,
+        flowvqa_root=getattr(args, "flowvqa_root", None),
+        artifact=artifact,
+        mineru_document=mineru_document,
+        mineru_label=mineru_label,
+        qwen_document=qwen_document,
+        qwen_label=qwen_label,
+        paddle_bundle=paddle_bundle,
+        glm_bundle=glm_bundle,
+    )
     _annotate_table_artifact(
         artifact=artifact,
         table_analysis=table_analysis,
@@ -1705,8 +1775,20 @@ def process_image_task(
     return summary_record
 
 
+def _refresh_compare_dashboard(output_dir: Path) -> None:
+    try:
+        generate_compare_dashboard(
+            output_dir=output_dir,
+            dashboard_dir=output_dir / "compare_dashboard",
+        )
+    except Exception as exc:
+        print(f"[manual-compare-dashboard] failed: {type(exc).__name__}: {exc}")
+
+
 def main() -> None:
     args = parse_args()
+    if args.flowvqa_root is not None:
+        args.flowvqa_root = validate_flowvqa_root(args.flowvqa_root)
     if args.overwrite:
         clear_previous_outputs(args.output_dir)
 
@@ -1754,6 +1836,8 @@ def main() -> None:
                 output_dir=args.output_dir,
             )
             append_summary_record(summary_path, summary_record)
+            if args.manual_compare_mode:
+                _refresh_compare_dashboard(args.output_dir)
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [
@@ -1779,15 +1863,11 @@ def main() -> None:
                 desc="Processing images",
             ):
                 append_summary_record(summary_path, future.result())
+                if args.manual_compare_mode:
+                    _refresh_compare_dashboard(args.output_dir)
 
     if args.manual_compare_mode:
-        try:
-            generate_compare_dashboard(
-                output_dir=args.output_dir,
-                dashboard_dir=args.output_dir / "compare_dashboard",
-            )
-        except Exception as exc:
-            print(f"[manual-compare-dashboard] failed: {type(exc).__name__}: {exc}")
+        _refresh_compare_dashboard(args.output_dir)
 
     print(f"Processed {len(image_tasks)} images")
 

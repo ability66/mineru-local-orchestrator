@@ -35,6 +35,7 @@ class MermaidSnapshot:
     origin: str
     status: str
     note: str = ""
+    metrics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -127,7 +128,7 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
             note_prefix="从 artifact.issue.qwen_block 回退",
         )
 
-    return [
+    snapshots = [
         mineru_snapshot,
         qwen_snapshot,
         _snapshot_from_artifact_payload(
@@ -152,6 +153,18 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
             ),
         ),
     ]
+    flowvqa_eval = _extract_flowvqa_eval_payload(artifact_payload)
+    gold_snapshot = _snapshot_from_flowvqa_eval(
+        flowvqa_eval=flowvqa_eval,
+        image_id=image_id,
+    )
+    if gold_snapshot is not None:
+        snapshots.insert(0, gold_snapshot)
+    _attach_flowvqa_metrics(
+        snapshots=snapshots,
+        flowvqa_eval=flowvqa_eval,
+    )
+    return snapshots
 
 
 def collect_original_image_snapshot(image_id: str, output_dir: Path) -> OriginalImageSnapshot | None:
@@ -386,7 +399,7 @@ def build_compare_html(
   <div class="page">
     <section class="hero">
       <h1>Flowchart Mermaid 对比页</h1>
-      <p>对比 {escape(image_id)} 的 MinerU、Qwen、Fusion Candidate 与 Final 流程图结果。页面完全离线，Mermaid 渲染脚本使用本地资源。</p>
+      <p>对比 {escape(image_id)} 的 Ground Truth、MinerU、Qwen、Fusion Candidate 与 Final 流程图结果，并展示对 Ground Truth 的评测指标。页面完全离线，Mermaid 渲染脚本使用本地资源。</p>
     </section>
     <section class="image-panel">
       {original_image_html}
@@ -500,6 +513,7 @@ def _build_snapshot_card(index: int, snapshot: MermaidSnapshot) -> str:
             <span class="badge {status_class}">{escape(badge_text)}</span>
             <span>文件：{escape(snapshot.source_path)}</span>
             <span>提取位置：{escape(snapshot.origin)}</span>
+            {_build_snapshot_metrics_html(snapshot.metrics)}
             <span>说明：{note}</span>
           </div>
         </div>
@@ -512,6 +526,31 @@ def _build_snapshot_card(index: int, snapshot: MermaidSnapshot) -> str:
         </div>
       </article>
     """
+
+
+def _build_snapshot_metrics_html(metrics: dict[str, Any] | None) -> str:
+    if not isinstance(metrics, dict):
+        return ""
+    numeric_parts = []
+    for label, key in (
+        ("TD-F1", "final_td_f1"),
+        ("Structure", "structure_f1"),
+        ("Semantic", "semantic_f1"),
+    ):
+        if key in metrics:
+            numeric_parts.append(f"{label}={float(metrics.get(key, 0.0) or 0.0):.4f}")
+    lines = [f'<span>评测：{" | ".join(numeric_parts)}</span>'] if numeric_parts else []
+
+    parse_valid = metrics.get("parse_valid")
+    if parse_valid is not None:
+        lines.append(f"<span>解析有效：{'yes' if bool(parse_valid) else 'no'}</span>")
+
+    errors = metrics.get("debug_errors")
+    if isinstance(errors, list) and errors:
+        lines.append(
+            f"<span>评测错误：{escape(', '.join(str(item) for item in errors if str(item).strip()))}</span>"
+        )
+    return "".join(lines)
 
 
 def _snapshot_from_normalized_payload(payload: Any, title: str, source_path: str) -> MermaidSnapshot:
@@ -1056,6 +1095,73 @@ def _build_image_data_url(image_path: Path) -> str | None:
 
 def _normalize_mermaid_text(text: str) -> str:
     return normalize_mermaid_text(text)
+
+
+def _extract_flowvqa_eval_payload(artifact_payload: Any) -> dict[str, Any] | None:
+    if not isinstance(artifact_payload, dict):
+        return None
+    final_document = artifact_payload.get("final_document")
+    if not isinstance(final_document, dict):
+        return None
+    raw_metadata = final_document.get("raw_metadata")
+    if not isinstance(raw_metadata, dict):
+        return None
+    payload = raw_metadata.get("flowvqa_eval")
+    return payload if isinstance(payload, dict) else None
+
+
+def _snapshot_from_flowvqa_eval(
+    flowvqa_eval: dict[str, Any] | None,
+    image_id: str,
+) -> MermaidSnapshot | None:
+    if not isinstance(flowvqa_eval, dict):
+        return None
+    ground_truth_mermaid = str(flowvqa_eval.get("ground_truth_mermaid", "") or "").strip()
+    render_code = _normalize_mermaid_text(
+        str(flowvqa_eval.get("ground_truth_render_code", "") or ground_truth_mermaid)
+    )
+    if not looks_like_mermaid(render_code):
+        return None
+    split_name = str(flowvqa_eval.get("split", "") or "").strip()
+    source_path = str(flowvqa_eval.get("source_path", "") or "").strip()
+    question_count = int(flowvqa_eval.get("question_count", 0) or 0)
+    note_parts = [f"FlowVQA {split_name} split"] if split_name else ["FlowVQA gold Mermaid"]
+    if question_count > 0:
+        note_parts.append(f"question_count={question_count}")
+    return MermaidSnapshot(
+        title="Gold Mermaid",
+        source_path=source_path or f"flowvqa/{image_id}",
+        code=ground_truth_mermaid,
+        render_code=render_code,
+        origin="flowvqa_eval.ground_truth_mermaid",
+        status="valid",
+        note="，".join(note_parts),
+    )
+
+
+def _attach_flowvqa_metrics(
+    snapshots: list[MermaidSnapshot],
+    flowvqa_eval: dict[str, Any] | None,
+) -> None:
+    if not isinstance(flowvqa_eval, dict):
+        return
+    metrics_by_source = flowvqa_eval.get("metrics_by_source")
+    if not isinstance(metrics_by_source, dict):
+        return
+    source_map = {
+        "MinerU": "mineru",
+        "Qwen": "qwen",
+        "Final": "final",
+        "Paddle": "paddle",
+        "GLM": "glm",
+    }
+    for snapshot in snapshots:
+        source_key = source_map.get(snapshot.title)
+        if not source_key:
+            continue
+        metrics = metrics_by_source.get(source_key)
+        if isinstance(metrics, dict):
+            snapshot.metrics = metrics
 
 
 def _load_json(path: Path) -> Any:
