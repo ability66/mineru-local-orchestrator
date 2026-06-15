@@ -146,8 +146,22 @@ def test_generate_compare_dashboard_shows_flowvqa_gold_and_metrics(tmp_path) -> 
                     "question_count": 8,
                     "ground_truth_mermaid": "flowchart TD\nG1-->G2",
                     "ground_truth_render_code": "flowchart TD\nG1-->G2",
+                    "mermaid_by_source": {
+                        "mineru_raw": {
+                            "title": "MinerU Raw",
+                            "source_path": "raw/mineru/demo.json",
+                            "mermaid": "flowchart TD\nA-->B",
+                            "render_code": "flowchart TD\nA-->B",
+                        },
+                        "final": {
+                            "title": "Ours",
+                            "source_path": "final/demo.json",
+                            "mermaid": "flowchart TD\nA-->B",
+                            "render_code": "flowchart TD\nA-->B",
+                        },
+                    },
                     "metrics_by_source": {
-                        "mineru": {
+                        "mineru_raw": {
                             "parse_valid": True,
                             "final_td_f1": 0.875,
                             "structure_f1": 0.82,
@@ -198,10 +212,11 @@ def test_generate_compare_dashboard_shows_flowvqa_gold_and_metrics(tmp_path) -> 
     assert html_path is not None
     html = html_path.read_text(encoding="utf-8")
     assert ">Ground Truth<" in html
+    assert ">MinerU Raw<" in html
     assert ">Ours<" in html
     assert "FlowVQA test split" in html
+    assert "评测：TD-F1=0.8750 | Structure=0.8200 | Semantic=0.9100" in html
     assert "评测：TD-F1=0.9300 | Structure=0.9000 | Semantic=0.9500" in html
-    assert "MinerU" not in html
     assert "Qwen" not in html
     assert "Final" not in html
 

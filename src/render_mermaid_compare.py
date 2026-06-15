@@ -237,7 +237,7 @@ def build_compare_html(
         snapshot.title == "Ours" for snapshot in snapshots
     )
     hero_text = (
-        f"展示 {escape(image_id)} 的原图、Ground Truth Mermaid、Ours Mermaid 与评测结果。"
+        f"展示 {escape(image_id)} 的原图、Ground Truth Mermaid、MinerU Raw Mermaid、Ours Mermaid 与评测结果。"
         " 页面完全离线，Mermaid 渲染脚本使用本地资源。"
         if flowvqa_mode
         else f"对比 {escape(image_id)} 的 Ground Truth、MinerU、Qwen、Fusion Candidate 与 Final 流程图结果，并展示对 Ground Truth 的评测指标。页面完全离线，Mermaid 渲染脚本使用本地资源。"
@@ -1163,6 +1163,7 @@ def _attach_flowvqa_metrics(
     if not isinstance(metrics_by_source, dict):
         return
     source_map = {
+        "MinerU Raw": "mineru_raw",
         "MinerU": "mineru",
         "Qwen": "qwen",
         "Final": "final",
@@ -1202,26 +1203,73 @@ def _collect_flowvqa_snapshots(
     if ground_truth_snapshot is not None:
         snapshots.append(ground_truth_snapshot)
 
-    ours_snapshot = _snapshot_from_final_payload(
-        payload=final_payload,
-        artifact_payload=artifact_payload,
-        legacy_content_list_v2=legacy_content_list_v2,
-        legacy_content_list=legacy_content_list,
-        title="Ours",
-        source_path=(
-            f"final/{image_id}.json"
-            if final_payload is not None
-            else (
-                f"final/{image_id}_content_list_v2.json"
-                if legacy_content_list_v2 is not None
-                else f"final/{image_id}_content_list.json"
-            )
-        ),
+    mineru_raw_snapshot = _snapshot_from_flowvqa_source(
+        flowvqa_eval=flowvqa_eval,
+        source_name="mineru_raw",
     )
-    ours_snapshot.title = "Ours"
+    if mineru_raw_snapshot is not None:
+        snapshots.append(mineru_raw_snapshot)
+
+    ours_snapshot = _snapshot_from_flowvqa_source(
+        flowvqa_eval=flowvqa_eval,
+        source_name="final",
+    )
+    if ours_snapshot is None:
+        ours_snapshot = _snapshot_from_final_payload(
+            payload=final_payload,
+            artifact_payload=artifact_payload,
+            legacy_content_list_v2=legacy_content_list_v2,
+            legacy_content_list=legacy_content_list,
+            title="Ours",
+            source_path=(
+                f"final/{image_id}.json"
+                if final_payload is not None
+                else (
+                    f"final/{image_id}_content_list_v2.json"
+                    if legacy_content_list_v2 is not None
+                    else f"final/{image_id}_content_list.json"
+                )
+            ),
+        )
+        ours_snapshot.title = "Ours"
     snapshots.append(ours_snapshot)
     _attach_flowvqa_metrics(snapshots=snapshots, flowvqa_eval=flowvqa_eval)
     return snapshots
+
+
+def _snapshot_from_flowvqa_source(
+    flowvqa_eval: dict[str, Any] | None,
+    source_name: str,
+) -> MermaidSnapshot | None:
+    if not isinstance(flowvqa_eval, dict):
+        return None
+    mermaid_by_source = flowvqa_eval.get("mermaid_by_source")
+    if not isinstance(mermaid_by_source, dict):
+        return None
+    source_payload = mermaid_by_source.get(source_name)
+    if not isinstance(source_payload, dict):
+        return None
+
+    raw_mermaid = str(source_payload.get("mermaid", "") or "").strip()
+    render_code = _render_ready_mermaid(
+        str(source_payload.get("render_code", "") or raw_mermaid)
+    )
+    if not raw_mermaid and not render_code:
+        status = "missing"
+    elif render_code:
+        status = "valid"
+    else:
+        status = "invalid"
+
+    return MermaidSnapshot(
+        title=str(source_payload.get("title", "") or source_name),
+        source_path=str(source_payload.get("source_path", "") or ""),
+        code=raw_mermaid,
+        render_code=render_code,
+        origin=f"flowvqa_eval.mermaid_by_source.{source_name}",
+        status=status,
+        note="来自 FlowVQA 评测元数据",
+    )
 
 
 if __name__ == "__main__":

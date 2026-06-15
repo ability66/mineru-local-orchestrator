@@ -61,9 +61,25 @@ def test_build_flowvqa_eval_payload_uses_render_safe_ground_truth() -> None:
             "question_count": 2,
             "ground_truth_mermaid": unsafe_mermaid,
         },
-        predictions_by_source={"final": "flowchart TD\nA[Start] --> B[Access]"},
+        predictions_by_source={
+            "mineru_raw": "flowchart TD\nM[Start] --> N[Access]",
+            "final": "flowchart TD\nA[Start] --> B[Access]",
+        },
+        source_meta_by_source={
+            "mineru_raw": {
+                "title": "MinerU Raw",
+                "source_path": "raw/mineru/demo.json",
+            },
+            "final": {
+                "title": "Ours",
+                "source_path": "final/demo.json",
+            },
+        },
     )
 
     assert payload is not None
     assert payload["ground_truth_mermaid"] == unsafe_mermaid
     assert '\\"' not in payload["ground_truth_render_code"]
+    assert payload["mermaid_by_source"]["mineru_raw"]["title"] == "MinerU Raw"
+    assert payload["mermaid_by_source"]["mineru_raw"]["source_path"] == "raw/mineru/demo.json"
+    assert payload["mermaid_by_source"]["final"]["title"] == "Ours"

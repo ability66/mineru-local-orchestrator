@@ -218,7 +218,7 @@ def build_dashboard_html(
         for record in records
     )
     hero_text = (
-        "原图、Ground Truth 与 Ours 的统一对比面板。流程图会展示 Mermaid 渲染结果、原始 Mermaid 文本，以及对 Ground Truth 的评测指标。"
+        "原图、Ground Truth、MinerU Raw 与 Ours 的统一对比面板。流程图会展示 Mermaid 渲染结果、原始 Mermaid 文本，以及对 Ground Truth 的评测指标。"
         if flowvqa_mode
         else "原图、Ground Truth、MinerU、Paddle、GLM、Qwen 与 Final 的统一对比面板。流程图会渲染 Mermaid，并展示对 Ground Truth 的评测指标；表格优先展示 Markdown，其次兼容 HTML，其它展示文字。"
     )
@@ -899,7 +899,7 @@ def _extract_flowvqa_eval_payload(artifact_payload: Any) -> dict[str, Any] | Non
 
 def _build_flowvqa_panels(snapshot_lookup: dict[str, Any]) -> list[ComparePanel]:
     panels: list[ComparePanel] = []
-    for title in ("Ground Truth", "Ours"):
+    for title in ("Ground Truth", "MinerU Raw", "Ours"):
         panel = _build_panel_from_snapshot(snapshot_lookup.get(title))
         if panel is not None:
             panels.append(panel)
@@ -1571,11 +1571,12 @@ def _finalize_panels(record_type: str, panels: list[ComparePanel]) -> list[Compa
 
     priority = {
         "Ground Truth": 0,
-        "Ours": 1,
-        "Qwen": 1,
-        "MinerU": 2,
-        "Final": 3,
-        "Judge Reason": 4,
+        "MinerU Raw": 1,
+        "Ours": 2,
+        "Qwen": 2,
+        "MinerU": 3,
+        "Final": 4,
+        "Judge Reason": 5,
     }
     return sorted(
         filtered,

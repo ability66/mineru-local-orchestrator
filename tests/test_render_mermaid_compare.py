@@ -335,8 +335,22 @@ def test_collect_mermaid_snapshots_includes_flowvqa_gold_and_metrics(tmp_path) -
                             "question_count": 8,
                             "ground_truth_mermaid": "flowchart TD\nG1-->G2",
                             "ground_truth_render_code": "flowchart TD\nG1-->G2",
+                            "mermaid_by_source": {
+                                "mineru_raw": {
+                                    "title": "MinerU Raw",
+                                    "source_path": "raw/mineru/demo.json",
+                                    "mermaid": "flowchart TD\nA-->B",
+                                    "render_code": "flowchart TD\nA-->B",
+                                },
+                                "final": {
+                                    "title": "Ours",
+                                    "source_path": "final/demo.json",
+                                    "mermaid": "flowchart TD\nA-->B",
+                                    "render_code": "flowchart TD\nA-->B",
+                                },
+                            },
                             "metrics_by_source": {
-                                "mineru": {
+                                "mineru_raw": {
                                     "parse_valid": True,
                                     "final_td_f1": 0.875,
                                     "structure_f1": 0.82,
@@ -363,10 +377,12 @@ def test_collect_mermaid_snapshots_includes_flowvqa_gold_and_metrics(tmp_path) -
 
     snapshots = collect_mermaid_snapshots(image_id="demo", output_dir=output_dir)
 
-    assert [snapshot.title for snapshot in snapshots] == ["Ground Truth", "Ours"]
+    assert [snapshot.title for snapshot in snapshots] == ["Ground Truth", "MinerU Raw", "Ours"]
     assert snapshots[0].render_code == "flowchart TD\nG1-->G2"
     assert snapshots[1].metrics is not None
-    assert snapshots[1].metrics["final_td_f1"] == 0.93
+    assert snapshots[1].metrics["final_td_f1"] == 0.875
+    assert snapshots[2].metrics is not None
+    assert snapshots[2].metrics["final_td_f1"] == 0.93
 
 
 def test_generate_compare_page_shows_flowvqa_metrics(tmp_path, monkeypatch) -> None:
@@ -431,7 +447,28 @@ def test_generate_compare_page_shows_flowvqa_metrics(tmp_path, monkeypatch) -> N
                             "question_count": 8,
                             "ground_truth_mermaid": "flowchart TD\nG1-->G2",
                             "ground_truth_render_code": "flowchart TD\nG1-->G2",
+                            "mermaid_by_source": {
+                                "mineru_raw": {
+                                    "title": "MinerU Raw",
+                                    "source_path": "raw/mineru/demo.json",
+                                    "mermaid": "flowchart TD\nA-->B",
+                                    "render_code": "flowchart TD\nA-->B",
+                                },
+                                "final": {
+                                    "title": "Ours",
+                                    "source_path": "final/demo.json",
+                                    "mermaid": "flowchart TD\nA-->B",
+                                    "render_code": "flowchart TD\nA-->B",
+                                },
+                            },
                             "metrics_by_source": {
+                                "mineru_raw": {
+                                    "parse_valid": True,
+                                    "final_td_f1": 0.875,
+                                    "structure_f1": 0.82,
+                                    "semantic_f1": 0.91,
+                                    "debug_errors": [],
+                                },
                                 "final": {
                                     "parse_valid": True,
                                     "final_td_f1": 0.93,
@@ -466,8 +503,10 @@ def test_generate_compare_page_shows_flowvqa_metrics(tmp_path, monkeypatch) -> N
 
     html = html_path.read_text(encoding="utf-8")
     assert "Ground Truth" in html
+    assert "MinerU Raw" in html
     assert "Ours" in html
     assert "TD-F1=0.9300" in html
+    assert "TD-F1=0.8750" in html
 
 
 def test_collect_mermaid_snapshots_sanitizes_render_code_for_html_rendering(tmp_path) -> None:
@@ -572,7 +611,28 @@ def test_collect_mermaid_snapshots_flowvqa_mode_uses_render_safe_mermaid(tmp_pat
                             "question_count": 3,
                             "ground_truth_mermaid": unsafe_mermaid,
                             "ground_truth_render_code": unsafe_mermaid,
+                            "mermaid_by_source": {
+                                "mineru_raw": {
+                                    "title": "MinerU Raw",
+                                    "source_path": "raw/mineru/demo.json",
+                                    "mermaid": "flowchart TD\nM[Start] --> N[Access]",
+                                    "render_code": "flowchart TD\nM[Start] --> N[Access]",
+                                },
+                                "final": {
+                                    "title": "Ours",
+                                    "source_path": "final/demo.json",
+                                    "mermaid": "flowchart TD\nA[Start] --> B[Access]",
+                                    "render_code": "flowchart TD\nA[Start] --> B[Access]",
+                                },
+                            },
                             "metrics_by_source": {
+                                "mineru_raw": {
+                                    "parse_valid": True,
+                                    "final_td_f1": 0.4,
+                                    "structure_f1": 0.4,
+                                    "semantic_f1": 0.4,
+                                    "debug_errors": [],
+                                },
                                 "final": {
                                     "parse_valid": True,
                                     "final_td_f1": 0.5,
@@ -593,7 +653,8 @@ def test_collect_mermaid_snapshots_flowvqa_mode_uses_render_safe_mermaid(tmp_pat
 
     snapshots = collect_mermaid_snapshots(image_id="demo", output_dir=output_dir)
 
-    assert [snapshot.title for snapshot in snapshots] == ["Ground Truth", "Ours"]
+    assert [snapshot.title for snapshot in snapshots] == ["Ground Truth", "MinerU Raw", "Ours"]
     assert snapshots[0].code == unsafe_mermaid
     assert '\\"' not in snapshots[0].render_code
-    assert snapshots[1].title == "Ours"
+    assert snapshots[1].title == "MinerU Raw"
+    assert snapshots[2].title == "Ours"

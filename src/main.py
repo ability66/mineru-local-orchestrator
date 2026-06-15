@@ -766,12 +766,26 @@ def _annotate_flowvqa_artifact(
         return
 
     predictions_by_source: dict[str, str] = {
-        "mineru": extract_mermaid_from_document(mineru_document, mineru_label),
+        "mineru_raw": extract_mermaid_from_document(mineru_document, mineru_label),
         "qwen": extract_mermaid_from_document(qwen_document, qwen_label),
         "final": extract_mermaid_from_document(
             artifact.final_document,
             artifact.final_label if isinstance(artifact.final_label, ParsedLabel) else None,
         ),
+    }
+    source_meta_by_source: dict[str, dict[str, str]] = {
+        "mineru_raw": {
+            "title": "MinerU Raw",
+            "source_path": f"raw/mineru/{image_task.image_id}.json",
+        },
+        "qwen": {
+            "title": "Qwen",
+            "source_path": f"normalized/qwen/{image_task.image_id}.json",
+        },
+        "final": {
+            "title": "Ours",
+            "source_path": f"final/{image_task.image_id}.json",
+        },
     }
 
     for source_name, bundle in (("paddle", paddle_bundle), ("glm", glm_bundle)):
@@ -785,10 +799,15 @@ def _annotate_flowvqa_artifact(
             bundle_document,
             bundle_label if isinstance(bundle_label, ParsedLabel) else None,
         )
+        source_meta_by_source[source_name] = {
+            "title": source_name.upper() if source_name == "glm" else source_name.capitalize(),
+            "source_path": f"normalized/{source_name}/{image_task.image_id}.json",
+        }
 
     flowvqa_eval = build_flowvqa_eval_payload(
         reference=reference,
         predictions_by_source=predictions_by_source,
+        source_meta_by_source=source_meta_by_source,
     )
     if flowvqa_eval is not None:
         artifact.final_document.raw_metadata["flowvqa_eval"] = flowvqa_eval

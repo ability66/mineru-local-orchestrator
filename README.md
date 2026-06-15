@@ -119,9 +119,10 @@ http://<server-ip>:18743/compare_mermaid/code00294.html
 当 `--flowvqa-root` 生效后，前端页面会额外展示：
 
 - `Ground Truth` 面板
+- `MinerU Raw` 面板
 - `Ours` 面板
-- Ground Truth Mermaid 与 Ours Mermaid 的源码和渲染结果
-- `Ours` 相对 Ground Truth 的评测指标
+- Ground Truth、MinerU Raw、Ours 三者的 Mermaid 源码和渲染结果
+- `MinerU Raw` 与 `Ours` 相对 Ground Truth 的评测指标
 - 关键指标包括 `final_td_f1`、`structure_f1`、`semantic_f1`
 
 输出目录中与 FlowVQA 相关的关键文件：

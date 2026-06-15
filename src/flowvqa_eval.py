@@ -117,6 +117,7 @@ def extract_mermaid_from_label(label: ParsedLabel | None) -> str:
 def build_flowvqa_eval_payload(
     reference: dict[str, Any] | None,
     predictions_by_source: dict[str, str],
+    source_meta_by_source: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(reference, dict):
         return None
@@ -127,13 +128,20 @@ def build_flowvqa_eval_payload(
         return None
 
     metrics_by_source: dict[str, dict[str, Any]] = {}
+    mermaid_by_source: dict[str, dict[str, Any]] = {}
     for source_name, prediction in predictions_by_source.items():
         normalized_prediction = normalize_mermaid_text(str(prediction or ""))
         result = evaluate_mermaid_flowchart(
             pred_mermaid=normalized_prediction,
             gold_mermaid=normalized_ground_truth,
         )
-        metrics_by_source[str(source_name)] = _summarize_result(result)
+        normalized_source_name = str(source_name or "").strip()
+        metrics_by_source[normalized_source_name] = _summarize_result(result)
+        mermaid_by_source[normalized_source_name] = _build_source_mermaid_payload(
+            source_name=normalized_source_name,
+            mermaid=str(prediction or ""),
+            source_meta=(source_meta_by_source or {}).get(normalized_source_name),
+        )
 
     return {
         "dataset": "flowvqa",
@@ -144,6 +152,7 @@ def build_flowvqa_eval_payload(
         "ground_truth_mermaid": ground_truth_mermaid,
         "ground_truth_render_code": build_mermaid_render_code(normalized_ground_truth),
         "metrics_by_source": metrics_by_source,
+        "mermaid_by_source": mermaid_by_source,
     }
 
 
@@ -243,6 +252,35 @@ def _sanitize_render_mermaid(mermaid: str) -> str:
 def _needs_render_safe_rebuild(mermaid: str) -> bool:
     text = str(mermaid or "")
     return any(token in text for token in ('\\"', "\\\\", "&quot;", "&#34;"))
+
+
+def _build_source_mermaid_payload(
+    source_name: str,
+    mermaid: str,
+    source_meta: dict[str, str] | None,
+) -> dict[str, Any]:
+    raw_mermaid = str(mermaid or "").strip()
+    normalized_mermaid = normalize_mermaid_text(raw_mermaid)
+    source_meta = source_meta if isinstance(source_meta, dict) else {}
+    return {
+        "title": str(source_meta.get("title", "") or _source_title(source_name)),
+        "source_path": str(source_meta.get("source_path", "") or ""),
+        "mermaid": raw_mermaid,
+        "render_code": build_mermaid_render_code(normalized_mermaid)
+        if normalized_mermaid
+        else "",
+    }
+
+
+def _source_title(source_name: str) -> str:
+    return {
+        "mineru_raw": "MinerU Raw",
+        "mineru": "MinerU",
+        "qwen": "Qwen",
+        "final": "Ours",
+        "paddle": "Paddle",
+        "glm": "GLM",
+    }.get(str(source_name or "").strip(), str(source_name or "").strip() or "Source")
 
 
 def _summarize_result(result: dict[str, Any]) -> dict[str, Any]:
