@@ -9,6 +9,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from src.flowvqa_eval import build_mermaid_render_code
 from src.pipeline.flowchart_utils import (
     looks_like_mermaid,
     mermaid_from_flowchart_graph,
@@ -99,6 +100,17 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
     legacy_content_list_v2 = _load_json(final_dir / f"{image_id}_content_list_v2.json")
     legacy_content_list = _load_json(final_dir / f"{image_id}_content_list.json")
     artifact_payload = _load_json(final_dir / f"{image_id}_artifact.json")
+    flowvqa_eval = _extract_flowvqa_eval_payload(artifact_payload)
+
+    if flowvqa_eval is not None:
+        return _collect_flowvqa_snapshots(
+            image_id=image_id,
+            final_payload=final_payload,
+            legacy_content_list_v2=legacy_content_list_v2,
+            legacy_content_list=legacy_content_list,
+            artifact_payload=artifact_payload,
+            flowvqa_eval=flowvqa_eval,
+        )
 
     mineru_snapshot = _snapshot_from_normalized_payload(
         payload=mineru_payload,
@@ -153,17 +165,6 @@ def collect_mermaid_snapshots(image_id: str, output_dir: Path) -> list[MermaidSn
             ),
         ),
     ]
-    flowvqa_eval = _extract_flowvqa_eval_payload(artifact_payload)
-    gold_snapshot = _snapshot_from_flowvqa_eval(
-        flowvqa_eval=flowvqa_eval,
-        image_id=image_id,
-    )
-    if gold_snapshot is not None:
-        snapshots.insert(0, gold_snapshot)
-    _attach_flowvqa_metrics(
-        snapshots=snapshots,
-        flowvqa_eval=flowvqa_eval,
-    )
     return snapshots
 
 
@@ -232,6 +233,15 @@ def build_compare_html(
 ) -> str:
     original_image_html = _build_original_image_card(original_image)
     cards_html = "\n".join(_build_snapshot_card(index=index, snapshot=snapshot) for index, snapshot in enumerate(snapshots))
+    flowvqa_mode = any(snapshot.title == "Ground Truth" for snapshot in snapshots) and any(
+        snapshot.title == "Ours" for snapshot in snapshots
+    )
+    hero_text = (
+        f"展示 {escape(image_id)} 的原图、Ground Truth Mermaid、Ours Mermaid 与评测结果。"
+        " 页面完全离线，Mermaid 渲染脚本使用本地资源。"
+        if flowvqa_mode
+        else f"对比 {escape(image_id)} 的 Ground Truth、MinerU、Qwen、Fusion Candidate 与 Final 流程图结果，并展示对 Ground Truth 的评测指标。页面完全离线，Mermaid 渲染脚本使用本地资源。"
+    )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -399,7 +409,7 @@ def build_compare_html(
   <div class="page">
     <section class="hero">
       <h1>Flowchart Mermaid 对比页</h1>
-      <p>对比 {escape(image_id)} 的 Ground Truth、MinerU、Qwen、Fusion Candidate 与 Final 流程图结果，并展示对 Ground Truth 的评测指标。页面完全离线，Mermaid 渲染脚本使用本地资源。</p>
+      <p>{hero_text}</p>
     </section>
     <section class="image-panel">
       {original_image_html}
@@ -675,7 +685,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 title=title,
                 source_path=source_path,
                 code=mermaid,
-                render_code=normalized_mermaid,
+                render_code=_render_ready_mermaid(mermaid),
                 origin="graph_fusion.mermaid",
                 status="valid",
                 note=f"fusion_status={graph_fusion.get('fusion_status', 'unknown')}, fusion_method={graph_fusion.get('fusion_method', 'unknown')}",
@@ -686,7 +696,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 title=title,
                 source_path=source_path,
                 code=derived,
-                render_code=derived,
+                render_code=_render_ready_mermaid(derived),
                 origin="graph_fusion.nodes/edges",
                 status="derived",
                 note=f"由 graph_fusion 图结构反推，fusion_status={graph_fusion.get('fusion_status', 'unknown')}",
@@ -712,7 +722,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 title=title,
                 source_path=source_path,
                 code=reference_mermaid,
-                render_code=normalized_reference_mermaid,
+                render_code=_render_ready_mermaid(reference_mermaid),
                 origin=f"issues[{issue_index}].candidate_payload.reference_mermaid",
                 status="valid",
                 note="来自流程图冲突 issue 的参考 Mermaid",
@@ -729,7 +739,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                     title=title,
                     source_path=source_path,
                     code=reference_patch_mermaid,
-                    render_code=normalized_reference_patch_mermaid,
+                    render_code=_render_ready_mermaid(reference_patch_mermaid),
                     origin=f"issues[{issue_index}].candidate_payload.reference_patch.content.content",
                     status="valid",
                     note="来自流程图冲突 issue 的参考 patch",
@@ -741,7 +751,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 title=title,
                 source_path=source_path,
                 code=candidate_mermaid,
-                render_code=normalized_candidate_mermaid,
+                render_code=_render_ready_mermaid(candidate_mermaid),
                 origin=f"issues[{issue_index}].candidate_payload.candidate_mermaid",
                 status="valid",
                 note="来自流程图二阶段 issue 候选 Mermaid",
@@ -758,7 +768,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                     title=title,
                     source_path=source_path,
                     code=candidate_patch_mermaid,
-                    render_code=normalized_candidate_patch_mermaid,
+                    render_code=_render_ready_mermaid(candidate_patch_mermaid),
                     origin=f"issues[{issue_index}].candidate_payload.candidate_patch.content.content",
                     status="valid",
                     note="来自流程图二阶段 issue 候选 patch",
@@ -770,7 +780,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                     title=title,
                     source_path=source_path,
                     code=derived,
-                    render_code=derived,
+                    render_code=_render_ready_mermaid(derived),
                     origin=f"issues[{issue_index}].candidate_payload.candidate_patch.flowchart_graph",
                     status="derived",
                     note="由流程图二阶段 issue 候选 graph 反推 Mermaid",
@@ -782,7 +792,7 @@ def _snapshot_from_artifact_payload(payload: Any, title: str, source_path: str) 
                 title=title,
                 source_path=source_path,
                 code=qwen_mermaid,
-                render_code=normalized_qwen_mermaid,
+                render_code=_render_ready_mermaid(qwen_mermaid),
                 origin=f"issues[{issue_index}].candidate_payload.qwen_mermaid",
                 status="valid",
                 note="回退使用 qwen_mermaid 作为参考",
@@ -817,7 +827,7 @@ def _extract_from_document_payload(
                 title=title,
                 source_path=source_path,
                 code=content_text,
-                render_code=normalized_content_text,
+                render_code=_render_ready_mermaid(content_text),
                 origin=f"blocks[{index}].content",
                 status="valid",
                 note="直接来自块内容",
@@ -830,7 +840,7 @@ def _extract_from_document_payload(
                 title=title,
                 source_path=source_path,
                 code=structured_content,
-                render_code=normalized_structured_content,
+                render_code=_render_ready_mermaid(structured_content),
                 origin=f"blocks[{index}].structured_label.content",
                 status="valid",
                 note="直接来自 structured_label",
@@ -843,7 +853,7 @@ def _extract_from_document_payload(
                 title=title,
                 source_path=source_path,
                 code=text_content,
-                render_code=normalized_text_content,
+                render_code=_render_ready_mermaid(text_content),
                 origin=f"blocks[{index}].text",
                 status="valid",
                 note="直接来自块文本",
@@ -856,7 +866,7 @@ def _extract_from_document_payload(
                 title=title,
                 source_path=source_path,
                 code=derived_mermaid,
-                render_code=derived_mermaid,
+                render_code=_render_ready_mermaid(derived_mermaid),
                 origin=f"blocks[{index}].flowchart_graph",
                 status="derived",
                 note="由 flowchart_graph 反推 Mermaid",
@@ -909,7 +919,7 @@ def _extract_from_label_payload(
             title=title,
             source_path=source_path,
             code=structured_content,
-            render_code=normalized_structured_content,
+            render_code=_render_ready_mermaid(structured_content),
             origin="derived_label.structured_label.content",
             status="valid",
             note="来自 derived_label",
@@ -922,7 +932,7 @@ def _extract_from_label_payload(
             title=title,
             source_path=source_path,
             code=derived_mermaid,
-            render_code=derived_mermaid,
+            render_code=_render_ready_mermaid(derived_mermaid),
             origin="derived_label.flowchart_graph",
             status="derived",
             note="由 derived_label.flowchart_graph 反推 Mermaid",
@@ -935,7 +945,7 @@ def _extract_from_label_payload(
             title=title,
             source_path=source_path,
             code=caption,
-            render_code=normalized_caption,
+            render_code=_render_ready_mermaid(caption),
             origin="derived_label.caption",
             status="valid",
             note="来自 derived_label.caption",
@@ -1097,6 +1107,10 @@ def _normalize_mermaid_text(text: str) -> str:
     return normalize_mermaid_text(text)
 
 
+def _render_ready_mermaid(text: str) -> str:
+    return build_mermaid_render_code(text)
+
+
 def _extract_flowvqa_eval_payload(artifact_payload: Any) -> dict[str, Any] | None:
     if not isinstance(artifact_payload, dict):
         return None
@@ -1117,10 +1131,10 @@ def _snapshot_from_flowvqa_eval(
     if not isinstance(flowvqa_eval, dict):
         return None
     ground_truth_mermaid = str(flowvqa_eval.get("ground_truth_mermaid", "") or "").strip()
-    render_code = _normalize_mermaid_text(
+    render_code = _render_ready_mermaid(
         str(flowvqa_eval.get("ground_truth_render_code", "") or ground_truth_mermaid)
     )
-    if not looks_like_mermaid(render_code):
+    if not render_code:
         return None
     split_name = str(flowvqa_eval.get("split", "") or "").strip()
     source_path = str(flowvqa_eval.get("source_path", "") or "").strip()
@@ -1129,7 +1143,7 @@ def _snapshot_from_flowvqa_eval(
     if question_count > 0:
         note_parts.append(f"question_count={question_count}")
     return MermaidSnapshot(
-        title="Gold Mermaid",
+        title="Ground Truth",
         source_path=source_path or f"flowvqa/{image_id}",
         code=ground_truth_mermaid,
         render_code=render_code,
@@ -1152,6 +1166,7 @@ def _attach_flowvqa_metrics(
         "MinerU": "mineru",
         "Qwen": "qwen",
         "Final": "final",
+        "Ours": "final",
         "Paddle": "paddle",
         "GLM": "glm",
     }
@@ -1168,6 +1183,45 @@ def _load_json(path: Path) -> Any:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _collect_flowvqa_snapshots(
+    image_id: str,
+    final_payload: Any,
+    legacy_content_list_v2: Any,
+    legacy_content_list: Any,
+    artifact_payload: Any,
+    flowvqa_eval: dict[str, Any],
+) -> list[MermaidSnapshot]:
+    snapshots: list[MermaidSnapshot] = []
+
+    ground_truth_snapshot = _snapshot_from_flowvqa_eval(
+        flowvqa_eval=flowvqa_eval,
+        image_id=image_id,
+    )
+    if ground_truth_snapshot is not None:
+        snapshots.append(ground_truth_snapshot)
+
+    ours_snapshot = _snapshot_from_final_payload(
+        payload=final_payload,
+        artifact_payload=artifact_payload,
+        legacy_content_list_v2=legacy_content_list_v2,
+        legacy_content_list=legacy_content_list,
+        title="Ours",
+        source_path=(
+            f"final/{image_id}.json"
+            if final_payload is not None
+            else (
+                f"final/{image_id}_content_list_v2.json"
+                if legacy_content_list_v2 is not None
+                else f"final/{image_id}_content_list.json"
+            )
+        ),
+    )
+    ours_snapshot.title = "Ours"
+    snapshots.append(ours_snapshot)
+    _attach_flowvqa_metrics(snapshots=snapshots, flowvqa_eval=flowvqa_eval)
+    return snapshots
 
 
 if __name__ == "__main__":

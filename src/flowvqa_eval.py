@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from html import unescape
 from pathlib import Path
 from typing import Any
 
 from eval_dataset.mermaid_td_f1.evaluator import evaluate_mermaid_flowchart
 from src.pipeline.flowchart_utils import (
+    flowchart_graph_from_mermaid,
     looks_like_mermaid,
     mermaid_from_flowchart_graph,
     normalize_mermaid_text,
@@ -140,9 +142,28 @@ def build_flowvqa_eval_payload(
         "source_path": str(reference.get("source_path", "") or ""),
         "question_count": int(reference.get("question_count", 0) or 0),
         "ground_truth_mermaid": ground_truth_mermaid,
-        "ground_truth_render_code": normalized_ground_truth,
+        "ground_truth_render_code": build_mermaid_render_code(normalized_ground_truth),
         "metrics_by_source": metrics_by_source,
     }
+
+
+def build_mermaid_render_code(mermaid: str) -> str:
+    normalized_mermaid = normalize_mermaid_text(str(mermaid or ""))
+    if not normalized_mermaid:
+        return ""
+
+    if not _needs_render_safe_rebuild(normalized_mermaid):
+        return normalized_mermaid
+
+    graph_payload = flowchart_graph_from_mermaid(normalized_mermaid)
+    if isinstance(graph_payload, dict):
+        rebuilt_mermaid = normalize_mermaid_text(
+            mermaid_from_flowchart_graph(graph_payload)
+        )
+        if rebuilt_mermaid:
+            return _sanitize_render_mermaid(rebuilt_mermaid)
+
+    return _sanitize_render_mermaid(normalized_mermaid)
 
 
 def _extract_mermaid_from_block(block: CanonicalBlock) -> str:
@@ -206,6 +227,22 @@ def _normalize_candidate_text(text: str) -> str:
     if not looks_like_mermaid(normalized_text):
         return ""
     return normalized_text
+
+
+def _sanitize_render_mermaid(mermaid: str) -> str:
+    value = normalize_mermaid_text(str(mermaid or ""))
+    if not value:
+        return ""
+    value = unescape(value)
+    value = value.replace('\\"', "'").replace("\\'", "'")
+    value = value.replace("\\\\", "/").replace("\\", "/")
+    value = value.replace("&quot;", "'").replace("&#34;", "'")
+    return "\n".join(line.rstrip() for line in value.splitlines()).strip()
+
+
+def _needs_render_safe_rebuild(mermaid: str) -> bool:
+    text = str(mermaid or "")
+    return any(token in text for token in ('\\"', "\\\\", "&quot;", "&#34;"))
 
 
 def _summarize_result(result: dict[str, Any]) -> dict[str, Any]:

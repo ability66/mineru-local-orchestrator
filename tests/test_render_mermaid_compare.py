@@ -363,14 +363,10 @@ def test_collect_mermaid_snapshots_includes_flowvqa_gold_and_metrics(tmp_path) -
 
     snapshots = collect_mermaid_snapshots(image_id="demo", output_dir=output_dir)
 
-    assert snapshots[0].title == "Gold Mermaid"
+    assert [snapshot.title for snapshot in snapshots] == ["Ground Truth", "Ours"]
     assert snapshots[0].render_code == "flowchart TD\nG1-->G2"
-    assert snapshots[1].title == "MinerU"
     assert snapshots[1].metrics is not None
-    assert snapshots[1].metrics["final_td_f1"] == 0.875
-    assert snapshots[-1].title == "Final"
-    assert snapshots[-1].metrics is not None
-    assert snapshots[-1].metrics["final_td_f1"] == 0.93
+    assert snapshots[1].metrics["final_td_f1"] == 0.93
 
 
 def test_generate_compare_page_shows_flowvqa_metrics(tmp_path, monkeypatch) -> None:
@@ -436,11 +432,11 @@ def test_generate_compare_page_shows_flowvqa_metrics(tmp_path, monkeypatch) -> N
                             "ground_truth_mermaid": "flowchart TD\nG1-->G2",
                             "ground_truth_render_code": "flowchart TD\nG1-->G2",
                             "metrics_by_source": {
-                                "mineru": {
+                                "final": {
                                     "parse_valid": True,
-                                    "final_td_f1": 0.875,
-                                    "structure_f1": 0.82,
-                                    "semantic_f1": 0.91,
+                                    "final_td_f1": 0.93,
+                                    "structure_f1": 0.9,
+                                    "semantic_f1": 0.95,
                                     "debug_errors": [],
                                 }
                             },
@@ -469,9 +465,9 @@ def test_generate_compare_page_shows_flowvqa_metrics(tmp_path, monkeypatch) -> N
     )
 
     html = html_path.read_text(encoding="utf-8")
-    assert "Gold Mermaid" in html
-    assert "TD-F1=0.8750" in html
     assert "Ground Truth" in html
+    assert "Ours" in html
+    assert "TD-F1=0.9300" in html
 
 
 def test_collect_mermaid_snapshots_sanitizes_render_code_for_html_rendering(tmp_path) -> None:
@@ -523,3 +519,81 @@ def test_collect_mermaid_snapshots_sanitizes_render_code_for_html_rendering(tmp_
     assert snapshots[0].status == "valid"
     assert 'LiverMRI["肝脏MRI<br/>或PET-CT"]' in snapshots[0].render_code
     assert "|发现囊性病变 / 或CT无法确定|" in snapshots[0].render_code
+
+
+def test_collect_mermaid_snapshots_flowvqa_mode_uses_render_safe_mermaid(tmp_path) -> None:
+    output_dir = tmp_path / "outputs"
+    (output_dir / "normalized" / "mineru").mkdir(parents=True)
+    (output_dir / "normalized" / "qwen").mkdir(parents=True)
+    (output_dir / "final").mkdir(parents=True)
+
+    unsafe_mermaid = 'flowchart TD\nA("[' + '\\"Start\\"' + ']") --> B["Access"]'
+
+    (output_dir / "normalized" / "mineru" / "demo.json").write_text(
+        json.dumps({"document": {"blocks": []}, "derived_label": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "normalized" / "qwen" / "demo.json").write_text(
+        json.dumps({"document": {"blocks": []}, "derived_label": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "demo.json").write_text(
+        json.dumps(
+            {
+                "parsed": {
+                    "extraction_results": [
+                        {
+                            "page": 0,
+                            "json_res": [
+                                {
+                                    "type": "chart",
+                                    "sub_type": "flowchart",
+                                    "content": "flowchart TD\nA[Start] --> B[Access]",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "final" / "demo_artifact.json").write_text(
+        json.dumps(
+            {
+                "final_document": {
+                    "raw_metadata": {
+                        "flowvqa_eval": {
+                            "dataset": "flowvqa",
+                            "sample_id": "demo",
+                            "split": "test",
+                            "source_path": "Data/test_full.json",
+                            "question_count": 3,
+                            "ground_truth_mermaid": unsafe_mermaid,
+                            "ground_truth_render_code": unsafe_mermaid,
+                            "metrics_by_source": {
+                                "final": {
+                                    "parse_valid": True,
+                                    "final_td_f1": 0.5,
+                                    "structure_f1": 0.5,
+                                    "semantic_f1": 0.5,
+                                    "debug_errors": [],
+                                }
+                            },
+                        }
+                    }
+                },
+                "graph_fusion": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshots = collect_mermaid_snapshots(image_id="demo", output_dir=output_dir)
+
+    assert [snapshot.title for snapshot in snapshots] == ["Ground Truth", "Ours"]
+    assert snapshots[0].code == unsafe_mermaid
+    assert '\\"' not in snapshots[0].render_code
+    assert snapshots[1].title == "Ours"
