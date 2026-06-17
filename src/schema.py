@@ -110,6 +110,9 @@ class ImageTask(BaseModel):
     image_path: str
     file_name: str
     file_ext: str
+    page_output_id: str = ""
+    merge_order: str = ""
+    is_page_crop: bool = False
 
 
 class StructuredLabel(BaseModel):

@@ -98,15 +98,22 @@ def write_image_result(
         )
 
     final_document = artifact.final_document
+    markdown_pages, markdown_text = build_final_markdown_output(
+        image_task=image_task,
+        final_document=final_document,
+        mineru_document=mineru_document,
+    )
     final_output = build_final_output(
         image_task=image_task,
         mineru_output=mineru_output,
         qwen_output=qwen_output,
         artifact=artifact,
+        markdown_pages=markdown_pages,
     )
     content_list_v2 = build_content_list_v2(final_document)
     _remove_legacy_final_files(directories["final"], image_task.image_id)
     _write_json(directories["final"] / f"{image_task.image_id}.json", final_output)
+    _write_text(directories["final"] / f"{image_task.image_id}.md", markdown_text)
     _write_json(
         directories["final"] / f"{image_task.image_id}_artifact.json",
         artifact.model_dump(),
@@ -134,9 +141,12 @@ def build_final_output(
     mineru_output: ModelOutput | None,
     qwen_output: ModelOutput | None,
     artifact: AdjudicationArtifact,
+    markdown_pages: list[str],
 ) -> dict[str, Any]:
     parsed = build_final_parsed_payload(
-        image_task=image_task, document=artifact.final_document
+        image_task=image_task,
+        document=artifact.final_document,
+        markdown_pages=markdown_pages,
     )
     selected_output = _pick_selected_final_output(
         final_document=artifact.final_document,
@@ -213,9 +223,15 @@ def _pick_selected_final_output(
 
 
 def build_final_parsed_payload(
-    image_task: ImageTask, document: CanonicalDocument
+    image_task: ImageTask,
+    document: CanonicalDocument,
+    markdown_pages: list[str],
 ) -> dict[str, Any]:
-    pages = build_extraction_results(document=document, file_name=image_task.file_name)
+    pages = build_extraction_results(
+        document=document,
+        file_name=image_task.file_name,
+        markdown_pages=markdown_pages,
+    )
     return {
         "filename": image_task.file_name,
         "total_pages": len(pages),
@@ -224,13 +240,11 @@ def build_final_parsed_payload(
 
 
 def build_extraction_results(
-    document: CanonicalDocument, file_name: str
+    document: CanonicalDocument,
+    file_name: str,
+    markdown_pages: list[str],
 ) -> list[dict[str, Any]]:
-    page_count = max(
-        document.page_count,
-        max((block.page_idx for block in document.blocks), default=-1) + 1,
-        1,
-    )
+    page_count = max(_page_count(document), len(markdown_pages), 1)
     pages: list[dict[str, Any]] = []
     for page_idx in range(page_count):
         page_blocks = [
@@ -245,19 +259,50 @@ def build_extraction_results(
             {
                 "page": page_idx,
                 "file_name": file_name,
-                "md_res": "",
+                "md_res": markdown_pages[page_idx] if page_idx < len(markdown_pages) else "",
                 "json_res": page_blocks,
             }
         )
     return pages
 
 
+def build_final_markdown_output(
+    image_task: ImageTask,
+    final_document: CanonicalDocument,
+    mineru_document: CanonicalDocument,
+) -> tuple[list[str], str]:
+    page_count = max(_page_count(mineru_document), 1)
+    final_special_blocks = _special_blocks_by_page(final_document, page_count=page_count)
+    mineru_blocks = _ordered_blocks_by_page(mineru_document, page_count=page_count)
+    page_markdown: list[str] = []
+
+    for page_idx in range(page_count):
+        pending_special_blocks = list(final_special_blocks[page_idx])
+        rendered_fragments: list[str] = []
+
+        for mineru_block in mineru_blocks[page_idx]:
+            special_block = _pop_matching_special_block(
+                mineru_block=mineru_block,
+                pending_special_blocks=pending_special_blocks,
+            )
+            source_block = special_block if special_block is not None else mineru_block
+            fragment = _render_markdown_fragment(
+                block=source_block,
+                default_image_path=image_task.image_path,
+            )
+            if fragment:
+                rendered_fragments.append(fragment)
+
+        page_markdown.append("\n\n".join(rendered_fragments).strip())
+
+    markdown_text = "\n\n".join(
+        fragment for fragment in page_markdown if str(fragment or "").strip()
+    ).strip()
+    return page_markdown, markdown_text
+
+
 def build_content_list_v2(document: CanonicalDocument) -> list[list[dict[str, Any]]]:
-    page_count = max(
-        document.page_count,
-        max((block.page_idx for block in document.blocks), default=-1) + 1,
-        1,
-    )
+    page_count = _page_count(document)
     pages: list[list[dict[str, Any]]] = [[] for _ in range(page_count)]
     for block in sorted(
         document.blocks,
@@ -376,6 +421,232 @@ def _normalized_output_payload(
         else None,
         "derived_label": label.model_dump() if isinstance(label, ParsedLabel) else None,
     }
+
+
+def _page_count(document: CanonicalDocument) -> int:
+    return max(
+        document.page_count,
+        max((block.page_idx for block in document.blocks), default=-1) + 1,
+        1,
+    )
+
+
+def _ordered_blocks_by_page(
+    document: CanonicalDocument,
+    page_count: int | None = None,
+) -> list[list[CanonicalBlock]]:
+    resolved_page_count = page_count if page_count is not None else _page_count(document)
+    pages: list[list[CanonicalBlock]] = [[] for _ in range(max(resolved_page_count, 1))]
+    for block in sorted(
+        document.blocks,
+        key=lambda item: (item.page_idx, item.order_index, item.block_id),
+    ):
+        if block.page_idx < 0:
+            continue
+        while block.page_idx >= len(pages):
+            pages.append([])
+        pages[block.page_idx].append(block)
+    return pages
+
+
+def _special_blocks_by_page(
+    document: CanonicalDocument,
+    page_count: int,
+) -> list[list[CanonicalBlock]]:
+    pages = _ordered_blocks_by_page(document, page_count=page_count)
+    return [
+        [block for block in page_blocks if _markdown_special_kind(block) is not None]
+        for page_blocks in pages
+    ]
+
+
+def _markdown_special_kind(block: CanonicalBlock) -> str | None:
+    sub_type = str(block.sub_type or "").strip().lower()
+    if (
+        sub_type == "flowchart"
+        or block.structured_label.kind == "mermaid"
+        or block.flowchart_graph is not None
+    ):
+        return "mermaid"
+    if block.type == "image" and (
+        sub_type == "seal"
+        or any(str(region.role or "").strip().lower() == "seal" for region in block.ocr_regions)
+    ):
+        return "seal"
+    if block.type in {"table", "chart"}:
+        return "tablechart"
+    return None
+
+
+def _pop_matching_special_block(
+    mineru_block: CanonicalBlock,
+    pending_special_blocks: list[CanonicalBlock],
+) -> CanonicalBlock | None:
+    if _markdown_special_kind(mineru_block) is None:
+        return None
+    for matcher in (
+        _same_block_id,
+        _same_special_order,
+        _same_special_bbox,
+        _same_special_image_path,
+    ):
+        for index, candidate in enumerate(pending_special_blocks):
+            if matcher(mineru_block, candidate):
+                return pending_special_blocks.pop(index)
+    return None
+
+
+def _same_block_id(left: CanonicalBlock, right: CanonicalBlock) -> bool:
+    left_id = str(left.block_id or "").strip()
+    right_id = str(right.block_id or "").strip()
+    return bool(left_id and right_id and left_id == right_id)
+
+
+def _same_special_order(left: CanonicalBlock, right: CanonicalBlock) -> bool:
+    return (
+        _markdown_special_kind(left) == _markdown_special_kind(right)
+        and left.order_index == right.order_index
+    )
+
+
+def _same_special_bbox(left: CanonicalBlock, right: CanonicalBlock) -> bool:
+    return (
+        _markdown_special_kind(left) == _markdown_special_kind(right)
+        and bool(left.bbox)
+        and left.bbox == right.bbox
+    )
+
+
+def _same_special_image_path(left: CanonicalBlock, right: CanonicalBlock) -> bool:
+    return (
+        _markdown_special_kind(left) == _markdown_special_kind(right)
+        and _block_image_path(left)
+        and _block_image_path(left) == _block_image_path(right)
+    )
+
+
+def _render_markdown_fragment(
+    block: CanonicalBlock,
+    default_image_path: str,
+) -> str:
+    special_kind = _markdown_special_kind(block)
+    if special_kind is not None:
+        return _render_special_markdown_fragment(
+            block=block,
+            language=special_kind,
+            default_image_path=default_image_path,
+        )
+    return _render_plain_markdown_fragment(block)
+
+
+def _render_special_markdown_fragment(
+    block: CanonicalBlock,
+    language: str,
+    default_image_path: str,
+) -> str:
+    image_path = _block_image_path(block) or str(default_image_path or "").strip()
+    fenced_content = _special_block_content(block, language=language)
+    return "\n".join(
+        [
+            f"![Figure](<img src={image_path}>)",
+            f"```{language}",
+            fenced_content,
+            "```",
+        ]
+    ).strip()
+
+
+def _special_block_content(block: CanonicalBlock, language: str) -> str:
+    if language == "mermaid":
+        return _preferred_flowchart_content(block)
+    if language == "seal":
+        return _preferred_seal_content(block)
+    if block.type == "table":
+        return str(block.content.get("table_body", "") or block.structured_label.content or block.text).strip()
+    return str(block.content.get("content", "") or block.structured_label.content or block.text).strip()
+
+
+def _preferred_seal_content(block: CanonicalBlock) -> str:
+    seal_texts = [
+        str(region.text or "").strip()
+        for region in block.ocr_regions
+        if str(region.role or "").strip().lower() == "seal" and str(region.text or "").strip()
+    ]
+    if seal_texts:
+        return "\n".join(seal_texts)
+    if str(block.text or "").strip():
+        return str(block.text or "").strip()
+    captions = block.content.get("image_caption")
+    if isinstance(captions, list) and captions:
+        return str(captions[0] or "").strip()
+    return ""
+
+
+def _render_plain_markdown_fragment(block: CanonicalBlock) -> str:
+    text = _plain_markdown_text(block)
+    if not text:
+        return ""
+    if block.type == "title":
+        level = block.text_level or _coerce_int(block.content.get("level")) or 1
+        level = min(max(level, 1), 6)
+        return f"{'#' * level} {text}".strip()
+    if block.type == "list":
+        items = [
+            str(item).strip()
+            for item in block.content.get("list_items", [])
+            if str(item).strip()
+        ]
+        if items:
+            return "\n".join(f"- {item}" for item in items)
+    if block.type in {"code", "algorithm"}:
+        return f"```\n{text}\n```"
+    if block.type == "equation_interline":
+        return f"$$\n{text}\n$$"
+    return text
+
+
+def _plain_markdown_text(block: CanonicalBlock) -> str:
+    if block.type == "title":
+        return _join_span_content(block.content.get("title_content")) or str(block.text or "").strip()
+    if block.type == "paragraph":
+        return _join_span_content(block.content.get("paragraph_content")) or str(block.text or "").strip()
+    if block.type == "list":
+        items = [
+            str(item).strip()
+            for item in block.content.get("list_items", [])
+            if str(item).strip()
+        ]
+        return "\n".join(items)
+    if block.type == "equation_interline":
+        return str(block.content.get("math_content", "") or block.text).strip()
+    if block.type == "image":
+        captions = block.content.get("image_caption")
+        if isinstance(captions, list) and captions:
+            return str(captions[0] or "").strip()
+        return str(block.text or "").strip()
+    if block.type == "table":
+        return str(block.content.get("table_body", "") or block.text).strip()
+    if block.type == "chart":
+        return str(block.content.get("content", "") or block.text).strip()
+    return str(block.text or "").strip()
+
+
+def _join_span_content(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            text = str(item.get("content", "") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
+
+
+def _block_image_path(block: CanonicalBlock) -> str:
+    return str(block.content.get("img_path", "") or "").strip()
 
 
 def _canonical_block_to_v2_item(block: CanonicalBlock) -> dict[str, Any]:
@@ -609,3 +880,40 @@ def _remove_legacy_final_files(final_dir: Path, image_id: str) -> None:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_text(path: Path, payload: str) -> None:
+    path.write_text(str(payload or ""), encoding="utf-8")
+
+
+def write_page_merged_markdown(output_dir: Path, image_tasks: list[ImageTask]) -> list[Path]:
+    final_dir = ensure_output_dirs(output_dir)["final"]
+    grouped_tasks: dict[str, list[ImageTask]] = {}
+    for image_task in image_tasks:
+        if not image_task.is_page_crop or not str(image_task.page_output_id or "").strip():
+            continue
+        grouped_tasks.setdefault(image_task.page_output_id, []).append(image_task)
+
+    written_paths: list[Path] = []
+    for page_output_id, grouped_image_tasks in grouped_tasks.items():
+        fragments: list[str] = []
+        for image_task in sorted(grouped_image_tasks, key=_page_crop_sort_key):
+            crop_markdown_path = final_dir / f"{image_task.image_id}.md"
+            if not crop_markdown_path.exists():
+                continue
+            fragment = crop_markdown_path.read_text(encoding="utf-8").strip()
+            if fragment:
+                fragments.append(fragment)
+
+        merged_markdown_path = final_dir / f"{page_output_id}.md"
+        _write_text(merged_markdown_path, "\n\n".join(fragments).strip())
+        written_paths.append(merged_markdown_path)
+
+    return written_paths
+
+
+def _page_crop_sort_key(image_task: ImageTask) -> tuple[int, int, str, str]:
+    merge_order = str(image_task.merge_order or "").strip()
+    if merge_order.lstrip("-").isdigit():
+        return (0, int(merge_order), "", image_task.image_id)
+    return (1, 0, merge_order, image_task.image_id)

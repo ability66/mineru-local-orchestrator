@@ -13,7 +13,12 @@ from src.schema import (
     ParsedLabel,
     StructuredLabel,
 )
-from src.writer import build_content_list, build_content_list_v2, write_image_result
+from src.writer import (
+    build_content_list,
+    build_content_list_v2,
+    write_image_result,
+    write_page_merged_markdown,
+)
 
 
 def test_writer_preserves_flowchart_and_seal_blocks() -> None:
@@ -195,7 +200,13 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(
     assert final_payload["parsed"]["filename"] == "demo.png"
     assert final_payload["parsed"]["total_pages"] == 1
     assert final_payload["parsed"]["extraction_results"][0]["file_name"] == "demo.png"
-    assert final_payload["parsed"]["extraction_results"][0]["md_res"] == ""
+    expected_md = "\n\n".join(
+        [
+            "![Figure](<img src=/tmp/demo.png>)\n```mermaid\nflowchart TD\nA-->B\n```",
+            "![Figure](<img src=/tmp/demo.png>)\n```seal\n某某公司\n```",
+        ]
+    )
+    assert final_payload["parsed"]["extraction_results"][0]["md_res"] == expected_md
     blocks = final_payload["parsed"]["extraction_results"][0]["json_res"]
     assert blocks[0]["type"] == "chart"
     assert blocks[0]["sub_type"] == "flowchart"
@@ -207,6 +218,7 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(
     assert "ocr_regions" not in blocks[1]
     assert not (final_dir / "img-1_content_list_v2.json").exists()
     assert not (final_dir / "img-1_content_list.json").exists()
+    assert (final_dir / "img-1.md").read_text(encoding="utf-8") == expected_md
     assert (final_dir / "img-1_artifact.json").exists()
     stage2_payload = json.loads(
         (tmp_path / "judge_stage2" / "img-1.json").read_text(encoding="utf-8")
@@ -214,6 +226,176 @@ def test_writer_outputs_tmp_style_final_payload_and_removes_legacy_files(
     assert stage2_payload["record_count"] == 1
     assert stage2_payload["totals"]["total_tokens"] == 200
     assert summary["final_block_count"] == 2
+
+
+def test_writer_markdown_prefers_mineru_text_and_final_special_blocks(tmp_path) -> None:
+    image_task = ImageTask(
+        image_id="img-markdown-hybrid",
+        image_path="data/demo.png",
+        file_name="demo.png",
+        file_ext=".png",
+    )
+    mineru_document = CanonicalDocument(
+        document_id="img-markdown-hybrid",
+        source="mineru",
+        backend="mineru",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="title-1",
+                page_idx=0,
+                order_index=1,
+                type="title",
+                bbox=[0, 0, 100, 50],
+                text="Mineru 标题",
+                text_level=2,
+                content={"title_content": [{"type": "text", "content": "Mineru 标题"}]},
+                source="mineru",
+            ),
+            CanonicalBlock(
+                block_id="chart-1",
+                page_idx=0,
+                order_index=2,
+                type="chart",
+                bbox=[0, 60, 400, 300],
+                text="old chart text",
+                content={"img_path": "/tmp/chart.png", "content": "old chart text"},
+                source="mineru",
+                caption_structured=CaptionStructured(brief="旧图表"),
+            ),
+        ],
+    )
+    final_table = "| 指标 | 值 |\n| --- | --- |\n| 增长率 | 12% |"
+    final_document = CanonicalDocument(
+        document_id="img-markdown-hybrid",
+        source="qwen",
+        backend="qwen",
+        page_count=1,
+        blocks=[
+            CanonicalBlock(
+                block_id="title-1",
+                page_idx=0,
+                order_index=1,
+                type="title",
+                bbox=[0, 0, 100, 50],
+                text="Qwen 标题",
+                text_level=2,
+                content={"title_content": [{"type": "text", "content": "Qwen 标题"}]},
+                source="qwen",
+            ),
+            CanonicalBlock(
+                block_id="chart-1",
+                page_idx=0,
+                order_index=2,
+                type="table",
+                bbox=[0, 60, 400, 300],
+                text="Qwen 表格",
+                content={
+                    "img_path": "/tmp/chart.png",
+                    "table_body": final_table,
+                    "table_caption": ["Qwen 表格"],
+                },
+                source="qwen",
+                structured_label=StructuredLabel(
+                    kind="table",
+                    content=final_table,
+                    format="markdown",
+                    source="model",
+                ),
+                caption_structured=CaptionStructured(brief="Qwen 表格"),
+            ),
+        ],
+    )
+    artifact = AdjudicationArtifact(
+        image_id="img-markdown-hybrid",
+        final_document=final_document,
+    )
+
+    write_image_result(
+        output_dir=tmp_path,
+        image_task=image_task,
+        mineru_output=ModelOutput(
+            image_id="img-markdown-hybrid",
+            model_name="mineru",
+            success=True,
+            raw_text="",
+            parsed={},
+        ),
+        qwen_output=ModelOutput(
+            image_id="img-markdown-hybrid",
+            model_name="qwen",
+            success=True,
+            raw_text="",
+            parsed={},
+        ),
+        mineru_document=mineru_document,
+        qwen_document=final_document,
+        mineru_label=None,
+        qwen_label=None,
+        artifact=artifact,
+        stage2_records=None,
+    )
+
+    final_payload = json.loads(
+        (tmp_path / "final" / "img-markdown-hybrid.json").read_text(encoding="utf-8")
+    )
+    markdown_text = final_payload["parsed"]["extraction_results"][0]["md_res"]
+
+    assert "## Mineru 标题" in markdown_text
+    assert "Qwen 标题" not in markdown_text
+    assert "```tablechart" in markdown_text
+    assert final_table in markdown_text
+    assert "old chart text" not in markdown_text
+    assert (
+        (tmp_path / "final" / "img-markdown-hybrid.md").read_text(encoding="utf-8")
+        == markdown_text
+    )
+
+
+def test_writer_merges_page_crop_markdown_by_page_and_block_order(tmp_path) -> None:
+    final_dir = tmp_path / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "doc1_02_010_flowchart.md").write_text("third", encoding="utf-8")
+    (final_dir / "doc1_02_002_table.md").write_text("first", encoding="utf-8")
+    (final_dir / "doc1_02_003_text.md").write_text("second", encoding="utf-8")
+
+    written_paths = write_page_merged_markdown(
+        output_dir=tmp_path,
+        image_tasks=[
+            ImageTask(
+                image_id="doc1_02_010_flowchart",
+                image_path="data/doc1_02_010_flowchart.jpg",
+                file_name="doc1_02_010_flowchart.jpg",
+                file_ext=".jpg",
+                page_output_id="doc1_02",
+                merge_order="010",
+                is_page_crop=True,
+            ),
+            ImageTask(
+                image_id="doc1_02_002_table",
+                image_path="data/doc1_02_002_table.jpg",
+                file_name="doc1_02_002_table.jpg",
+                file_ext=".jpg",
+                page_output_id="doc1_02",
+                merge_order="002",
+                is_page_crop=True,
+            ),
+            ImageTask(
+                image_id="doc1_02_003_text",
+                image_path="data/doc1_02_003_text.jpg",
+                file_name="doc1_02_003_text.jpg",
+                file_ext=".jpg",
+                page_output_id="doc1_02",
+                merge_order="003",
+                is_page_crop=True,
+            ),
+        ],
+    )
+
+    assert written_paths == [tmp_path / "final" / "doc1_02.md"]
+    assert (tmp_path / "final" / "doc1_02.md").read_text(encoding="utf-8") == (
+        "first\n\nsecond\n\nthird"
+    )
 
 
 def test_writer_uses_selected_qwen_metadata_for_final_payload(tmp_path) -> None:

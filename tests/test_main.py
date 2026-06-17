@@ -7,10 +7,11 @@ from typing import Any
 from src.clients.base import BaseLocalClient
 from src.main import (
     _build_seal_adjudication_candidates,
+    _has_flowchart_path_hint,
     _pick_flowchart_reference_bundle,
     _pick_seal_reference_bundle,
-    process_image_task,
     build_stage2_selection_record,
+    process_image_task,
 )
 from src.schema import (
     CanonicalBlock,
@@ -119,6 +120,27 @@ def _blank_chart_block(
             "content": "",
         },
     }
+
+
+def test_has_flowchart_path_hint_ignores_page_crop_type_suffix() -> None:
+    crop_task = ImageTask(
+        image_id="doc1_02_003_flowchart",
+        image_path="data/doc1_02_003_flowchart.jpg",
+        file_name="doc1_02_003_flowchart.jpg",
+        file_ext=".jpg",
+        page_output_id="doc1_02",
+        merge_order="003",
+        is_page_crop=True,
+    )
+    regular_task = ImageTask(
+        image_id="demo-flowchart",
+        image_path="data/demo-flowchart.png",
+        file_name="demo-flowchart.png",
+        file_ext=".png",
+    )
+
+    assert _has_flowchart_path_hint(crop_task) is False
+    assert _has_flowchart_path_hint(regular_task) is True
 
 
 def test_pick_seal_reference_bundle_prefers_richer_auxiliary_result() -> None:

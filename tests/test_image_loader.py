@@ -16,6 +16,36 @@ def test_load_image_tasks_uses_file_stem_as_image_id(tmp_path: Path) -> None:
     assert len(tasks) == 1
     assert tasks[0].image_id == "figure1"
     assert tasks[0].file_name == "figure1.png"
+    assert tasks[0].page_output_id == ""
+    assert tasks[0].merge_order == ""
+    assert tasks[0].is_page_crop is False
+
+
+def test_load_image_tasks_parses_page_crop_metadata(tmp_path: Path) -> None:
+    image_path = tmp_path / "doc1_02_003_flowchart_extra.jpg"
+    image_path.write_bytes(b"fake")
+
+    tasks = load_image_tasks(tmp_path)
+
+    assert len(tasks) == 1
+    assert tasks[0].image_id == "doc1_02_003_flowchart_extra"
+    assert tasks[0].page_output_id == "doc1_02"
+    assert tasks[0].merge_order == "003"
+    assert tasks[0].is_page_crop is True
+
+
+def test_load_image_tasks_does_not_treat_non_numeric_third_segment_as_page_crop(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "table_markdown_flexible_demo.png"
+    image_path.write_bytes(b"fake")
+
+    tasks = load_image_tasks(tmp_path)
+
+    assert len(tasks) == 1
+    assert tasks[0].page_output_id == ""
+    assert tasks[0].merge_order == ""
+    assert tasks[0].is_page_crop is False
 
 
 def test_load_image_tasks_rejects_duplicate_file_stems(tmp_path: Path) -> None:

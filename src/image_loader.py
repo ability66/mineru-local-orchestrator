@@ -11,6 +11,16 @@ def _build_image_id(relative_path: Path) -> str:
     return relative_path.stem
 
 
+def _parse_page_crop_metadata(image_id: str) -> tuple[str, str, bool]:
+    parts = str(image_id or "").split("_", 3)
+    if len(parts) < 4:
+        return "", "", False
+    first, second, third, remainder = parts
+    if not all((first, second, third, remainder)) or not third.isdigit():
+        return "", "", False
+    return f"{first}_{second}", third, True
+
+
 def load_image_tasks(data_dir: Path) -> list[ImageTask]:
     if not data_dir.exists() or not data_dir.is_dir():
         return []
@@ -25,6 +35,7 @@ def load_image_tasks(data_dir: Path) -> list[ImageTask]:
 
         relative_path = path.relative_to(data_dir)
         image_id = _build_image_id(relative_path)
+        page_output_id, merge_order, is_page_crop = _parse_page_crop_metadata(image_id)
         previous_path = seen_image_ids.get(image_id)
         if previous_path is not None:
             raise ValueError(
@@ -38,6 +49,9 @@ def load_image_tasks(data_dir: Path) -> list[ImageTask]:
                 image_path=str(path),
                 file_name=path.name,
                 file_ext=path.suffix.lower(),
+                page_output_id=page_output_id,
+                merge_order=merge_order,
+                is_page_crop=is_page_crop,
             )
         )
 

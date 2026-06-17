@@ -73,6 +73,7 @@ from src.writer import (
     append_summary_record,
     clear_previous_outputs,
     initialize_summary_file,
+    write_page_merged_markdown,
     write_image_result,
 )
 
@@ -461,6 +462,8 @@ def _has_flowchart_signal(
 
 
 def _has_flowchart_path_hint(image_task: ImageTask) -> bool:
+    if bool(getattr(image_task, "is_page_crop", False)):
+        return False
     haystack = " ".join(
         [
             str(image_task.image_id or ""),
@@ -1884,6 +1887,8 @@ def main() -> None:
                 append_summary_record(summary_path, future.result())
                 if args.manual_compare_mode:
                     _refresh_compare_dashboard(args.output_dir)
+
+    write_page_merged_markdown(args.output_dir, image_tasks)
 
     if args.manual_compare_mode:
         _refresh_compare_dashboard(args.output_dir)
