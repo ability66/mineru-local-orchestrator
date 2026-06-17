@@ -143,6 +143,20 @@ def test_has_flowchart_path_hint_ignores_page_crop_type_suffix() -> None:
     assert _has_flowchart_path_hint(regular_task) is True
 
 
+def test_has_flowchart_path_hint_ignores_structured_page_crop_type_suffix() -> None:
+    crop_task = ImageTask(
+        image_id="paper_section_a_p_007_r_012_flowchart",
+        image_path="data/paper_section_a_p_007_r_012_flowchart.jpg",
+        file_name="paper_section_a_p_007_r_012_flowchart.jpg",
+        file_ext=".jpg",
+        page_output_id="paper_section_a_p_007",
+        merge_order="012",
+        is_page_crop=True,
+    )
+
+    assert _has_flowchart_path_hint(crop_task) is False
+
+
 def test_pick_seal_reference_bundle_prefers_richer_auxiliary_result() -> None:
     image_task = ImageTask(
         image_id="seal-1",

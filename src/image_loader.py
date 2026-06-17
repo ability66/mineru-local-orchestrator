@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from src.schema import ImageTask
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+_PAGE_CROP_PATTERN = re.compile(
+    r"^(?P<image_name>.+)_(?P<page_tag>p_[^_]+)_(?P<region_tag>r_[^_]+)_(?P<suffix>.+)$"
+)
 
 
 def _build_image_id(relative_path: Path) -> str:
@@ -12,6 +16,16 @@ def _build_image_id(relative_path: Path) -> str:
 
 
 def _parse_page_crop_metadata(image_id: str) -> tuple[str, str, bool]:
+    structured_match = _PAGE_CROP_PATTERN.match(str(image_id or "").strip())
+    if structured_match is not None:
+        image_name = str(structured_match.group("image_name") or "").strip()
+        page_tag = str(structured_match.group("page_tag") or "").strip()
+        region_tag = str(structured_match.group("region_tag") or "").strip()
+        suffix = str(structured_match.group("suffix") or "").strip()
+        merge_order = region_tag.removeprefix("r_").strip()
+        if all((image_name, page_tag, merge_order, suffix)):
+            return f"{image_name}_{page_tag}", merge_order, True
+
     parts = str(image_id or "").split("_", 3)
     if len(parts) < 4:
         return "", "", False

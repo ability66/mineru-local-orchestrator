@@ -34,6 +34,19 @@ def test_load_image_tasks_parses_page_crop_metadata(tmp_path: Path) -> None:
     assert tasks[0].is_page_crop is True
 
 
+def test_load_image_tasks_parses_structured_page_crop_metadata(tmp_path: Path) -> None:
+    image_path = tmp_path / "paper_section_a_p_007_r_012_chart.jpg"
+    image_path.write_bytes(b"fake")
+
+    tasks = load_image_tasks(tmp_path)
+
+    assert len(tasks) == 1
+    assert tasks[0].image_id == "paper_section_a_p_007_r_012_chart"
+    assert tasks[0].page_output_id == "paper_section_a_p_007"
+    assert tasks[0].merge_order == "012"
+    assert tasks[0].is_page_crop is True
+
+
 def test_load_image_tasks_does_not_treat_non_numeric_third_segment_as_page_crop(
     tmp_path: Path,
 ) -> None:
