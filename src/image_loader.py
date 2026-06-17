@@ -7,7 +7,7 @@ from src.schema import ImageTask
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _PAGE_CROP_PATTERN = re.compile(
-    r"^(?P<image_name>.+)_(?P<page_tag>p_[^_]+)_(?P<region_tag>r_[^_]+)_(?P<suffix>.+)$"
+    r"^(?P<image_name>.+)_(?P<page_tag>p_?\d+)_(?P<region_tag>r_?[0-9A-Za-z]+)_(?P<suffix>.+)$"
 )
 
 
@@ -22,7 +22,7 @@ def _parse_page_crop_metadata(image_id: str) -> tuple[str, str, bool]:
         page_tag = str(structured_match.group("page_tag") or "").strip()
         region_tag = str(structured_match.group("region_tag") or "").strip()
         suffix = str(structured_match.group("suffix") or "").strip()
-        merge_order = region_tag.removeprefix("r_").strip()
+        merge_order = region_tag[1:].removeprefix("_").strip()
         if all((image_name, page_tag, merge_order, suffix)):
             return f"{image_name}_{page_tag}", merge_order, True
 
