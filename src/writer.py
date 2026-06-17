@@ -29,6 +29,7 @@ def ensure_output_dirs(output_dir: Path) -> dict[str, Path]:
         "normalized_glm": output_dir / "normalized" / "glm",
         "normalized_qwen": output_dir / "normalized" / "qwen",
         "final": output_dir / "final",
+        "page_md": output_dir / "page_md",
         "judge_stage2": output_dir / "judge_stage2",
     }
     for directory in directories.values():
@@ -887,7 +888,9 @@ def _write_text(path: Path, payload: str) -> None:
 
 
 def write_page_merged_markdown(output_dir: Path, image_tasks: list[ImageTask]) -> list[Path]:
-    final_dir = ensure_output_dirs(output_dir)["final"]
+    directories = ensure_output_dirs(output_dir)
+    final_dir = directories["final"]
+    page_md_dir = directories["page_md"]
     grouped_tasks: dict[str, list[ImageTask]] = {}
     for image_task in image_tasks:
         if not image_task.is_page_crop or not str(image_task.page_output_id or "").strip():
@@ -905,7 +908,7 @@ def write_page_merged_markdown(output_dir: Path, image_tasks: list[ImageTask]) -
             if fragment:
                 fragments.append(fragment)
 
-        merged_markdown_path = final_dir / f"{page_output_id}.md"
+        merged_markdown_path = page_md_dir / f"{page_output_id}.md"
         _write_text(merged_markdown_path, "\n\n".join(fragments).strip())
         written_paths.append(merged_markdown_path)
 

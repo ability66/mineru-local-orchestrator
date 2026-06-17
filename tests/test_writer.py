@@ -392,8 +392,8 @@ def test_writer_merges_page_crop_markdown_by_page_and_block_order(tmp_path) -> N
         ],
     )
 
-    assert written_paths == [tmp_path / "final" / "doc1_02.md"]
-    assert (tmp_path / "final" / "doc1_02.md").read_text(encoding="utf-8") == (
+    assert written_paths == [tmp_path / "page_md" / "doc1_02.md"]
+    assert (tmp_path / "page_md" / "doc1_02.md").read_text(encoding="utf-8") == (
         "first\n\nsecond\n\nthird"
     )
 
