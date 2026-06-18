@@ -433,6 +433,48 @@ def test_writer_merges_single_page_crop_markdown_for_page(tmp_path) -> None:
     assert merged_path.read_text(encoding="utf-8") == "first\n\nsecond"
 
 
+def test_writer_refreshes_page_markdown_incrementally_with_partial_crop_outputs(
+    tmp_path,
+) -> None:
+    final_dir = tmp_path / "final"
+    final_dir.mkdir(parents=True)
+    image_tasks = [
+        ImageTask(
+            image_id="paper_p0002_r0001_text",
+            image_path="data/paper_p0002_r0001_text.jpg",
+            file_name="paper_p0002_r0001_text.jpg",
+            file_ext=".jpg",
+            page_output_id="paper_p0002",
+            merge_order="0001",
+            is_page_crop=True,
+        ),
+        ImageTask(
+            image_id="paper_p0002_r0002_chart",
+            image_path="data/paper_p0002_r0002_chart.jpg",
+            file_name="paper_p0002_r0002_chart.jpg",
+            file_ext=".jpg",
+            page_output_id="paper_p0002",
+            merge_order="0002",
+            is_page_crop=True,
+        ),
+    ]
+
+    (final_dir / "paper_p0002_r0002_chart.md").write_text("second", encoding="utf-8")
+    merged_path = write_page_merged_markdown_for_page(
+        output_dir=tmp_path,
+        image_tasks=image_tasks,
+    )
+    assert merged_path == tmp_path / "page_md" / "paper_p0002.md"
+    assert merged_path.read_text(encoding="utf-8") == "second"
+
+    (final_dir / "paper_p0002_r0001_text.md").write_text("first", encoding="utf-8")
+    merged_path = write_page_merged_markdown_for_page(
+        output_dir=tmp_path,
+        image_tasks=image_tasks,
+    )
+    assert merged_path.read_text(encoding="utf-8") == "first\n\nsecond"
+
+
 def test_writer_uses_selected_qwen_metadata_for_final_payload(tmp_path) -> None:
     image_task = ImageTask(
         image_id="img-qwen-final",

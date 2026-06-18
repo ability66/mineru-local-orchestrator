@@ -1882,8 +1882,14 @@ def main() -> None:
             if args.manual_compare_mode:
                 _refresh_compare_dashboard(args.output_dir)
     else:
+        page_crop_tasks_by_output_id: dict[str, list[ImageTask]] = {}
+        for image_task in image_tasks:
+            if image_task.is_page_crop and str(image_task.page_output_id or "").strip():
+                page_crop_tasks_by_output_id.setdefault(
+                    str(image_task.page_output_id or "").strip(), []
+                ).append(image_task)
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [
+            future_to_image_task = {
                 executor.submit(
                     process_image_task,
                     image_task,
@@ -1897,15 +1903,26 @@ def main() -> None:
                     flowchart_adjudication_prompt,
                     args.output_dir,
                     table_adjudication_prompt,
-                )
+                ): image_task
                 for image_task in image_tasks
-            ]
+            }
             for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
+                as_completed(future_to_image_task),
+                total=len(future_to_image_task),
                 desc="Processing images",
             ):
                 append_summary_record(summary_path, future.result())
+                completed_image_task = future_to_image_task[future]
+                completed_page_output_id = str(
+                    completed_image_task.page_output_id or ""
+                ).strip()
+                if completed_image_task.is_page_crop and completed_page_output_id:
+                    write_page_merged_markdown_for_page(
+                        output_dir=args.output_dir,
+                        image_tasks=page_crop_tasks_by_output_id.get(
+                            completed_page_output_id, [completed_image_task]
+                        ),
+                    )
                 if args.manual_compare_mode:
                     _refresh_compare_dashboard(args.output_dir)
 
