@@ -74,6 +74,7 @@ from src.writer import (
     clear_previous_outputs,
     initialize_summary_file,
     write_page_merged_markdown,
+    write_page_merged_markdown_for_page,
     write_image_result,
 )
 
@@ -1843,7 +1844,8 @@ def main() -> None:
 
     worker_count = max(1, int(args.workers or 1))
     if worker_count == 1:
-        for image_task in tqdm(image_tasks, desc="Processing images"):
+        pending_page_crop_tasks: list[ImageTask] = []
+        for index, image_task in enumerate(tqdm(image_tasks, desc="Processing images")):
             summary_record = process_image_task(
                 image_task=image_task,
                 args=args,
@@ -1858,6 +1860,25 @@ def main() -> None:
                 output_dir=args.output_dir,
             )
             append_summary_record(summary_path, summary_record)
+            if image_task.is_page_crop and str(image_task.page_output_id or "").strip():
+                pending_page_crop_tasks.append(image_task)
+            next_image_task = image_tasks[index + 1] if index + 1 < len(image_tasks) else None
+            next_page_output_id = (
+                str(next_image_task.page_output_id or "").strip()
+                if next_image_task is not None and bool(next_image_task.is_page_crop)
+                else ""
+            )
+            current_page_output_id = (
+                str(image_task.page_output_id or "").strip()
+                if bool(image_task.is_page_crop)
+                else ""
+            )
+            if pending_page_crop_tasks and current_page_output_id != next_page_output_id:
+                write_page_merged_markdown_for_page(
+                    output_dir=args.output_dir,
+                    image_tasks=pending_page_crop_tasks,
+                )
+                pending_page_crop_tasks = []
             if args.manual_compare_mode:
                 _refresh_compare_dashboard(args.output_dir)
     else:

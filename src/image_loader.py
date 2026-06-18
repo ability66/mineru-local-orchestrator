@@ -41,12 +41,19 @@ def load_image_tasks(data_dir: Path) -> list[ImageTask]:
 
     tasks: list[ImageTask] = []
     seen_image_ids: dict[str, Path] = {}
-    for path in sorted(data_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            continue
+    image_paths = [
+        path
+        for path in data_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+    image_paths.sort(
+        key=lambda path: (
+            path.name,
+            path.relative_to(data_dir).as_posix(),
+        )
+    )
 
+    for path in image_paths:
         relative_path = path.relative_to(data_dir)
         image_id = _build_image_id(relative_path)
         page_output_id, merge_order, is_page_crop = _parse_page_crop_metadata(image_id)

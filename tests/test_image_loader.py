@@ -74,6 +74,22 @@ def test_load_image_tasks_does_not_treat_non_numeric_third_segment_as_page_crop(
     assert tasks[0].is_page_crop is False
 
 
+def test_load_image_tasks_sorts_recursed_images_by_file_name_string(tmp_path: Path) -> None:
+    first_dir = tmp_path / "b_dir"
+    second_dir = tmp_path / "a_dir"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    (first_dir / "zzz_doc_p0002_r0002_text.jpg").write_bytes(b"second")
+    (second_dir / "aaa_doc_p0002_r0001_text.jpg").write_bytes(b"first")
+
+    tasks = load_image_tasks(tmp_path)
+
+    assert [task.file_name for task in tasks] == [
+        "aaa_doc_p0002_r0001_text.jpg",
+        "zzz_doc_p0002_r0002_text.jpg",
+    ]
+
+
 def test_load_image_tasks_rejects_duplicate_file_stems(tmp_path: Path) -> None:
     first_dir = tmp_path / "a"
     second_dir = tmp_path / "b"

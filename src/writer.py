@@ -889,8 +889,6 @@ def _write_text(path: Path, payload: str) -> None:
 
 def write_page_merged_markdown(output_dir: Path, image_tasks: list[ImageTask]) -> list[Path]:
     directories = ensure_output_dirs(output_dir)
-    final_dir = directories["final"]
-    page_md_dir = directories["page_md"]
     grouped_tasks: dict[str, list[ImageTask]] = {}
     for image_task in image_tasks:
         if not image_task.is_page_crop or not str(image_task.page_output_id or "").strip():
@@ -898,21 +896,54 @@ def write_page_merged_markdown(output_dir: Path, image_tasks: list[ImageTask]) -
         grouped_tasks.setdefault(image_task.page_output_id, []).append(image_task)
 
     written_paths: list[Path] = []
-    for page_output_id, grouped_image_tasks in grouped_tasks.items():
-        fragments: list[str] = []
-        for image_task in sorted(grouped_image_tasks, key=_page_crop_sort_key):
-            crop_markdown_path = final_dir / f"{image_task.image_id}.md"
-            if not crop_markdown_path.exists():
-                continue
-            fragment = crop_markdown_path.read_text(encoding="utf-8").strip()
-            if fragment:
-                fragments.append(fragment)
-
-        merged_markdown_path = page_md_dir / f"{page_output_id}.md"
-        _write_text(merged_markdown_path, "\n\n".join(fragments).strip())
-        written_paths.append(merged_markdown_path)
+    for grouped_image_tasks in grouped_tasks.values():
+        merged_markdown_path = write_page_merged_markdown_for_page(
+            output_dir=output_dir,
+            image_tasks=grouped_image_tasks,
+            directories=directories,
+        )
+        if merged_markdown_path is not None:
+            written_paths.append(merged_markdown_path)
 
     return written_paths
+
+
+def write_page_merged_markdown_for_page(
+    output_dir: Path,
+    image_tasks: list[ImageTask],
+    directories: dict[str, Path] | None = None,
+) -> Path | None:
+    eligible_tasks = [
+        image_task
+        for image_task in image_tasks
+        if image_task.is_page_crop and str(image_task.page_output_id or "").strip()
+    ]
+    if not eligible_tasks:
+        return None
+
+    page_output_ids = {
+        str(image_task.page_output_id or "").strip() for image_task in eligible_tasks
+    }
+    if len(page_output_ids) != 1:
+        raise ValueError(
+            "write_page_merged_markdown_for_page expects image tasks from a single page_output_id"
+        )
+
+    resolved_directories = directories or ensure_output_dirs(output_dir)
+    final_dir = resolved_directories["final"]
+    page_md_dir = resolved_directories["page_md"]
+    fragments: list[str] = []
+    for image_task in sorted(eligible_tasks, key=_page_crop_sort_key):
+        crop_markdown_path = final_dir / f"{image_task.image_id}.md"
+        if not crop_markdown_path.exists():
+            continue
+        fragment = crop_markdown_path.read_text(encoding="utf-8").strip()
+        if fragment:
+            fragments.append(fragment)
+
+    merged_markdown_path = page_md_dir / f"{next(iter(page_output_ids))}.md"
+    _write_text(merged_markdown_path, "\n\n".join(fragments).strip())
+    return merged_markdown_path
 
 
 def _page_crop_sort_key(image_task: ImageTask) -> tuple[int, int, str, str]:
