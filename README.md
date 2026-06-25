@@ -122,8 +122,7 @@ http://<server-ip>:18743/compare_mermaid/code00294.html
 - `MinerU Raw` 面板
 - `Ours` 面板
 - Ground Truth、MinerU Raw、Ours 三者的 Mermaid 源码和渲染结果
-- `MinerU Raw` 与 `Ours` 相对 Ground Truth 的评测指标
-- 关键指标包括 `final_td_f1`、`structure_f1`、`semantic_f1`
+- 如果仓库中提供兼容的 FlowVQA 评测器，也会额外展示相对 Ground Truth 的评测指标
 
 输出目录中与 FlowVQA 相关的关键文件：
 
@@ -135,56 +134,3 @@ http://<server-ip>:18743/compare_mermaid/code00294.html
   - 单图 Mermaid 对比页，适合实时查看
 
 如果你只想先抽样验证，可保留 `--limit`；如果想看某张图的细节，优先打开单图页，因为它比总览页更接近实时。
-
-## 评测接口
-
-数值型图表 / chart-to-table 评测接口位于 `eval_dataset/chart_td_f1`。
-
-直接比较两个表格字符串：
-
-```python
-from eval_dataset.chart_td_f1 import evaluate_chart_table
-
-prediction = """| year | revenue | profit |
-| --- | ---: | ---: |
-| 2023 | 100 | 20 |
-| 2024 | 120 | 30 |"""
-
-ground_truth = """| metric | 2023 | 2024 |
-| --- | ---: | ---: |
-| revenue | 100 | 120 |
-| profit | 20 | 30 |"""
-
-result = evaluate_chart_table(
-    prediction=prediction,
-    ground_truth=ground_truth,
-    tolerance="slight",
-    allow_transpose=True,
-)
-
-print(result["triple_f1"])
-print(result["map_slight"])
-```
-
-直接读取 `outputs/final/0.json` 的真实结构：
-
-```python
-import json
-from pathlib import Path
-
-from eval_dataset.chart_td_f1 import evaluate_from_record
-
-record = json.loads(Path("outputs/final/0.json").read_text(encoding="utf-8"))
-
-result = evaluate_from_record(
-    record,
-    chart_index=0,
-    tolerance="slight",
-)
-
-print(result["prediction_field_path"])
-print(result["groundtruth_field_path"])
-print(result["triple_f1"])
-```
-
-当前 `evaluate_from_record()` 会从 record 中自动提取 `type == "chart"` 的 block，并读取其中的 `content` 作为输入。

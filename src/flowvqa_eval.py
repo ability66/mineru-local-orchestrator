@@ -6,7 +6,10 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
-from eval_dataset.mermaid_td_f1.evaluator import evaluate_mermaid_flowchart
+try:
+    from eval_dataset.mermaid_td_f1.evaluator import evaluate_mermaid_flowchart
+except ImportError:
+    evaluate_mermaid_flowchart = None
 from src.pipeline.flowchart_utils import (
     flowchart_graph_from_mermaid,
     looks_like_mermaid,
@@ -131,12 +134,13 @@ def build_flowvqa_eval_payload(
     mermaid_by_source: dict[str, dict[str, Any]] = {}
     for source_name, prediction in predictions_by_source.items():
         normalized_prediction = normalize_mermaid_text(str(prediction or ""))
-        result = evaluate_mermaid_flowchart(
-            pred_mermaid=normalized_prediction,
-            gold_mermaid=normalized_ground_truth,
-        )
         normalized_source_name = str(source_name or "").strip()
-        metrics_by_source[normalized_source_name] = _summarize_result(result)
+        if evaluate_mermaid_flowchart is not None:
+            result = evaluate_mermaid_flowchart(
+                pred_mermaid=normalized_prediction,
+                gold_mermaid=normalized_ground_truth,
+            )
+            metrics_by_source[normalized_source_name] = _summarize_result(result)
         mermaid_by_source[normalized_source_name] = _build_source_mermaid_payload(
             source_name=normalized_source_name,
             mermaid=str(prediction or ""),
